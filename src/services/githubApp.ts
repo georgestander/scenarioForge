@@ -67,8 +67,8 @@ const toBase64UrlString = (value: string): string =>
 
 const pemToArrayBuffer = (pem: string): ArrayBuffer => {
   const normalized = pem
-    .replace(/-----BEGIN PRIVATE KEY-----/g, "")
-    .replace(/-----END PRIVATE KEY-----/g, "")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, "")
+    .replace(/-----END [A-Z ]*PRIVATE KEY-----/g, "")
     .replace(/\s+/g, "");
 
   const decoded = atob(normalized);
