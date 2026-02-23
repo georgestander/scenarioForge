@@ -78,20 +78,24 @@ interface ManifestCreatePayload {
   includesConflicts: boolean;
 }
 
-interface ScenarioPackCreatePayload {
+interface ScenarioActionGeneratePayload {
   pack: ScenarioPack;
+  mode: "initial" | "update";
+  userInstruction: string | null;
 }
 
-interface ScenarioRunCreatePayload {
+interface ScenarioActionExecutePayload {
   run: ScenarioRun;
-}
-
-interface FixAttemptCreatePayload {
-  fixAttempt: FixAttempt;
-}
-
-interface PullRequestCreatePayload {
-  pullRequest: PullRequestRecord;
+  fixAttempt: FixAttempt | null;
+  pullRequests: PullRequestRecord[];
+  executionMode: "run" | "fix" | "pr" | "full";
+  executionAudit: {
+    model: string;
+    threadId: string;
+    turnId: string;
+    turnStatus: string;
+    completedAt: string;
+  };
 }
 
 interface ReviewBoardPayload {
@@ -173,8 +177,11 @@ export const Welcome = () => {
 
   const [scenarioPacks, setScenarioPacks] = useState<ScenarioPack[]>([]);
   const [selectedScenarioPackId, setSelectedScenarioPackId] = useState("");
+  const [scenarioUpdateInstruction, setScenarioUpdateInstruction] = useState("");
+  const [executeInstruction, setExecuteInstruction] = useState("");
   const [isScanningSources, setIsScanningSources] = useState(false);
   const [isGeneratingScenarios, setIsGeneratingScenarios] = useState(false);
+  const [isExecutingScenarios, setIsExecutingScenarios] = useState(false);
   const [scenarioRuns, setScenarioRuns] = useState<ScenarioRun[]>([]);
   const [liveEvents, setLiveEvents] = useState<ScenarioRun["events"]>([]);
   const [fixAttempts, setFixAttempts] = useState<FixAttempt[]>([]);
@@ -184,7 +191,7 @@ export const Welcome = () => {
 
   const [activeStage, setActiveStage] = useState<Stage>(1);
   const [statusMessage, setStatusMessage] = useState(
-    "Follow the mission sequence: connect -> select -> generate -> run -> fix -> review.",
+    "Follow the mission sequence: connect -> select -> generate/update -> execute -> review.",
   );
 
   const isSignedIn = Boolean(authPrincipal);
@@ -221,7 +228,7 @@ export const Welcome = () => {
     3: Boolean(latestManifest),
     4: Boolean(latestPack),
     5: Boolean(latestRun),
-    6: fixAttempts.length > 0 || pullRequests.length > 0,
+    6: Boolean(latestRun),
   };
 
   const stageDone: Record<Stage, boolean> = {
@@ -229,7 +236,7 @@ export const Welcome = () => {
     2: Boolean(latestManifest),
     3: scenarioPacks.length > 0,
     4: scenarioRuns.length > 0,
-    5: fixAttempts.length > 0,
+    5: scenarioRuns.length > 0,
     6: Boolean(reviewBoard),
   };
 
@@ -1016,7 +1023,7 @@ export const Welcome = () => {
     );
   };
 
-  const handleGenerateScenarios = async () => {
+  const handleGenerateScenarios = async (mode: "initial" | "update") => {
     if (isGeneratingScenarios) {
       return;
     }
@@ -1027,12 +1034,21 @@ export const Welcome = () => {
     }
 
     setIsGeneratingScenarios(true);
-    setStatusMessage("Generating scenario pack via Codex app-server...");
+    setStatusMessage(
+      mode === "update"
+        ? "Updating scenario pack via Codex app-server..."
+        : "Generating scenario pack via Codex app-server...",
+    );
     try {
-      const response = await fetch(`/api/projects/${selectedProjectId}/scenario-packs`, {
+      const response = await fetch(`/api/projects/${selectedProjectId}/actions/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manifestId: latestManifest.id }),
+        body: JSON.stringify({
+          sourceManifestId: latestManifest.id,
+          mode,
+          userInstruction: scenarioUpdateInstruction.trim(),
+          scenarioPackId: selectedPack?.id ?? "",
+        }),
       });
 
       if (!response.ok) {
@@ -1040,11 +1056,13 @@ export const Welcome = () => {
         return;
       }
 
-      const payload = (await response.json()) as ScenarioPackCreatePayload;
+      const payload = (await response.json()) as ScenarioActionGeneratePayload;
       setScenarioPacks((current) => [payload.pack, ...current]);
       setSelectedScenarioPackId(payload.pack.id);
       setStatusMessage(
-        `Generated ${payload.pack.scenarios.length} scenarios grouped by feature and outcome.`,
+        `${
+          payload.mode === "update" ? "Updated" : "Generated"
+        } ${payload.pack.scenarios.length} scenarios grouped by feature and outcome.`,
       );
     } finally {
       setIsGeneratingScenarios(false);
@@ -1061,89 +1079,56 @@ export const Welcome = () => {
     window.open(target, "_blank", "noopener");
   };
 
-  const handleRunScenarios = async () => {
+  const handleExecuteScenarios = async () => {
+    if (isExecutingScenarios) {
+      return;
+    }
+
     if (!selectedProjectId || !selectedPack) {
       setStatusMessage("Generate and select a scenario pack first.");
       return;
     }
 
-    const response = await fetch(`/api/projects/${selectedProjectId}/scenario-runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        scenarioPackId: selectedPack.id,
-        scenarioIds: selectedPack.scenarios.map((scenario) => scenario.id),
-      }),
-    });
+    setIsExecutingScenarios(true);
+    setStatusMessage("Executing scenario loop through Codex app-server...");
+    try {
+      const response = await fetch(`/api/projects/${selectedProjectId}/actions/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenarioPackId: selectedPack.id,
+          executionMode: "full",
+          userInstruction: executeInstruction.trim(),
+        }),
+      });
 
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to run scenarios."));
-      return;
+      if (!response.ok) {
+        setStatusMessage(await readError(response, "Failed to execute scenario loop."));
+        return;
+      }
+
+      const payload = (await response.json()) as ScenarioActionExecutePayload;
+      setScenarioRuns((current) => [payload.run, ...current]);
+      if (payload.fixAttempt) {
+        setFixAttempts((current) => [payload.fixAttempt as FixAttempt, ...current]);
+      }
+      if (payload.pullRequests.length > 0) {
+        setPullRequests((current) => [...payload.pullRequests, ...current]);
+      }
+
+      setLiveEvents([]);
+      payload.run.events.forEach((event, index) => {
+        window.setTimeout(() => {
+          setLiveEvents((current) => [...current, event]);
+        }, index * 220);
+      });
+
+      setStatusMessage(
+        `Execute completed (${payload.executionMode}): ${payload.run.summary.passed} passed, ${payload.run.summary.failed} failed, ${payload.run.summary.blocked} blocked. Codex turn ${payload.executionAudit.threadId}/${payload.executionAudit.turnId}.`,
+      );
+    } finally {
+      setIsExecutingScenarios(false);
     }
-
-    const payload = (await response.json()) as ScenarioRunCreatePayload;
-    setScenarioRuns((current) => [payload.run, ...current]);
-    setLiveEvents([]);
-    payload.run.events.forEach((event, index) => {
-      window.setTimeout(() => {
-        setLiveEvents((current) => [...current, event]);
-      }, index * 220);
-    });
-    setStatusMessage(
-      `Run ${payload.run.id} completed: ${payload.run.summary.passed} passed, ${payload.run.summary.failed} failed, ${payload.run.summary.blocked} blocked.`,
-    );
-  };
-
-  const handleAutoFix = async () => {
-    if (!selectedProjectId || !latestRun) {
-      setStatusMessage("Run scenarios first.");
-      return;
-    }
-
-    const failedCount = latestRun.items.filter((item) => item.status === "failed").length;
-    if (failedCount === 0) {
-      setStatusMessage("No failed scenarios in latest run.");
-      return;
-    }
-
-    const response = await fetch(`/api/projects/${selectedProjectId}/fix-attempts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runId: latestRun.id }),
-    });
-
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to create fix attempt."));
-      return;
-    }
-
-    const payload = (await response.json()) as FixAttemptCreatePayload;
-    setFixAttempts((current) => [payload.fixAttempt, ...current]);
-    setStatusMessage(
-      `Fix attempt ${payload.fixAttempt.id} prepared for ${payload.fixAttempt.failedScenarioIds.length} failed scenarios.`,
-    );
-  };
-
-  const handleCreatePullRequest = async () => {
-    if (!selectedProjectId || !latestFixAttempt) {
-      setStatusMessage("Create a fix attempt first.");
-      return;
-    }
-
-    const response = await fetch(`/api/projects/${selectedProjectId}/pull-requests`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fixAttemptId: latestFixAttempt.id }),
-    });
-
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to create PR record."));
-      return;
-    }
-
-    const payload = (await response.json()) as PullRequestCreatePayload;
-    setPullRequests((current) => [payload.pullRequest, ...current]);
-    setStatusMessage(`PR record created: ${payload.pullRequest.title}`);
   };
 
   const handleRefreshReviewBoard = async () => {
@@ -1195,7 +1180,7 @@ export const Welcome = () => {
         <p className={styles.kicker}>ScenarioForge</p>
         <h1 className={styles.title}>Phase 2-6 Mission Control</h1>
         <p className={styles.subtitle}>
-          Linear execution loop: connect -&gt; select -&gt; generate -&gt; run -&gt; fix -&gt; review.
+          Intent loop: connect -&gt; select -&gt; generate/update -&gt; execute -&gt; review.
         </p>
       </section>
 
@@ -1237,7 +1222,7 @@ export const Welcome = () => {
             <section className={styles.section}>
               <h2>Stage 1: Connect Workspace</h2>
               <p className={styles.hint}>
-                Sign in, connect GitHub, create/select project, and initialize Codex session.
+                Sign in, connect GitHub, and create/select project.
               </p>
 
               {authPrincipal ? (
@@ -1536,16 +1521,35 @@ export const Welcome = () => {
             <section className={styles.section}>
               <h2>Stage 3: Generate Scenario Packs</h2>
               <p className={styles.hint}>
-                Build grouped scenarios by feature and user outcome from confirmed sources.
+                Build or update grouped scenarios by feature and user outcome from confirmed sources.
               </p>
 
-              <button
-                type="button"
-                onClick={handleGenerateScenarios}
-                disabled={!selectedProjectId || !latestManifest || isGeneratingScenarios}
-              >
-                {isGeneratingScenarios ? "Generating Scenarios..." : "Generate Scenarios"}
-              </button>
+              <div className={styles.inlineActions}>
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateScenarios("initial")}
+                  disabled={!selectedProjectId || !latestManifest || isGeneratingScenarios}
+                >
+                  {isGeneratingScenarios ? "Generating Scenarios..." : "Generate Scenarios"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => void handleGenerateScenarios("update")}
+                  disabled={!selectedProjectId || !latestManifest || isGeneratingScenarios}
+                >
+                  {isGeneratingScenarios ? "Updating..." : "Update Scenarios"}
+                </button>
+              </div>
+
+              <label className={styles.inlineLabel}>
+                Update instruction (optional)
+                <input
+                  value={scenarioUpdateInstruction}
+                  onChange={(event) => setScenarioUpdateInstruction(event.target.value)}
+                  placeholder="Example: add checkout edge cases and stale-doc conflict paths."
+                />
+              </label>
 
               <label className={styles.inlineLabel}>
                 Active scenario pack
@@ -1624,12 +1628,27 @@ export const Welcome = () => {
             <section className={styles.section}>
               <h2>Stage 4: Run Engine + Evidence</h2>
               <p className={styles.hint}>
-                Execute scenario sets and inspect status transitions with evidence artifacts.
+                Execute run/fix/pr loop through Codex and inspect status transitions with evidence artifacts.
               </p>
 
-              <button type="button" onClick={handleRunScenarios} disabled={!selectedPack}>
-                Run Selected Pack
-              </button>
+              <div className={styles.inlineActions}>
+                <button
+                  type="button"
+                  onClick={() => void handleExecuteScenarios()}
+                  disabled={!selectedPack || isExecutingScenarios}
+                >
+                  {isExecutingScenarios ? "Executing..." : "Execute Loop"}
+                </button>
+              </div>
+
+              <label className={styles.inlineLabel}>
+                Execute instruction (optional)
+                <input
+                  value={executeInstruction}
+                  onChange={(event) => setExecuteInstruction(event.target.value)}
+                  placeholder="Example: prioritize auth and source-selection regressions."
+                />
+              </label>
 
               {latestRun ? (
                 <>
@@ -1666,22 +1685,8 @@ export const Welcome = () => {
             <section className={styles.section}>
               <h2>Stage 5: Auto-Fix + PR Creation</h2>
               <p className={styles.hint}>
-                Convert failed scenarios into fix attempts and PR records with rerun evidence.
+                Execute loop output lands here: latest fix attempt and PR records tied to scenario evidence.
               </p>
-
-              <div className={styles.inlineActions}>
-                <button type="button" onClick={handleAutoFix} disabled={!latestRun}>
-                  Auto-Fix Failed Scenarios
-                </button>
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={handleCreatePullRequest}
-                  disabled={!latestFixAttempt}
-                >
-                  Create PR Record
-                </button>
-              </div>
 
               {latestFixAttempt ? (
                 <>
