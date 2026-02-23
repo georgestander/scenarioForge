@@ -17,6 +17,9 @@ const RPC_TIMEOUT_MS = Number(process.env.CODEX_AUTH_BRIDGE_RPC_TIMEOUT_MS || "1
 const TURN_COMPLETION_TIMEOUT_MS = Number(
   process.env.CODEX_AUTH_BRIDGE_TURN_TIMEOUT_MS || "180000",
 );
+const AGENT_MESSAGE_GRACE_MS = Number(
+  process.env.CODEX_AUTH_BRIDGE_AGENT_MESSAGE_GRACE_MS || "3000",
+);
 
 let requestId = 1;
 let isInitialized = false;
@@ -74,6 +77,33 @@ const sendNotification = (method, params = {}) => {
   });
 };
 
+const readString = (value) => (typeof value === "string" ? value.trim() : "");
+
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const isAgentMessageType = (value) => readString(value).toLowerCase() === "agentmessage";
+
+const extractMessageContentText = (content) => {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const chunks = content
+    .map((item) => {
+      if (typeof item?.text === "string") {
+        return item.text;
+      }
+
+      return "";
+    })
+    .filter(Boolean);
+
+  return chunks.join("").trim();
+};
+
 const captureTurnAgentMessage = (turnId, text) => {
   const normalizedTurnId = readString(turnId);
   const normalizedText = readString(text);
@@ -83,6 +113,38 @@ const captureTurnAgentMessage = (turnId, text) => {
   }
 
   turnAgentMessages.set(normalizedTurnId, normalizedText);
+};
+
+const appendTurnAgentMessageDelta = (turnId, delta) => {
+  const normalizedTurnId = readString(turnId);
+  if (!normalizedTurnId || typeof delta !== "string" || !delta.length) {
+    return;
+  }
+
+  const current = turnAgentMessages.get(normalizedTurnId) ?? "";
+  turnAgentMessages.set(normalizedTurnId, `${current}${delta}`);
+};
+
+const waitForTurnAgentMessage = async (
+  turnId,
+  timeoutMs = AGENT_MESSAGE_GRACE_MS,
+) => {
+  const normalizedTurnId = readString(turnId);
+  if (!normalizedTurnId) {
+    return "";
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const text = readString(turnAgentMessages.get(normalizedTurnId));
+    if (text) {
+      return text;
+    }
+
+    await sleep(75);
+  }
+
+  return readString(turnAgentMessages.get(normalizedTurnId));
 };
 
 const recordCompletedTurn = (turn) => {
@@ -173,8 +235,43 @@ const consumeNotification = (message) => {
 
   if (message.method === "item/completed") {
     const item = message.params?.item;
-    if (item?.type === "agentMessage") {
-      captureTurnAgentMessage(message.params?.turnId, item?.text);
+    if (isAgentMessageType(item?.type)) {
+      captureTurnAgentMessage(
+        message.params?.turnId,
+        item?.text ?? extractMessageContentText(item?.content),
+      );
+    }
+    return;
+  }
+
+  if (message.method === "item/agentMessage/delta") {
+    appendTurnAgentMessageDelta(message.params?.turnId, message.params?.delta);
+    return;
+  }
+
+  if (message.method === "codex/event/agent_message_delta") {
+    appendTurnAgentMessageDelta(
+      message.params?.msg?.turn_id ?? message.params?.id,
+      message.params?.msg?.delta,
+    );
+    return;
+  }
+
+  if (message.method === "codex/event/agent_message") {
+    captureTurnAgentMessage(
+      message.params?.msg?.turn_id ?? message.params?.id,
+      message.params?.msg?.message,
+    );
+    return;
+  }
+
+  if (message.method === "codex/event/item_completed") {
+    const item = message.params?.msg?.item;
+    if (isAgentMessageType(item?.type)) {
+      captureTurnAgentMessage(
+        message.params?.msg?.turn_id ?? message.params?.id,
+        extractMessageContentText(item?.content),
+      );
     }
     return;
   }
@@ -249,8 +346,6 @@ const sendError = (response, statusCode, error) => {
   sendJson(response, statusCode, { error });
 };
 
-const readString = (value) => (typeof value === "string" ? value.trim() : "");
-
 const parseTurnErrorMessage = (message) => {
   const raw = readString(message);
   if (!raw) {
@@ -324,9 +419,6 @@ const resolveModelId = async (requestedModel) => {
     requestedLower === "codex spark" || requestedLower === "spark"
       ? [
           "gpt-5.3-codex-spark",
-          "gpt-5.2-codex-spark",
-          "gpt-5.1-codex-spark",
-          "gpt-5-codex-spark",
         ]
       : [];
 
@@ -444,8 +536,18 @@ const extractAgentMessageText = (items) => {
   let finalText = "";
 
   items.forEach((item) => {
-    if (item?.type === "agentMessage" && typeof item?.text === "string") {
+    if (!isAgentMessageType(item?.type)) {
+      return;
+    }
+
+    if (typeof item?.text === "string") {
       finalText = item.text;
+      return;
+    }
+
+    const contentText = extractMessageContentText(item?.content);
+    if (contentText) {
+      finalText = contentText;
     }
   });
 
@@ -560,9 +662,13 @@ const runScenarioGenerationTurn = async (body) => {
 
     const turnStatus = readString(finalTurn?.status) || "completed";
     const turnErrorMessage = parseTurnErrorMessage(finalTurn?.error?.message);
-    const responseText =
+    let responseText =
       readString(turnAgentMessages.get(turnId)) ||
       extractAgentMessageText(finalTurn?.items ?? []);
+
+    if (!responseText) {
+      responseText = await waitForTurnAgentMessage(turnId);
+    }
 
     if (turnStatus === "failed") {
       throw new Error(
