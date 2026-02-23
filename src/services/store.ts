@@ -254,14 +254,14 @@ export const getGitHubConnectionForPrincipal = (
 
 export const disconnectGitHubConnectionForPrincipal = (
   principalId: string,
-): void => {
+): GitHubConnection | null => {
   const state = getState();
   const existing = state.githubConnections.find(
     (connection) => connection.principalId === principalId,
   );
 
   if (!existing) {
-    return;
+    return null;
   }
 
   existing.status = "disconnected";
@@ -269,6 +269,7 @@ export const disconnectGitHubConnectionForPrincipal = (
   existing.accessTokenExpiresAt = null;
   existing.repositories = [];
   existing.updatedAt = nowIso();
+  return existing;
 };
 
 interface UpsertProjectSourcesInput {
@@ -704,6 +705,7 @@ interface HydrateCoreStateInput {
   principals: AuthPrincipal[];
   projects: Project[];
   sessions: CodexSession[];
+  githubConnections?: GitHubConnection[];
 }
 
 export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
@@ -717,5 +719,21 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
 
   input.sessions.forEach((session) => {
     upsertCodexSessionRecord(session);
+  });
+
+  (input.githubConnections ?? []).forEach((connection) => {
+    const state = getState();
+    const existingIndex = state.githubConnections.findIndex(
+      (candidate) =>
+        candidate.id === connection.id ||
+        candidate.principalId === connection.principalId,
+    );
+
+    if (existingIndex === -1) {
+      state.githubConnections.push(connection);
+      return;
+    }
+
+    state.githubConnections[existingIndex] = connection;
   });
 };
