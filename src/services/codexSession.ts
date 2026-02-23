@@ -1,7 +1,8 @@
 import type { CodexSession, JsonRpcRequest } from "@/domain/models";
-import { createCodexSession, getProjectById } from "@/services/store";
+import { createCodexSession, getProjectByIdForOwner } from "@/services/store";
 
 interface StartCodexSessionInput {
+  ownerId: string;
   projectId: string;
 }
 
@@ -30,13 +31,14 @@ const buildThreadStartRequest = (): JsonRpcRequest => ({
 export const startCodexSession = (
   input: StartCodexSessionInput,
 ): CodexSession => {
-  const project = getProjectById(input.projectId);
+  const project = getProjectByIdForOwner(input.projectId, input.ownerId);
 
   if (!project) {
     throw new Error("Project not found.");
   }
 
   return createCodexSession({
+    ownerId: input.ownerId,
     projectId: project.id,
     status: "initialized",
     transport: "skeleton",

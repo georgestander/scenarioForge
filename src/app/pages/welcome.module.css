@@ -120,6 +120,18 @@ body {
   margin: 0 0 0.7rem;
 }
 
+.section {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.hint {
+  margin: 0;
+  color: var(--forge-muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
 .form {
   display: grid;
   gap: 0.55rem;
@@ -156,6 +168,21 @@ button {
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.inlineActions {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.linkRow {
+  margin: 0.1rem 0 0.25rem;
+}
+
+.linkRow a {
+  color: var(--forge-hot);
+  text-decoration: underline;
 }
 
 .separator {
@@ -196,6 +223,10 @@ button:disabled {
   }
 
   .contentGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .inlineActions {
     grid-template-columns: 1fr;
   }
 }

@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { CodexSession, Project } from "@/domain/models";
+import type {
+  AuthPrincipal,
+  CodexSession,
+  GitHubRepository,
+  Project,
+} from "@/domain/models";
 import styles from "./welcome.module.css";
 
 interface ProjectPayload {
@@ -12,11 +17,42 @@ interface SessionPayload {
   data: CodexSession[];
 }
 
+interface AuthSessionPayload {
+  authenticated: boolean;
+  principal: AuthPrincipal | null;
+}
+
+interface GitHubConnectionView {
+  id: string;
+  principalId: string;
+  provider: "github_app";
+  status: "connected" | "disconnected";
+  accountLogin: string | null;
+  installationId: number;
+  accessTokenExpiresAt: string | null;
+  repositories: GitHubRepository[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface GitHubConnectionPayload {
+  connection: GitHubConnectionView | null;
+}
+
+interface GitHubReposPayload {
+  data: GitHubRepository[];
+}
+
+interface GitHubInstallPayload {
+  state: string;
+  installUrl: string;
+}
+
 const pillars = [
+  "Sign in with ChatGPT and scope every action to the current owner.",
+  "Connect a GitHub App installation and pull repositories for selection.",
   "Select trusted sources before generation (PRD/specs/plans/code).",
-  "Generate scenario packs grouped by feature and user outcome.",
-  "Run scenarios with live progress, evidence, and traceable pass/fail criteria.",
-  "Auto-fix failures with Codex and open review-ready pull requests.",
+  "Generate, run, auto-fix, and review with evidence-linked scenario traces.",
 ];
 
 const initialProjectForm = {
@@ -25,13 +61,38 @@ const initialProjectForm = {
   defaultBranch: "main",
 };
 
+const initialSignInForm = {
+  displayName: "",
+  email: "",
+};
+
+const readError = async (
+  response: Response,
+  fallbackMessage: string,
+): Promise<string> => {
+  try {
+    const payload = (await response.json()) as { error?: string };
+    return payload.error ?? fallbackMessage;
+  } catch {
+    return fallbackMessage;
+  }
+};
+
 export const Welcome = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<CodexSession[]>([]);
+  const [authPrincipal, setAuthPrincipal] = useState<AuthPrincipal | null>(null);
   const [projectForm, setProjectForm] = useState(initialProjectForm);
+  const [signInForm, setSignInForm] = useState(initialSignInForm);
   const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [githubConnection, setGithubConnection] =
+    useState<GitHubConnectionView | null>(null);
+  const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
+  const [selectedRepoId, setSelectedRepoId] = useState("");
+  const [githubInstallationId, setGithubInstallationId] = useState("");
+  const [githubInstallUrl, setGithubInstallUrl] = useState("");
   const [statusMessage, setStatusMessage] = useState(
-    "Phase 0 ready: create a project to bootstrap Codex session scaffolding.",
+    "Phase 1 ready: sign in, connect GitHub App, then create owned projects and sessions.",
   );
 
   const activeProject = useMemo(
@@ -42,19 +103,82 @@ export const Welcome = () => {
   const lastSession = sessions[0] ?? null;
 
   const loadData = async () => {
-    const [projectsRes, sessionsRes] = await Promise.all([
-      fetch("/api/projects"),
-      fetch("/api/codex/sessions"),
-    ]);
+    const authRes = await fetch("/api/auth/session");
 
-    const projectsJson = (await projectsRes.json()) as ProjectPayload;
-    const sessionsJson = (await sessionsRes.json()) as SessionPayload;
+    if (!authRes.ok) {
+      setStatusMessage("Unable to load auth session status.");
+      return;
+    }
 
-    setProjects(projectsJson.data || []);
-    setSessions(sessionsJson.data || []);
+    const authJson = (await authRes.json()) as AuthSessionPayload;
+    const principal = authJson.principal ?? null;
 
-    if (!selectedProjectId && projectsJson.data?.length) {
-      setSelectedProjectId(projectsJson.data[0].id);
+    setAuthPrincipal(principal);
+
+    if (!authJson.authenticated || !principal) {
+      setProjects([]);
+      setSessions([]);
+      setGithubConnection(null);
+      setGithubRepos([]);
+      setSelectedProjectId("");
+      setSelectedRepoId("");
+      return;
+    }
+
+    const [projectsRes, sessionsRes, githubConnectionRes, githubReposRes] =
+      await Promise.all([
+        fetch("/api/projects"),
+        fetch("/api/codex/sessions"),
+        fetch("/api/github/connection"),
+        fetch("/api/github/repos"),
+      ]);
+
+    if (projectsRes.ok) {
+      const projectsJson = (await projectsRes.json()) as ProjectPayload;
+      const projectData = projectsJson.data || [];
+      setProjects(projectData);
+
+      setSelectedProjectId((current) => {
+        if (current && projectData.some((project) => project.id === current)) {
+          return current;
+        }
+
+        return projectData[0]?.id ?? "";
+      });
+    } else {
+      setProjects([]);
+      setSelectedProjectId("");
+    }
+
+    if (sessionsRes.ok) {
+      const sessionsJson = (await sessionsRes.json()) as SessionPayload;
+      setSessions(sessionsJson.data || []);
+    } else {
+      setSessions([]);
+    }
+
+    if (githubConnectionRes.ok) {
+      const githubConnectionJson =
+        (await githubConnectionRes.json()) as GitHubConnectionPayload;
+      setGithubConnection(githubConnectionJson.connection ?? null);
+    } else {
+      setGithubConnection(null);
+    }
+
+    if (githubReposRes.ok) {
+      const githubReposJson = (await githubReposRes.json()) as GitHubReposPayload;
+      const repos = githubReposJson.data ?? [];
+      setGithubRepos(repos);
+      setSelectedRepoId((current) => {
+        if (current && repos.some((repo) => String(repo.id) === current)) {
+          return current;
+        }
+
+        return "";
+      });
+    } else {
+      setGithubRepos([]);
+      setSelectedRepoId("");
     }
   };
 
@@ -62,8 +186,126 @@ export const Welcome = () => {
     void loadData();
   }, []);
 
+  const handleSignIn = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const response = await fetch("/api/auth/chatgpt/sign-in", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(signInForm),
+    });
+
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to sign in."));
+      return;
+    }
+
+    setSignInForm(initialSignInForm);
+    await loadData();
+    setStatusMessage("ChatGPT sign-in complete.");
+  };
+
+  const handleSignOut = async () => {
+    const response = await fetch("/api/auth/sign-out", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to sign out."));
+      return;
+    }
+
+    setProjectForm(initialProjectForm);
+    setGithubInstallationId("");
+    setGithubInstallUrl("");
+    await loadData();
+    setStatusMessage("Signed out.");
+  };
+
+  const handleBuildInstallUrl = async () => {
+    const response = await fetch("/api/github/connect/start");
+
+    if (!response.ok) {
+      setStatusMessage(
+        await readError(response, "Failed to prepare GitHub installation URL."),
+      );
+      return;
+    }
+
+    const payload = (await response.json()) as GitHubInstallPayload;
+    setGithubInstallUrl(payload.installUrl);
+    setStatusMessage("GitHub installation URL generated.");
+  };
+
+  const handleConnectGitHub = async () => {
+    const installationId = Number(githubInstallationId);
+
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      setStatusMessage("Installation ID must be a positive integer.");
+      return;
+    }
+
+    const response = await fetch("/api/github/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ installationId }),
+    });
+
+    if (!response.ok) {
+      setStatusMessage(
+        await readError(response, "Failed to connect GitHub installation."),
+      );
+      return;
+    }
+
+    await loadData();
+    setStatusMessage("GitHub App connected.");
+  };
+
+  const handleDisconnectGitHub = async () => {
+    const response = await fetch("/api/github/disconnect", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      setStatusMessage(
+        await readError(response, "Failed to disconnect GitHub installation."),
+      );
+      return;
+    }
+
+    await loadData();
+    setStatusMessage("GitHub App disconnected.");
+  };
+
+  const handleRepoSelect = (repoId: string) => {
+    setSelectedRepoId(repoId);
+
+    const selectedRepo = githubRepos.find((repo) => String(repo.id) === repoId);
+
+    if (!selectedRepo) {
+      return;
+    }
+
+    setProjectForm((current) => ({
+      ...current,
+      name: current.name || selectedRepo.name,
+      repoUrl: selectedRepo.url,
+      defaultBranch: selectedRepo.defaultBranch || "main",
+    }));
+  };
+
   const handleProjectCreate = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    if (!authPrincipal) {
+      setStatusMessage("Sign in with ChatGPT before creating a project.");
+      return;
+    }
 
     if (!projectForm.name.trim()) {
       setStatusMessage("Project name is required.");
@@ -79,7 +321,7 @@ export const Welcome = () => {
     });
 
     if (!response.ok) {
-      setStatusMessage("Failed to create project.");
+      setStatusMessage(await readError(response, "Failed to create project."));
       return;
     }
 
@@ -92,6 +334,11 @@ export const Welcome = () => {
   };
 
   const handleStartSession = async () => {
+    if (!authPrincipal) {
+      setStatusMessage("Sign in with ChatGPT before starting a session.");
+      return;
+    }
+
     if (!selectedProjectId) {
       setStatusMessage("Select a project first.");
       return;
@@ -106,7 +353,7 @@ export const Welcome = () => {
     });
 
     if (!response.ok) {
-      setStatusMessage("Failed to start Codex session.");
+      setStatusMessage(await readError(response, "Failed to start Codex session."));
       return;
     }
 
@@ -120,7 +367,8 @@ export const Welcome = () => {
         <p className={styles.kicker}>Codex Challenge Build</p>
         <h1 className={styles.title}>ScenarioForge</h1>
         <p className={styles.subtitle}>
-          Scenario-first collaboration platform with a live project shell for Phase 0.
+          Scenario-first collaboration platform with Phase 1 auth, ownership, and
+          GitHub App connect scaffolding.
         </p>
       </section>
 
@@ -143,87 +391,206 @@ export const Welcome = () => {
         </article>
 
         <article className={styles.panel}>
-          <h2>Phase 0 Shell</h2>
+          <h2>Phase 1 Shell</h2>
           <p className={styles.status}>{statusMessage}</p>
 
-          <form className={styles.form} onSubmit={handleProjectCreate}>
-            <label>
-              Project name
-              <input
-                value={projectForm.name}
-                onChange={(event) =>
-                  setProjectForm((current) => ({
-                    ...current,
-                    name: event.target.value,
-                  }))
-                }
-                placeholder="ScenarioForge"
-              />
-            </label>
+          <section className={styles.section}>
+            <h3>1. ChatGPT Sign-in</h3>
+            {authPrincipal ? (
+              <>
+                <p className={styles.hint}>
+                  Signed in as <strong>{authPrincipal.displayName}</strong>
+                  {authPrincipal.email ? ` (${authPrincipal.email})` : ""}
+                </p>
+                <button onClick={handleSignOut}>Sign Out</button>
+              </>
+            ) : (
+              <form className={styles.form} onSubmit={handleSignIn}>
+                <label>
+                  Display name
+                  <input
+                    value={signInForm.displayName}
+                    onChange={(event) =>
+                      setSignInForm((current) => ({
+                        ...current,
+                        displayName: event.target.value,
+                      }))
+                    }
+                    placeholder="ScenarioForge Builder"
+                  />
+                </label>
 
-            <label>
-              Repo URL
-              <input
-                value={projectForm.repoUrl}
-                onChange={(event) =>
-                  setProjectForm((current) => ({
-                    ...current,
-                    repoUrl: event.target.value,
-                  }))
-                }
-                placeholder="https://github.com/org/repo"
-              />
-            </label>
+                <label>
+                  Email (optional)
+                  <input
+                    value={signInForm.email}
+                    onChange={(event) =>
+                      setSignInForm((current) => ({
+                        ...current,
+                        email: event.target.value,
+                      }))
+                    }
+                    placeholder="builder@example.com"
+                  />
+                </label>
 
-            <label>
-              Default branch
-              <input
-                value={projectForm.defaultBranch}
-                onChange={(event) =>
-                  setProjectForm((current) => ({
-                    ...current,
-                    defaultBranch: event.target.value,
-                  }))
-                }
-                placeholder="main"
-              />
-            </label>
-
-            <button type="submit">Create Project</button>
-          </form>
+                <button type="submit">Sign In With ChatGPT</button>
+              </form>
+            )}
+          </section>
 
           <div className={styles.separator} />
 
-          <label className={styles.inlineLabel}>
-            Active project
-            <select
-              value={selectedProjectId}
-              onChange={(event) => setSelectedProjectId(event.target.value)}
-            >
-              <option value="">Select a project</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <section className={styles.section}>
+            <h3>2. GitHub App Connection</h3>
+            {!authPrincipal ? (
+              <p className={styles.hint}>Sign in first to connect GitHub.</p>
+            ) : (
+              <>
+                <p className={styles.hint}>
+                  {githubConnection
+                    ? `Connected installation #${githubConnection.installationId}${
+                        githubConnection.accountLogin
+                          ? ` for ${githubConnection.accountLogin}`
+                          : ""
+                      }.`
+                    : "No GitHub installation connected yet."}
+                </p>
 
-          <button onClick={handleStartSession} disabled={!selectedProjectId}>
-            Initialize Codex Session
-          </button>
+                <div className={styles.inlineActions}>
+                  <button onClick={handleBuildInstallUrl}>Get Install URL</button>
+                  {githubConnection ? (
+                    <button onClick={handleDisconnectGitHub}>Disconnect</button>
+                  ) : null}
+                </div>
 
-          <div className={styles.metaList}>
-            <p>
-              <strong>Projects:</strong> {projects.length}
-            </p>
-            <p>
-              <strong>Sessions:</strong> {sessions.length}
-            </p>
-            <p>
-              <strong>Selected:</strong> {activeProject?.name ?? "None"}
-            </p>
-          </div>
+                {githubInstallUrl ? (
+                  <p className={styles.linkRow}>
+                    <a href={githubInstallUrl} target="_blank" rel="noreferrer">
+                      Open GitHub App installation flow
+                    </a>
+                  </p>
+                ) : null}
+
+                <label>
+                  Installation ID
+                  <input
+                    value={githubInstallationId}
+                    onChange={(event) => setGithubInstallationId(event.target.value)}
+                    placeholder="12345678"
+                  />
+                </label>
+
+                <button onClick={handleConnectGitHub}>Connect Installation</button>
+
+                <label className={styles.inlineLabel}>
+                  Repository selection
+                  <select
+                    value={selectedRepoId}
+                    onChange={(event) => handleRepoSelect(event.target.value)}
+                  >
+                    <option value="">Select a repository</option>
+                    {githubRepos.map((repo) => (
+                      <option key={repo.id} value={String(repo.id)}>
+                        {repo.fullName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+          </section>
+
+          <div className={styles.separator} />
+
+          <section className={styles.section}>
+            <h3>3. Owned Project + Codex Session</h3>
+            <form className={styles.form} onSubmit={handleProjectCreate}>
+              <label>
+                Project name
+                <input
+                  value={projectForm.name}
+                  onChange={(event) =>
+                    setProjectForm((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="ScenarioForge"
+                  disabled={!authPrincipal}
+                />
+              </label>
+
+              <label>
+                Repo URL
+                <input
+                  value={projectForm.repoUrl}
+                  onChange={(event) =>
+                    setProjectForm((current) => ({
+                      ...current,
+                      repoUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="https://github.com/org/repo"
+                  disabled={!authPrincipal}
+                />
+              </label>
+
+              <label>
+                Default branch
+                <input
+                  value={projectForm.defaultBranch}
+                  onChange={(event) =>
+                    setProjectForm((current) => ({
+                      ...current,
+                      defaultBranch: event.target.value,
+                    }))
+                  }
+                  placeholder="main"
+                  disabled={!authPrincipal}
+                />
+              </label>
+
+              <button type="submit" disabled={!authPrincipal}>
+                Create Project
+              </button>
+            </form>
+
+            <label className={styles.inlineLabel}>
+              Active project
+              <select
+                value={selectedProjectId}
+                onChange={(event) => setSelectedProjectId(event.target.value)}
+                disabled={!authPrincipal}
+              >
+                <option value="">Select a project</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button onClick={handleStartSession} disabled={!selectedProjectId}>
+              Initialize Codex Session
+            </button>
+
+            <div className={styles.metaList}>
+              <p>
+                <strong>Owner:</strong> {authPrincipal?.displayName ?? "None"}
+              </p>
+              <p>
+                <strong>Projects:</strong> {projects.length}
+              </p>
+              <p>
+                <strong>Sessions:</strong> {sessions.length}
+              </p>
+              <p>
+                <strong>Selected:</strong> {activeProject?.name ?? "None"}
+              </p>
+            </div>
+          </section>
 
           {lastSession ? (
             <div className={styles.codeGroup}>
