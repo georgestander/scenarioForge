@@ -18,7 +18,7 @@ const TURN_COMPLETION_TIMEOUT_MS = Number(
   process.env.CODEX_AUTH_BRIDGE_TURN_TIMEOUT_MS || "180000",
 );
 const AGENT_MESSAGE_GRACE_MS = Number(
-  process.env.CODEX_AUTH_BRIDGE_AGENT_MESSAGE_GRACE_MS || "3000",
+  process.env.CODEX_AUTH_BRIDGE_AGENT_MESSAGE_GRACE_MS || "15000",
 );
 
 let requestId = 1;
@@ -649,25 +649,29 @@ const runScenarioGenerationTurn = async (body) => {
       completedTurn = null;
     }
 
-    let finalTurn = completedTurn;
+    let readTurn = null;
     try {
       const threadRead = await sendRpc("thread/read", {
         threadId,
         includeTurns: true,
       });
-      const readTurn = extractTurnFromThreadRead(threadRead, turnId);
-      if (readTurn) {
-        finalTurn = readTurn;
-      }
+      readTurn = extractTurnFromThreadRead(threadRead, turnId);
     } catch {
       // Keep notification-derived turn if thread/read is unavailable.
     }
 
-    const turnStatus = readString(finalTurn?.status) || "completed";
-    const turnErrorMessage = parseTurnErrorMessage(finalTurn?.error?.message);
+    const completedStatus = readString(completedTurn?.status);
+    const readStatus = readString(readTurn?.status);
+    const turnStatus =
+      completedStatus === "failed" || readStatus === "failed"
+        ? "failed"
+        : completedStatus || readStatus || "completed";
+    const turnErrorMessage =
+      parseTurnErrorMessage(completedTurn?.error?.message) ||
+      parseTurnErrorMessage(readTurn?.error?.message);
     let responseText =
       readString(turnAgentMessages.get(turnId)) ||
-      extractAgentMessageText(finalTurn?.items ?? []);
+      extractAgentMessageText(readTurn?.items ?? completedTurn?.items ?? []);
 
     if (!responseText) {
       responseText = await waitForTurnAgentMessage(turnId);

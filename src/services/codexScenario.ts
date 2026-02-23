@@ -218,9 +218,6 @@ export const SCENARIO_OUTPUT_SCHEMA = {
   additionalProperties: false,
   required: ["scenarios", "groupedByFeature", "groupedByOutcome"],
   properties: {
-    summary: {
-      type: "string",
-    },
     scenarios: {
       type: "array",
       minItems: 8,
@@ -281,17 +278,37 @@ export const SCENARIO_OUTPUT_SCHEMA = {
       },
     },
     groupedByFeature: {
-      type: "object",
-      additionalProperties: {
-        type: "array",
-        items: { type: "string" },
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["feature", "scenarioIds"],
+        properties: {
+          feature: { type: "string" },
+          scenarioIds: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string" },
+          },
+        },
       },
     },
     groupedByOutcome: {
-      type: "object",
-      additionalProperties: {
-        type: "array",
-        items: { type: "string" },
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["outcome", "scenarioIds"],
+        properties: {
+          outcome: { type: "string" },
+          scenarioIds: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string" },
+          },
+        },
       },
     },
   },
@@ -316,6 +333,8 @@ const buildScenarioPrompt = (
     "- Scenario quality bar must align to the $scenario skill: realistic journeys, edge variants, binary pass criteria, and evidence-ready checkpoints.",
     `- Generate approximately ${scenarioCount} scenarios.`,
     "- Group scenarios by both feature and user outcome.",
+    "- groupedByFeature must be an array of objects: { feature, scenarioIds[] }.",
+    "- groupedByOutcome must be an array of objects: { outcome, scenarioIds[] }.",
     "- If source docs conflict with current code behavior, preserve current behavior and encode the conflict as edge variants/checkpoints.",
     "- Return final output directly as JSON response text.",
     "- Do not call apply_patch or write files.",

@@ -175,6 +175,8 @@ export const Welcome = () => {
 
   const [scenarioPacks, setScenarioPacks] = useState<ScenarioPack[]>([]);
   const [selectedScenarioPackId, setSelectedScenarioPackId] = useState("");
+  const [isScanningSources, setIsScanningSources] = useState(false);
+  const [isGeneratingScenarios, setIsGeneratingScenarios] = useState(false);
   const [scenarioRuns, setScenarioRuns] = useState<ScenarioRun[]>([]);
   const [liveEvents, setLiveEvents] = useState<ScenarioRun["events"]>([]);
   const [fixAttempts, setFixAttempts] = useState<FixAttempt[]>([]);
@@ -957,27 +959,37 @@ export const Welcome = () => {
   };
 
   const handleScanSources = async () => {
+    if (isScanningSources) {
+      return;
+    }
+
     if (!selectedProjectId) {
       setStatusMessage("Create or select a project first.");
       return;
     }
 
-    const response = await fetch(`/api/projects/${selectedProjectId}/sources/scan`, {
-      method: "POST",
-    });
+    setIsScanningSources(true);
+    setStatusMessage("Scanning repository for planning sources...");
+    try {
+      const response = await fetch(`/api/projects/${selectedProjectId}/sources/scan`, {
+        method: "POST",
+      });
 
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to scan sources."));
-      return;
+      if (!response.ok) {
+        setStatusMessage(await readError(response, "Failed to scan sources."));
+        return;
+      }
+
+      const payload = (await response.json()) as CollectionPayload<SourceRecord>;
+      const scanned = payload.data ?? [];
+      setSources(scanned);
+      setSelectedSourceIds(
+        scanned.filter((source) => source.selected).map((source) => source.id),
+      );
+      setStatusMessage(`Scanned ${scanned.length} sources. Review trust statuses.`);
+    } finally {
+      setIsScanningSources(false);
     }
-
-    const payload = (await response.json()) as CollectionPayload<SourceRecord>;
-    const scanned = payload.data ?? [];
-    setSources(scanned);
-    setSelectedSourceIds(
-      scanned.filter((source) => source.selected).map((source) => source.id),
-    );
-    setStatusMessage(`Scanned ${scanned.length} sources. Review trust statuses.`);
   };
 
   const handleToggleSource = (sourceId: string) => {
@@ -1038,28 +1050,38 @@ export const Welcome = () => {
   };
 
   const handleGenerateScenarios = async () => {
+    if (isGeneratingScenarios) {
+      return;
+    }
+
     if (!selectedProjectId || !latestManifest) {
       setStatusMessage("Confirm source manifest before generation.");
       return;
     }
 
-    const response = await fetch(`/api/projects/${selectedProjectId}/scenario-packs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ manifestId: latestManifest.id }),
-    });
+    setIsGeneratingScenarios(true);
+    setStatusMessage("Generating scenario pack via Codex app-server...");
+    try {
+      const response = await fetch(`/api/projects/${selectedProjectId}/scenario-packs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manifestId: latestManifest.id }),
+      });
 
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to generate scenarios."));
-      return;
+      if (!response.ok) {
+        setStatusMessage(await readError(response, "Failed to generate scenarios."));
+        return;
+      }
+
+      const payload = (await response.json()) as ScenarioPackCreatePayload;
+      setScenarioPacks((current) => [payload.pack, ...current]);
+      setSelectedScenarioPackId(payload.pack.id);
+      setStatusMessage(
+        `Generated ${payload.pack.scenarios.length} scenarios grouped by feature and outcome.`,
+      );
+    } finally {
+      setIsGeneratingScenarios(false);
     }
-
-    const payload = (await response.json()) as ScenarioPackCreatePayload;
-    setScenarioPacks((current) => [payload.pack, ...current]);
-    setSelectedScenarioPackId(payload.pack.id);
-    setStatusMessage(
-      `Generated ${payload.pack.scenarios.length} scenarios grouped by feature and outcome.`,
-    );
   };
 
   const handleDownloadScenarioArtifact = (format: "markdown" | "json") => {
@@ -1474,8 +1496,12 @@ export const Welcome = () => {
               </p>
 
               <div className={styles.inlineActions}>
-                <button type="button" onClick={handleScanSources} disabled={!selectedProjectId}>
-                  Scan Sources
+                <button
+                  type="button"
+                  onClick={handleScanSources}
+                  disabled={!selectedProjectId || isScanningSources}
+                >
+                  {isScanningSources ? "Scanning Sources..." : "Scan Sources"}
                 </button>
                 <button
                   type="button"
@@ -1552,9 +1578,9 @@ export const Welcome = () => {
               <button
                 type="button"
                 onClick={handleGenerateScenarios}
-                disabled={!selectedProjectId || !latestManifest}
+                disabled={!selectedProjectId || !latestManifest || isGeneratingScenarios}
               >
-                Generate Scenarios
+                {isGeneratingScenarios ? "Generating Scenarios..." : "Generate Scenarios"}
               </button>
 
               <label className={styles.inlineLabel}>

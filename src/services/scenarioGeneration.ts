@@ -156,12 +156,33 @@ const normalizeScenarios = (value: unknown): ScenarioContract[] => {
 const normalizeGroupMap = (
   value: unknown,
   mapName: string,
+  groupKeyField: "feature" | "outcome",
 ): Record<string, string[]> => {
+  const output: Record<string, string[]> = {};
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      if (!isRecord(entry)) {
+        return;
+      }
+
+      const groupKey =
+        typeof entry[groupKeyField] === "string" ? entry[groupKeyField].trim() : "";
+      const ids = Array.isArray(entry.scenarioIds) ? entry.scenarioIds : [];
+      const normalizedIds = ids
+        .map((id) => (typeof id === "string" ? id.trim() : ""))
+        .filter((id) => id.length > 0);
+
+      if (groupKey && normalizedIds.length > 0) {
+        output[groupKey] = normalizedIds;
+      }
+    });
+    return output;
+  }
+
   if (!isRecord(value)) {
     return {};
   }
-
-  const output: Record<string, string[]> = {};
 
   Object.entries(value).forEach(([groupKey, ids]) => {
     if (!Array.isArray(ids)) {
@@ -177,15 +198,11 @@ const normalizeGroupMap = (
     }
   });
 
-  if (Object.keys(output).length === 0 && isRecord(value)) {
-    return {};
+  if (Object.keys(output).length > 0) {
+    return output;
   }
 
-  if (!isRecord(output)) {
-    throw new Error(`Invalid scenario output: ${mapName} must map group names to id arrays.`);
-  }
-
-  return output;
+  return {};
 };
 
 const deriveGroupsFromScenarios = (
@@ -228,10 +245,12 @@ const parseScenarioOutput = (rawOutput: unknown): ParsedScenarioOutput => {
   const generatedGroupsByFeature = normalizeGroupMap(
     container.groupedByFeature,
     "groupedByFeature",
+    "feature",
   );
   const generatedGroupsByOutcome = normalizeGroupMap(
     container.groupedByOutcome,
     "groupedByOutcome",
+    "outcome",
   );
   const derivedGroups = deriveGroupsFromScenarios(scenarios);
 
