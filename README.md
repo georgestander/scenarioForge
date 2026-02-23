@@ -1,6 +1,6 @@
 # ScenarioForge
 
-![ScenarioForge Cover](public/scenario-forge.png)
+![ScenarioForge Cover](public/scenarioForge.png)
 
 Scenario-first collaboration platform for builders who want concrete, real-world quality checks instead of abstract test noise.
 

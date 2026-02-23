@@ -127,7 +127,7 @@ export const Welcome = () => {
       <section className={styles.visualCard}>
         <img
           className={styles.heroImage}
-          src="/scenario-forge.png"
+          src="/scenarioForge.png"
           alt="ScenarioForge brand art showing a forge"
         />
       </section>

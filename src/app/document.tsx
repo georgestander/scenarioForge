@@ -18,7 +18,7 @@ export const Document: React.FC<{ children: React.ReactNode }> = ({
         property="og:description"
         content="Generate realistic scenarios, run them, auto-fix failures with Codex, and ship review-ready pull requests."
       />
-      <meta property="og:image" content="/scenario-forge.png" />
+      <meta property="og:image" content="/scenarioForge.png" />
       <meta property="og:type" content="website" />
       <meta name="twitter:card" content="summary_large_image" />
       <meta
@@ -29,7 +29,7 @@ export const Document: React.FC<{ children: React.ReactNode }> = ({
         name="twitter:description"
         content="Generate realistic scenarios, run them, auto-fix failures with Codex, and ship review-ready pull requests."
       />
-      <meta name="twitter:image" content="/scenario-forge.png" />
+      <meta name="twitter:image" content="/scenarioForge.png" />
       <link rel="modulepreload" href="/src/client.tsx" />
     </head>
     <body>
