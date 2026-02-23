@@ -19,7 +19,9 @@
     "release": "rw-scripts ensure-deploy-env && npm run clean && npm run build && wrangler deploy",
     "generate": "rw-scripts ensure-env && wrangler types --include-runtime false",
     "check": "npm run generate && npm run types",
-    "types": "tsc"
+    "types": "tsc",
+    "test:unit": "node --import ./tests/register-alias.mjs --experimental-strip-types --test tests/unit/*.test.ts",
+    "test:regression": "node --import ./tests/register-alias.mjs --experimental-strip-types --test tests/regression/*.test.ts"
   },
   "dependencies": {
     "react": "19.2.4",
