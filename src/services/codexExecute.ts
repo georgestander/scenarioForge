@@ -94,12 +94,12 @@ const formatScenarioSummary = (pack: ScenarioPack): string =>
 
 export const EXECUTE_OUTPUT_SCHEMA = {
   type: "object",
-  additionalProperties: true,
+  additionalProperties: false,
   required: ["run"],
   properties: {
     run: {
       type: "object",
-      additionalProperties: true,
+      additionalProperties: false,
       required: ["items", "summary"],
       properties: {
         status: { type: "string" },
@@ -108,7 +108,7 @@ export const EXECUTE_OUTPUT_SCHEMA = {
           minItems: 1,
           items: {
             type: "object",
-            additionalProperties: true,
+            additionalProperties: false,
             required: ["scenarioId", "status", "observed", "expected"],
             properties: {
               scenarioId: { type: "string" },
@@ -123,7 +123,7 @@ export const EXECUTE_OUTPUT_SCHEMA = {
                 type: "array",
                 items: {
                   type: "object",
-                  additionalProperties: true,
+                  additionalProperties: false,
                   required: ["kind", "label", "value"],
                   properties: {
                     kind: { type: "string" },
@@ -137,7 +137,7 @@ export const EXECUTE_OUTPUT_SCHEMA = {
         },
         summary: {
           type: "object",
-          additionalProperties: true,
+          additionalProperties: false,
           required: ["passed", "failed", "blocked"],
           properties: {
             passed: { type: "number" },
@@ -149,13 +149,50 @@ export const EXECUTE_OUTPUT_SCHEMA = {
     },
     fixAttempt: {
       type: ["object", "null"],
-      additionalProperties: true,
+      additionalProperties: false,
+      properties: {
+        failedScenarioIds: {
+          type: "array",
+          items: { type: "string" },
+        },
+        probableRootCause: { type: "string" },
+        patchSummary: { type: "string" },
+        impactedFiles: {
+          type: "array",
+          items: { type: "string" },
+        },
+        status: { type: "string" },
+        rerunSummary: {
+          type: ["object", "null"],
+          additionalProperties: false,
+          properties: {
+            passed: { type: "number" },
+            failed: { type: "number" },
+            blocked: { type: "number" },
+          },
+        },
+      },
     },
     pullRequests: {
       type: "array",
       items: {
         type: "object",
-        additionalProperties: true,
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          url: { type: "string" },
+          status: { type: "string" },
+          scenarioIds: {
+            type: "array",
+            items: { type: "string" },
+          },
+          riskNotes: {
+            type: "array",
+            items: { type: "string" },
+          },
+          branchName: { type: "string" },
+          rootCauseSummary: { type: "string" },
+        },
       },
     },
   },
