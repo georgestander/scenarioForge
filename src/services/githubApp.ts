@@ -35,6 +35,13 @@ interface InstallationRepositoriesResponse {
   }>;
 }
 
+interface AppInstallationSummary {
+  id: number;
+  account?: {
+    login?: string | null;
+  };
+}
+
 const getConnectStateStore = (): ConnectStateStore => {
   const host = globalThis as typeof globalThis & {
     [CONNECT_STATE_KEY]?: ConnectStateStore;
@@ -267,4 +274,52 @@ export const connectGitHubInstallation = async (installationId: number) => {
     accessTokenExpiresAt: tokenPayload.expires_at,
     repositories: mapRepositories(reposPayload),
   };
+};
+
+const normalizeOwnerHint = (value: string): string => value.trim().toLowerCase();
+
+export const findRecoverableGitHubInstallationId = async (
+  ownerHints: string[],
+): Promise<number | null> => {
+  const appJwt = await createGitHubAppJwt();
+  const installationsPayload = await githubApiRequest<
+    AppInstallationSummary[] | { installations?: AppInstallationSummary[] }
+  >("/app/installations?per_page=100", {
+    method: "GET",
+    headers: githubHeaders(appJwt),
+  });
+
+  const installations = Array.isArray(installationsPayload)
+    ? installationsPayload
+    : installationsPayload.installations ?? [];
+
+  if (installations.length === 0) {
+    return null;
+  }
+
+  const normalizedHints = new Set(
+    ownerHints
+      .map((hint) => normalizeOwnerHint(hint))
+      .filter((hint) => hint.length > 0),
+  );
+
+  if (normalizedHints.size > 0) {
+    const matched = installations.find((installation) => {
+      const login = installation.account?.login ?? "";
+      return normalizedHints.has(normalizeOwnerHint(login));
+    });
+
+    if (matched && Number.isInteger(matched.id) && matched.id > 0) {
+      return matched.id;
+    }
+  }
+
+  if (installations.length === 1) {
+    const only = installations[0];
+    if (only && Number.isInteger(only.id) && only.id > 0) {
+      return only.id;
+    }
+  }
+
+  return null;
 };

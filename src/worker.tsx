@@ -13,6 +13,7 @@ import {
   persistCodexSessionToD1,
   persistGitHubConnectionToD1,
   persistProjectToD1,
+  reconcilePrincipalIdentityInD1,
 } from "@/services/durableCore";
 import {
   cancelChatGptLogin,
@@ -27,6 +28,7 @@ import { generateScenariosViaCodex } from "@/services/codexScenario";
 import {
   connectGitHubInstallation,
   consumeGitHubConnectState,
+  findRecoverableGitHubInstallationId,
   getGitHubInstallUrl,
   issueGitHubConnectState,
 } from "@/services/githubApp";
@@ -49,6 +51,7 @@ import {
   disconnectGitHubConnectionForPrincipal,
   getFixAttemptById,
   getGitHubConnectionForPrincipal,
+  getLatestGitHubConnectionForPrincipal,
   getLatestSourceManifestForProject,
   getPrincipalById,
   getProjectByIdForOwner,
@@ -147,6 +150,126 @@ const githubConnectionView = (connection: GitHubConnection | null) => {
   };
 };
 
+const GITHUB_TOKEN_REFRESH_WINDOW_MS = 2 * 60 * 1000;
+
+const parseGitHubOwnerFromRepoUrl = (repoUrl: string | null): string | null => {
+  if (!repoUrl) {
+    return null;
+  }
+
+  try {
+    const url = new URL(repoUrl);
+    const host = url.hostname.toLowerCase();
+    if (host !== "github.com" && host !== "www.github.com") {
+      return null;
+    }
+
+    const owner = url.pathname.split("/").filter(Boolean)[0] ?? "";
+    const normalizedOwner = owner.trim().toLowerCase();
+    return normalizedOwner || null;
+  } catch {
+    return null;
+  }
+};
+
+const collectGitHubOwnerHintsForPrincipal = (principalId: string): string[] => {
+  const owners = listProjectsForOwner(principalId)
+    .map((project) => parseGitHubOwnerFromRepoUrl(project.repoUrl))
+    .filter((owner): owner is string => Boolean(owner));
+
+  return [...new Set(owners)];
+};
+
+const isGitHubTokenStale = (connection: GitHubConnection): boolean => {
+  if (!connection.accessToken.trim()) {
+    return true;
+  }
+
+  const expiresAt = connection.accessTokenExpiresAt;
+  if (!expiresAt) {
+    return true;
+  }
+
+  const parsed = Date.parse(expiresAt);
+  if (Number.isNaN(parsed)) {
+    return true;
+  }
+
+  return parsed <= Date.now() + GITHUB_TOKEN_REFRESH_WINDOW_MS;
+};
+
+const refreshGitHubConnectionForPrincipal = async (
+  principalId: string,
+  installationId: number,
+): Promise<GitHubConnection> => {
+  const connectionResult = await connectGitHubInstallation(installationId);
+  const connection = upsertGitHubConnection({
+    principalId,
+    accountLogin: connectionResult.accountLogin,
+    installationId,
+    accessToken: connectionResult.accessToken,
+    accessTokenExpiresAt: connectionResult.accessTokenExpiresAt,
+    repositories: connectionResult.repositories,
+  });
+  await persistGitHubConnectionToD1(connection);
+  return connection;
+};
+
+const recoverGitHubConnectionForPrincipal = async (
+  principalId: string,
+): Promise<GitHubConnection | null> => {
+  const ownerHints = collectGitHubOwnerHintsForPrincipal(principalId);
+  if (ownerHints.length === 0) {
+    return null;
+  }
+
+  const installationId = await findRecoverableGitHubInstallationId(ownerHints);
+  if (!installationId) {
+    return null;
+  }
+
+  return refreshGitHubConnectionForPrincipal(principalId, installationId);
+};
+
+const ensureGitHubConnectionForPrincipal = async (
+  principalId: string,
+): Promise<GitHubConnection | null> => {
+  const latest = getLatestGitHubConnectionForPrincipal(principalId);
+  if (latest?.status === "disconnected") {
+    return null;
+  }
+
+  const existing = getGitHubConnectionForPrincipal(principalId);
+
+  if (existing) {
+    if (!isGitHubTokenStale(existing)) {
+      return existing;
+    }
+
+    try {
+      return await refreshGitHubConnectionForPrincipal(
+        principalId,
+        existing.installationId,
+      );
+    } catch {
+      const expiresAt = existing.accessTokenExpiresAt
+        ? Date.parse(existing.accessTokenExpiresAt)
+        : Number.NaN;
+      if (!Number.isNaN(expiresAt) && expiresAt > Date.now()) {
+        return existing;
+      }
+
+      return null;
+    }
+  }
+
+  try {
+    return await recoverGitHubConnectionForPrincipal(principalId);
+  } catch {
+    return null;
+  }
+};
+
 const withAuthContext: RouteMiddleware<AppRequestInfo> = async ({
   request,
   response,
@@ -173,9 +296,36 @@ const withAuthContext: RouteMiddleware<AppRequestInfo> = async ({
     return;
   }
 
+  let resolvedPrincipal = principal;
+  if (principal.email) {
+    try {
+      const reconciled = await reconcilePrincipalIdentityInD1({
+        provider: principal.provider,
+        email: principal.email,
+        displayName: principal.displayName,
+      });
+
+      if (reconciled) {
+        resolvedPrincipal = reconciled;
+      }
+    } catch {
+      resolvedPrincipal = principal;
+    }
+  }
+
+  let resolvedSession = session;
+  if (resolvedPrincipal.id !== session.principalId) {
+    resolvedSession = {
+      ...session,
+      principalId: resolvedPrincipal.id,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveAuthSession(response.headers, resolvedSession);
+  }
+
   ctx.auth = {
-    session,
-    principal,
+    session: resolvedSession,
+    principal: resolvedPrincipal,
   };
 };
 
@@ -256,14 +406,24 @@ export default defineApp([
           );
         }
 
-        await hydrateCoreStateFromD1();
-
         const email = account.email;
-        const principal = createPrincipal({
-          provider: "chatgpt",
-          displayName: email ?? "ChatGPT User",
-          email,
-        });
+        const displayName = email ?? "ChatGPT User";
+
+        await hydrateCoreStateFromD1({ force: true });
+
+        const principal =
+          (email
+            ? await reconcilePrincipalIdentityInD1({
+                provider: "chatgpt",
+                email,
+                displayName,
+              })
+            : null) ??
+          createPrincipal({
+            provider: "chatgpt",
+            displayName,
+            email,
+          });
 
         await saveAuthSession(response.headers, createAuthSession(principal.id));
 
@@ -429,7 +589,7 @@ export default defineApp([
   ]),
   route("/api/github/connect/start", [
     requireAuth,
-    ({ request, ctx }) => {
+    async ({ request, ctx }) => {
       const principal = getPrincipalFromContext(ctx);
 
       if (!principal) {
@@ -438,7 +598,9 @@ export default defineApp([
 
       const url = new URL(request.url);
       const forceReconnect = url.searchParams.get("force") === "1";
-      const existing = getGitHubConnectionForPrincipal(principal.id);
+      const existing = forceReconnect
+        ? getGitHubConnectionForPrincipal(principal.id)
+        : await ensureGitHubConnectionForPrincipal(principal.id);
 
       if (existing && !forceReconnect) {
         return json({
@@ -532,7 +694,7 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
-      const existing = getGitHubConnectionForPrincipal(principal.id);
+      const existing = await ensureGitHubConnectionForPrincipal(principal.id);
       if (!existing) {
         return json({ error: "No GitHub installation connected yet." }, 400);
       }
@@ -619,27 +781,27 @@ export default defineApp([
   ]),
   route("/api/github/connection", [
     requireAuth,
-    ({ ctx }) => {
+    async ({ ctx }) => {
       const principal = getPrincipalFromContext(ctx);
 
       if (!principal) {
         return json({ error: "Authentication required." }, 401);
       }
 
-      const connection = getGitHubConnectionForPrincipal(principal.id);
+      const connection = await ensureGitHubConnectionForPrincipal(principal.id);
       return json({ connection: githubConnectionView(connection) });
     },
   ]),
   route("/api/github/repos", [
     requireAuth,
-    ({ ctx }) => {
+    async ({ ctx }) => {
       const principal = getPrincipalFromContext(ctx);
 
       if (!principal) {
         return json({ error: "Authentication required." }, 401);
       }
 
-      const connection = getGitHubConnectionForPrincipal(principal.id);
+      const connection = await ensureGitHubConnectionForPrincipal(principal.id);
 
       return json({
         data: connection?.repositories ?? [],
@@ -686,7 +848,9 @@ export default defineApp([
         return json({ error: "Project not found." }, 404);
       }
 
-      const githubConnection = getGitHubConnectionForPrincipal(principal.id);
+      const githubConnection = await ensureGitHubConnectionForPrincipal(
+        principal.id,
+      );
       if (!githubConnection) {
         return json(
           { error: "Connect GitHub before scanning repository sources." },
@@ -862,7 +1026,9 @@ export default defineApp([
           return json({ error: "Manifest contains no selected sources." }, 400);
         }
 
-        const githubConnection = getGitHubConnectionForPrincipal(principal.id);
+        const githubConnection = await ensureGitHubConnectionForPrincipal(
+          principal.id,
+        );
         if (!githubConnection) {
           return json(
             { error: "Connect GitHub before generating scenarios." },

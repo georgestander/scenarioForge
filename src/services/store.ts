@@ -252,6 +252,21 @@ export const getGitHubConnectionForPrincipal = (
   );
 };
 
+export const getLatestGitHubConnectionForPrincipal = (
+  principalId: string,
+): GitHubConnection | null => {
+  const state = getState();
+  const matches = state.githubConnections.filter(
+    (connection) => connection.principalId === principalId,
+  );
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return matches.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;
+};
+
 export const disconnectGitHubConnectionForPrincipal = (
   principalId: string,
 ): GitHubConnection | null => {
@@ -706,9 +721,22 @@ interface HydrateCoreStateInput {
   projects: Project[];
   sessions: CodexSession[];
   githubConnections?: GitHubConnection[];
+  mode?: "merge" | "replacePersisted";
 }
 
 export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
+  const state = getState();
+
+  if (input.mode === "replacePersisted") {
+    state.principals = [...input.principals];
+    state.projects = [...input.projects];
+    state.sessions = input.sessions.map((session) =>
+      normalizeSessionModel({ ...session }),
+    );
+    state.githubConnections = [...(input.githubConnections ?? [])];
+    return;
+  }
+
   input.principals.forEach((principal) => {
     upsertPrincipalRecord(principal);
   });
@@ -722,7 +750,6 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
   });
 
   (input.githubConnections ?? []).forEach((connection) => {
-    const state = getState();
     const existingIndex = state.githubConnections.findIndex(
       (candidate) =>
         candidate.id === connection.id ||

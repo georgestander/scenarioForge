@@ -15,6 +15,16 @@ interface DurableCoreState {
   lastHydratedAt: number;
 }
 
+interface HydrateCoreStateFromD1Options {
+  force?: boolean;
+}
+
+interface ReconcilePrincipalIdentityInput {
+  provider: AuthPrincipal["provider"];
+  email: string;
+  displayName: string;
+}
+
 const nowIso = () => new Date().toISOString();
 
 const getState = (): DurableCoreState => {
@@ -136,7 +146,9 @@ const ensureTables = async (db: D1Database): Promise<void> => {
   state.tablesReady = true;
 };
 
-export const hydrateCoreStateFromD1 = async (): Promise<void> => {
+export const hydrateCoreStateFromD1 = async (
+  options: HydrateCoreStateFromD1Options = {},
+): Promise<void> => {
   const db = getDb();
 
   if (!db) {
@@ -146,7 +158,7 @@ export const hydrateCoreStateFromD1 = async (): Promise<void> => {
   await ensureTables(db);
 
   const state = getState();
-  if (Date.now() - state.lastHydratedAt < HYDRATE_TTL_MS) {
+  if (!options.force && Date.now() - state.lastHydratedAt < HYDRATE_TTL_MS) {
     return;
   }
 
@@ -281,9 +293,280 @@ export const hydrateCoreStateFromD1 = async (): Promise<void> => {
     projects,
     sessions,
     githubConnections,
+    mode: "replacePersisted",
   });
 
   state.lastHydratedAt = Date.now();
+};
+
+const selectPrincipalIdentityRows = async (
+  db: D1Database,
+  provider: AuthPrincipal["provider"],
+  email: string,
+): Promise<Array<Record<string, unknown>>> => {
+  const rows = await db
+    .prepare(
+      `
+      SELECT
+        p.id,
+        p.provider,
+        p.display_name,
+        p.email,
+        p.created_at,
+        p.updated_at,
+        (
+          SELECT COUNT(*)
+          FROM sf_projects pr
+          WHERE pr.owner_id = p.id
+        ) AS project_count,
+        (
+          SELECT COUNT(*)
+          FROM sf_codex_sessions cs
+          WHERE cs.owner_id = p.id
+        ) AS session_count,
+        (
+          SELECT COUNT(*)
+          FROM sf_github_connections gh
+          WHERE gh.principal_id = p.id
+            AND gh.status = 'connected'
+        ) AS github_count
+      FROM sf_principals p
+      WHERE p.provider = ?
+        AND p.email = ?
+      ORDER BY
+        project_count DESC,
+        github_count DESC,
+        session_count DESC,
+        p.created_at ASC,
+        p.updated_at DESC
+    `,
+    )
+    .bind(provider, email)
+    .all();
+
+  return rows.results as Array<Record<string, unknown>>;
+};
+
+const pickCanonicalPrincipalId = (
+  rows: Array<Record<string, unknown>>,
+): string | null => {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return String(rows[0]?.id ?? "") || null;
+};
+
+const dedupeGitHubConnectionsForPrincipal = async (
+  db: D1Database,
+  principalId: string,
+): Promise<void> => {
+  const rows = await db
+    .prepare(
+      `
+      SELECT id, status, updated_at
+      FROM sf_github_connections
+      WHERE principal_id = ?
+      ORDER BY
+        CASE status
+          WHEN 'connected' THEN 0
+          ELSE 1
+        END,
+        updated_at DESC
+    `,
+    )
+    .bind(principalId)
+    .all();
+
+  const records = rows.results as Array<Record<string, unknown>>;
+  if (records.length <= 1) {
+    return;
+  }
+
+  const keepId = String(records[0]?.id ?? "");
+  if (!keepId) {
+    return;
+  }
+
+  for (const row of records.slice(1)) {
+    const rowId = String(row.id ?? "");
+    if (!rowId) {
+      continue;
+    }
+
+    await db
+      .prepare(
+        `
+        DELETE FROM sf_github_connections
+        WHERE id = ?
+      `,
+      )
+      .bind(rowId)
+      .run();
+  }
+};
+
+const normalizeDisplayName = (value: string): string => value.trim() || "ChatGPT User";
+
+export const reconcilePrincipalIdentityInD1 = async (
+  input: ReconcilePrincipalIdentityInput,
+): Promise<AuthPrincipal | null> => {
+  const db = getDb();
+
+  if (!db) {
+    return null;
+  }
+
+  const normalizedEmail = input.email.trim().toLowerCase();
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  await ensureTables(db);
+
+  let rows = await selectPrincipalIdentityRows(db, input.provider, normalizedEmail);
+  let canonicalId = pickCanonicalPrincipalId(rows);
+  const timestamp = nowIso();
+
+  if (!canonicalId) {
+    canonicalId = `usr_${crypto.randomUUID()}`;
+    await db
+      .prepare(
+        `
+        INSERT INTO sf_principals (
+          id, provider, display_name, email, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .bind(
+        canonicalId,
+        input.provider,
+        normalizeDisplayName(input.displayName),
+        normalizedEmail,
+        timestamp,
+        timestamp,
+      )
+      .run();
+    rows = await selectPrincipalIdentityRows(db, input.provider, normalizedEmail);
+  }
+
+  const canonical = rows.find((row) => String(row.id ?? "") === canonicalId) ?? rows[0];
+  if (!canonical) {
+    return null;
+  }
+
+  const targetDisplayName = normalizeDisplayName(input.displayName);
+  const aliasIds = rows
+    .map((row) => String(row.id ?? ""))
+    .filter((id) => id.length > 0 && id !== canonicalId);
+  const canonicalDisplayName = String(canonical.display_name ?? "").trim();
+
+  if (aliasIds.length === 0 && canonicalDisplayName === targetDisplayName) {
+    return {
+      id: String(canonical.id),
+      provider: String(canonical.provider) as AuthPrincipal["provider"],
+      displayName: String(canonical.display_name),
+      email: canonical.email ? String(canonical.email) : null,
+      createdAt: String(canonical.created_at),
+      updatedAt: String(canonical.updated_at),
+    };
+  }
+
+  for (const aliasId of aliasIds) {
+    await db
+      .prepare(
+        `
+        UPDATE sf_projects
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_codex_sessions
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_auth_sessions
+        SET principal_id = ?
+        WHERE principal_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_github_connections
+        SET principal_id = ?
+        WHERE principal_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        DELETE FROM sf_principals
+        WHERE id = ?
+      `,
+      )
+      .bind(aliasId)
+      .run();
+  }
+
+  await dedupeGitHubConnectionsForPrincipal(db, canonicalId);
+
+  await db
+    .prepare(
+      `
+      UPDATE sf_principals
+      SET display_name = ?, updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .bind(targetDisplayName, timestamp, canonicalId)
+    .run();
+
+  await hydrateCoreStateFromD1({ force: true });
+
+  const finalRow = await db
+    .prepare(
+      `
+      SELECT id, provider, display_name, email, created_at, updated_at
+      FROM sf_principals
+      WHERE id = ?
+      LIMIT 1
+    `,
+    )
+    .bind(canonicalId)
+    .first<Record<string, unknown>>();
+
+  if (!finalRow) {
+    return null;
+  }
+
+  return {
+    id: String(finalRow.id),
+    provider: String(finalRow.provider) as AuthPrincipal["provider"],
+    displayName: String(finalRow.display_name),
+    email: finalRow.email ? String(finalRow.email) : null,
+    createdAt: String(finalRow.created_at),
+    updatedAt: String(finalRow.updated_at),
+  };
 };
 
 export const persistPrincipalToD1 = async (
