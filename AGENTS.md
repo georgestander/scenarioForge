@@ -19,12 +19,7 @@ The app must support:
 On each session, read in this order:
 1. `README.md`
 2. `docs/IMPLEMENTATION_PLAN.md`
-3. `.agent/POINTER.md`
 
-## Pointer File Scope
-
-- `.agent/POINTER.md` is an audit and session handoff artifact only.
-- It is not an implementation spec, architecture source, or backlog source.
 - If there is any conflict, implementation authority is:
   1. `docs/IMPLEMENTATION_PLAN.md`
   2. `docs/ARCHITECTURE.md`
@@ -78,7 +73,3 @@ Primary plan lives at:
   - `docs/ARCHITECTURE.md`
   - `docs/EXECUTION_BACKLOG.md`
 
-## Update Contract
-
-At the end of every meaningful build session, update:
-- `.agent/POINTER.md` with audit status, decisions, and next actions (audit trail only).
