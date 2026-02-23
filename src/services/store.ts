@@ -16,6 +16,7 @@ interface AppState {
 }
 
 const nowIso = () => new Date().toISOString();
+const DEFAULT_IMPLEMENTATION_MODEL = "gpt-5.3-xhigh";
 
 const getState = (): AppState => {
   const host = globalThis as typeof globalThis & {
@@ -35,6 +36,23 @@ const getState = (): AppState => {
 };
 
 const newId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
+
+const normalizeSessionModel = (session: CodexSession): CodexSession => {
+  session.threadStartRequest = {
+    ...session.threadStartRequest,
+    params: {
+      ...session.threadStartRequest.params,
+      model: DEFAULT_IMPLEMENTATION_MODEL,
+    },
+  };
+
+  session.preferredModels = {
+    ...session.preferredModels,
+    implementation: DEFAULT_IMPLEMENTATION_MODEL,
+  };
+
+  return session;
+};
 
 interface CreateProjectInput {
   ownerId: string;
@@ -85,6 +103,7 @@ export const listCodexSessionsForOwner = (ownerId: string): CodexSession[] => {
   const state = getState();
   return state.sessions
     .filter((session) => session.ownerId === ownerId)
+    .map(normalizeSessionModel)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 };
 
@@ -101,8 +120,9 @@ export const createCodexSession = (
     updatedAt: timestamp,
   };
 
-  state.sessions.push(session);
-  return session;
+  const normalized = normalizeSessionModel(session);
+  state.sessions.push(normalized);
+  return normalized;
 };
 
 interface CreatePrincipalInput {
