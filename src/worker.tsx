@@ -9,7 +9,9 @@ import { Home } from "@/app/pages/home";
 import type { AuthPrincipal, AuthSession, GitHubConnection } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import {
+  hydrateCoreStateFromD1,
   persistCodexSessionToD1,
+  persistGitHubConnectionToD1,
   persistProjectToD1,
 } from "@/services/durableCore";
 import {
@@ -254,6 +256,8 @@ export default defineApp([
           );
         }
 
+        await hydrateCoreStateFromD1();
+
         const email = account.email;
         const principal = createPrincipal({
           provider: "chatgpt",
@@ -496,6 +500,7 @@ export default defineApp([
           accessTokenExpiresAt: connectionResult.accessTokenExpiresAt,
           repositories: connectionResult.repositories,
         });
+        await persistGitHubConnectionToD1(connection);
 
         return json({
           connection: githubConnectionView(connection),
@@ -550,6 +555,7 @@ export default defineApp([
           accessTokenExpiresAt: connectionResult.accessTokenExpiresAt,
           repositories: connectionResult.repositories,
         });
+        await persistGitHubConnectionToD1(connection);
 
         return json({
           connection: githubConnectionView(connection),
@@ -595,7 +601,7 @@ export default defineApp([
       try {
         const connectionResult = await connectGitHubInstallation(installationId);
 
-        upsertGitHubConnection({
+        const connection = upsertGitHubConnection({
           principalId: principal.id,
           accountLogin: connectionResult.accountLogin,
           installationId,
@@ -603,6 +609,7 @@ export default defineApp([
           accessTokenExpiresAt: connectionResult.accessTokenExpiresAt,
           repositories: connectionResult.repositories,
         });
+        await persistGitHubConnectionToD1(connection);
 
         return githubCallbackRedirect(request, "connected");
       } catch {
@@ -641,7 +648,7 @@ export default defineApp([
   ]),
   route("/api/github/disconnect", [
     requireAuth,
-    ({ request, ctx }) => {
+    async ({ request, ctx }) => {
       if (request.method !== "POST") {
         return json({ error: "Method not allowed." }, 405);
       }
@@ -652,7 +659,10 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
-      disconnectGitHubConnectionForPrincipal(principal.id);
+      const connection = disconnectGitHubConnectionForPrincipal(principal.id);
+      if (connection) {
+        await persistGitHubConnectionToD1(connection);
+      }
       return json({ ok: true });
     },
   ]),

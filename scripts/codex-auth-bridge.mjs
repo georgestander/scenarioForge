@@ -419,6 +419,9 @@ const resolveModelId = async (requestedModel) => {
     requestedLower === "codex spark" || requestedLower === "spark"
       ? [
           "gpt-5.3-codex-spark",
+          "gpt-5.2-codex-spark",
+          "gpt-5.1-codex-spark",
+          "gpt-5-codex-spark",
         ]
       : [];
 

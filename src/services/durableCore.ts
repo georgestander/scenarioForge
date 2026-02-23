@@ -1,5 +1,10 @@
 import { env } from "cloudflare:workers";
-import type { AuthPrincipal, CodexSession, Project } from "@/domain/models";
+import type {
+  AuthPrincipal,
+  CodexSession,
+  GitHubConnection,
+  Project,
+} from "@/domain/models";
 import { hydrateCoreState } from "@/services/store";
 
 const DURABLE_CORE_KEY = "__SCENARIOFORGE_DURABLE_CORE_STATE__";
@@ -108,6 +113,26 @@ const ensureTables = async (db: D1Database): Promise<void> => {
     )
     .run();
 
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_github_connections (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL,
+        account_login TEXT,
+        installation_id INTEGER NOT NULL,
+        access_token TEXT NOT NULL,
+        access_token_expires_at TEXT,
+        repositories_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
   state.tablesReady = true;
 };
 
@@ -156,6 +181,25 @@ export const hydrateCoreStateFromD1 = async (): Promise<void> => {
         thread_start_request_json,
         preferred_models_json
       FROM sf_codex_sessions
+    `,
+    )
+    .all();
+  const githubConnectionRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        principal_id,
+        provider,
+        status,
+        account_login,
+        installation_id,
+        access_token,
+        access_token_expires_at,
+        repositories_json,
+        created_at,
+        updated_at
+      FROM sf_github_connections
     `,
     )
     .all();
@@ -214,11 +258,29 @@ export const hydrateCoreStateFromD1 = async (): Promise<void> => {
       }),
     }),
   );
+  const githubConnections: GitHubConnection[] = (
+    githubConnectionRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    principalId: String(row.principal_id),
+    provider: String(row.provider) as GitHubConnection["provider"],
+    status: String(row.status) as GitHubConnection["status"],
+    accountLogin: row.account_login ? String(row.account_login) : null,
+    installationId: Number(row.installation_id),
+    accessToken: String(row.access_token),
+    accessTokenExpiresAt: row.access_token_expires_at
+      ? String(row.access_token_expires_at)
+      : null,
+    repositories: safeParseJson(String(row.repositories_json), []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
 
   hydrateCoreState({
     principals,
     projects,
     sessions,
+    githubConnections,
   });
 
   state.lastHydratedAt = Date.now();
@@ -341,6 +403,60 @@ export const persistCodexSessionToD1 = async (
       JSON.stringify(session.initializeRequest),
       JSON.stringify(session.threadStartRequest),
       JSON.stringify(session.preferredModels),
+    )
+    .run();
+};
+
+export const persistGitHubConnectionToD1 = async (
+  connection: GitHubConnection,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_github_connections (
+        id,
+        principal_id,
+        provider,
+        status,
+        account_login,
+        installation_id,
+        access_token,
+        access_token_expires_at,
+        repositories_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        principal_id = excluded.principal_id,
+        provider = excluded.provider,
+        status = excluded.status,
+        account_login = excluded.account_login,
+        installation_id = excluded.installation_id,
+        access_token = excluded.access_token,
+        access_token_expires_at = excluded.access_token_expires_at,
+        repositories_json = excluded.repositories_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      connection.id,
+      connection.principalId,
+      connection.provider,
+      connection.status,
+      connection.accountLogin,
+      connection.installationId,
+      connection.accessToken,
+      connection.accessTokenExpiresAt,
+      JSON.stringify(connection.repositories),
+      connection.createdAt,
+      connection.updatedAt || nowIso(),
     )
     .run();
 };
