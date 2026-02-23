@@ -353,6 +353,8 @@ Exit criteria:
 
 Exit criteria:
 - User gets high-volume, structured, testable scenarios.
+- save in /docs or created and saved in /docs.
+- also available to download in the ui.
 
 ### Phase 4: Run Engine + Observability (Day 5-6)
 
