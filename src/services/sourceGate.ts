@@ -153,24 +153,12 @@ const buildWarnings = (
   return warnings;
 };
 
-const buildRepoCandidates = (repos: GitHubRepository[]): Array<{
-  path: string;
-  title: string;
-  freshnessDays: number;
-}> => {
-  return repos.slice(0, 4).map((repo, index) => ({
-    path: `${repo.fullName}/docs/SPEC-${index + 1}.md`,
-    title: `${repo.fullName} linked repository spec`,
-    freshnessDays: index + 1,
-  }));
-};
-
 export const scanSourcesForProject = (
   project: Project,
   ownerId: string,
-  repositories: GitHubRepository[],
+  _repositories: GitHubRepository[] = [],
 ): Omit<SourceRecord, "id" | "createdAt" | "updatedAt">[] => {
-  const candidates = [...SOURCE_CANDIDATES, ...buildRepoCandidates(repositories)];
+  const candidates = SOURCE_CANDIDATES;
 
   return candidates.map((candidate) => {
     const type = inferSourceType(candidate.path);

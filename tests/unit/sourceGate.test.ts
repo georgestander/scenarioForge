@@ -70,3 +70,15 @@ test("validateGenerationSelection enforces non-empty selection and stale confirm
   );
   assert.equal(confirmedCheck.ok, true);
 });
+
+test("scanSourcesForProject is scoped to current project files only", () => {
+  const project = buildProject({
+    repoUrl: "https://github.com/acme/critical-repo",
+  });
+  const sources = scanSourcesForProject(project, project.ownerId);
+
+  assert.ok(
+    sources.every((source) => !/^[^/]+\/[^/]+\/docs\//.test(source.path)),
+    "cross-repo source pattern should never appear",
+  );
+});
