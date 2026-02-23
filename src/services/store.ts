@@ -638,3 +638,53 @@ export const updatePullRequestRecord = (
   record.updatedAt = nowIso();
   return record;
 };
+
+const replaceById = <T extends { id: string }>(
+  items: T[],
+  nextItem: T,
+): T[] => {
+  const index = items.findIndex((item) => item.id === nextItem.id);
+
+  if (index === -1) {
+    items.push(nextItem);
+    return items;
+  }
+
+  items[index] = nextItem;
+  return items;
+};
+
+export const upsertPrincipalRecord = (principal: AuthPrincipal): void => {
+  const state = getState();
+  replaceById(state.principals, principal);
+};
+
+export const upsertProjectRecord = (project: Project): void => {
+  const state = getState();
+  replaceById(state.projects, project);
+};
+
+export const upsertCodexSessionRecord = (session: CodexSession): void => {
+  const state = getState();
+  replaceById(state.sessions, normalizeSessionModel(session));
+};
+
+interface HydrateCoreStateInput {
+  principals: AuthPrincipal[];
+  projects: Project[];
+  sessions: CodexSession[];
+}
+
+export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
+  input.principals.forEach((principal) => {
+    upsertPrincipalRecord(principal);
+  });
+
+  input.projects.forEach((project) => {
+    upsertProjectRecord(project);
+  });
+
+  input.sessions.forEach((session) => {
+    upsertCodexSessionRecord(session);
+  });
+};

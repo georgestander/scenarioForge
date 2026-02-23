@@ -8,6 +8,7 @@ import { setCommonHeaders } from "@/app/headers";
 import { Home } from "@/app/pages/home";
 import type { AuthPrincipal, AuthSession, GitHubConnection } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
+import { persistCodexSessionToD1, persistProjectToD1 } from "@/services/durableCore";
 import { startCodexSession } from "@/services/codexSession";
 import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
 import {
@@ -250,6 +251,7 @@ export default defineApp([
           repoUrl,
           defaultBranch,
         });
+        await persistProjectToD1(project);
 
         return json({ project }, 201);
       }
@@ -283,6 +285,7 @@ export default defineApp([
             ownerId: principal.id,
             projectId,
           });
+          await persistCodexSessionToD1(session);
           return json({ session }, 201);
         } catch (error) {
           return json(

@@ -17,6 +17,15 @@
     "binding": "ASSETS"
   },
 
+  // Durable persistence for auth/project/session records
+  "d1_databases": [
+    {
+      "binding": "SCENARIOFORGE_DB",
+      "database_name": "scenarioforge",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+
   // Observability settings
   "observability": {
     "enabled": true
