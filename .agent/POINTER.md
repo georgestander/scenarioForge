@@ -42,3 +42,9 @@ Implement Phase 2:
 1. Source inventory scanner (`SF-2001`).
 2. Relevance scoring (`SF-2002`).
 3. Source selection UX with explicit confirmation (`SF-2003`).
+
+## Session Audit Trail
+
+- 2026-02-23: Home page hero image was constrained to prevent it from dominating the viewport and pushing core UI/forms below the fold.
+- Decision: Keep hero art as supporting context only, with bounded card/image height so the primary workflow remains visible on first view.
+- Next action: Continue Phase 2 source trust gate work (`SF-2001` to `SF-2003`) on top of the current UI shell.
