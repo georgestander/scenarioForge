@@ -9,216 +9,173 @@
 
 ## Reality Baseline (2026-02-23)
 
-- Completion is tracked against real end-to-end behavior, not simulated artifacts.
-- Phase 0 and Phase 1 are complete.
-- Phase 2 has partial implementation and remains `in_progress`.
-- Phases 3-6 remain outstanding (`todo`) until the real scenario -> run -> fix -> PR loop is operational.
+- Architecture is now locked to a thin bridge + two actions: `generate`, `execute`.
+- UI is intent capture; Codex app-server performs generation and execution logic.
+- Phase 1 is complete.
+- Phase 2 is partially complete and remains `in_progress`.
 
-## Phase 0 - Foundation
-
-### SF-0001 Create project shell domain model
-
-- Priority: P0
-- Status: done
-- Outcome:
-  - `Project` entity exists with stable API shape.
-
-### SF-0002 Add in-memory persistence adapter
-
-- Priority: P0
-- Status: done
-- Outcome:
-  - Create/list project and Codex session state within worker runtime.
-
-### SF-0003 Add health and project API routes
-
-- Priority: P0
-- Status: done
-- Outcome:
-  - `GET /api/health`
-  - `GET /api/projects`
-  - `POST /api/projects`
-
-### SF-0004 Add Codex app-server session skeleton contract
-
-- Priority: P0
-- Status: done
-- Outcome:
-  - `GET /api/codex/sessions`
-  - `POST /api/codex/sessions`
-  - Initialize and thread-start payload blueprints returned.
-
-### SF-0005 Build Phase 0 shell UI
-
-- Priority: P0
-- Status: done
-- Outcome:
-  - Project create/list from UI.
-  - Codex session bootstrap from UI.
-
-## Phase 1 - Auth and Repo Connect
+## Phase 1 - Auth and Repo Connect (Done)
 
 ### SF-1001 ChatGPT auth integration
 
 - Priority: P0
 - Status: done
 - Outcome:
-  - Session-backed ChatGPT sign-in/sign-out endpoints implemented.
-  - `GET /api/auth/session` exposes live auth state to UI.
-  - Phase 1 shell shows signed-in principal status.
+  - Session-backed ChatGPT sign-in/sign-out.
+  - Auth session endpoint consumed by UI.
 
-### SF-1002 GitHub App auth
+### SF-1002 GitHub App auth and repo list
 
 - Priority: P0
 - Status: done
 - Outcome:
-  - GitHub App install URL endpoint implemented.
-  - Installation connect endpoint exchanges app JWT for installation token.
-  - Repository list endpoint and UI repository selector implemented.
+  - Install/connect flow and repository listing.
 
-### SF-1003 Project ownership checks
+### SF-1003 Ownership and access checks
 
 - Priority: P1
 - Status: done
 - Outcome:
-  - Project and Codex session APIs now require authenticated principal.
-  - Project/session records are owner-scoped per principal.
-  - Ownership enforced on create/list/session-init operations.
+  - Project ownership enforced for authenticated principal.
 
-## Phase 2 - Source Relevance Gate
+## Phase 2 - Source Trust Gate (In Progress)
 
-### SF-2001 Source inventory scanner
+### SF-2001 Connected-repo source scanner
 
 - Priority: P0
 - Status: in_progress
 - Acceptance criteria:
-  - Scan source candidates from the connected repository (not hard-coded file lists).
-  - Discover and type PRDs/specs/plans/architecture artifacts plus a code inventory baseline.
-  - Exclude deselected sources from generation input.
+  - Scan planning/spec/task docs from connected repo and selected branch.
+  - Classify artifacts by type and include code inventory baseline.
 
-### SF-2002 Relevance scoring
-
-- Priority: P0
-- Status: in_progress
-- Acceptance criteria:
-  - Each discovered source receives `trusted/suspect/stale/excluded` status from real signals.
-  - Include recency and doc/code drift signals (symbol/route overlap + contradiction hints).
-  - Persist scores and warnings on the source manifest used for generation.
-
-### SF-2003 Source selection UX
+### SF-2002 Relevance and staleness scoring
 
 - Priority: P0
 - Status: in_progress
 - Acceptance criteria:
-  - User can select/deselect sources and review warnings before generation.
-  - Generation is blocked until explicit relevance confirmation is provided.
-  - Manifest captures exact selected source IDs and hashes for auditability.
+  - Assign `trusted/suspect/stale/excluded` using recency + drift signals.
+  - Persist warnings and reasons on manifest records.
 
-## Phase 3 - Scenario Generation
+### SF-2003 Explicit confirmation gate
 
-### SF-3001 Feature/outcome clustering
+- Priority: P0
+- Status: in_progress
+- Acceptance criteria:
+  - User can select/deselect sources before generation.
+  - Risky selections require explicit confirmation.
+  - Persist selected source IDs + hash for auditability.
+
+## Phase 3 - `generate` Action
+
+### SF-3001 Thin bridge `generate` endpoint
 
 - Priority: P0
 - Status: todo
 - Acceptance criteria:
-  - Worker API invokes Codex app-server turns for scenario generation.
-  - Use `codex spark` with selected sources to generate scenario groups by feature and user outcome.
-  - Scenario groups are traceable to selected source IDs/hashes.
+  - Add a single generate action endpoint.
+  - Inputs: `projectId`, `repo`, `branch`, `sourceManifestId`, `mode`, `userInstruction?`.
+  - No custom orchestration logic beyond validation + pass-through.
 
-### SF-3002 Scenario contract generation
+### SF-3002 Codex stream passthrough for generation
 
 - Priority: P0
 - Status: todo
 - Acceptance criteria:
-  - Generate contract-complete scenarios aligned to the `$scenario` skill quality bar.
-  - Include preconditions, steps, expected checkpoints, edge variants, and binary pass criteria.
-  - Generate realistic persona-based flows, not static templates.
-  - UI only initiates and displays generation; it does not synthesize scenario content.
+  - Relay real Codex turn events to UI in order.
+  - Include action-scoped event envelopes.
 
-### SF-3003 Scenarios persistence
+### SF-3003 Scenario artifact persistence and revisioning
 
 - Priority: P1
 - Status: todo
 - Acceptance criteria:
-  - Persist structured scenario JSON and `scenarios.md` with manifest linkage.
-  - Persist generation audit metadata (model, thread/turn IDs, repo, branch, head SHA).
-  - Expose generated artifacts as downloadable files in the UI.
-  - Keep revision history so each run can be traced to the generation artifact used.
+  - Persist structured scenario JSON and `scenarios.md`.
+  - Preserve revisions for `mode=update`.
+  - Persist model/turn/repo/branch/head metadata.
 
-## Phase 4 - Run Engine
-
-### SF-4001 Runner orchestration
-
-- Priority: P0
-- Status: todo
-- Acceptance criteria:
-  - Execute selected scenarios against real app/repo context.
-  - Track real per-scenario state transitions and rerun impacted scenarios after fixes.
-
-### SF-4002 Evidence capture
-
-- Priority: P0
-- Status: todo
-- Acceptance criteria:
-  - Capture real logs/screenshots/traces/diffs tied to run + scenario IDs.
-  - Evidence references resolvable artifacts, not placeholder paths.
-
-### SF-4003 Live progress streaming
+### SF-3004 Update-scenarios intent UX
 
 - Priority: P1
 - Status: todo
 - Acceptance criteria:
-  - UI streams real queued/running/passed/failed/blocked status updates.
-  - Event ordering and timestamps reflect actual runner events.
+  - UI supports `Generate` and `Update` intent paths.
+  - `mode=update` includes optional user instruction.
 
-## Phase 5 - Auto-Fix and PRs
+## Phase 4 - `execute` Action
 
-### SF-5001 Failure classifier
-
-- Priority: P0
-- Status: todo
-- Acceptance criteria:
-  - Failure records include observed vs expected mismatch with evidence-backed hypotheses.
-  - Classification references concrete failing checkpoints from scenario contracts.
-
-### SF-5002 Fix implementation agent flow
+### SF-4001 Thin bridge `execute` endpoint
 
 - Priority: P0
 - Status: todo
 - Acceptance criteria:
-  - Use `gpt-5.3-xhigh` to produce real code patches for failed scenarios.
-  - Run fix loop until impacted scenarios pass or stop conditions are reached.
+  - Add a single execute action endpoint.
+  - Inputs: `projectId`, `repo`, `branch`, `scenarioPackId`, `executionMode`, `constraints?`.
+  - No custom server loop logic beyond validation + pass-through.
 
-### SF-5003 PR creation pipeline
-
-- Priority: P0
-- Status: todo
-- Acceptance criteria:
-  - Create real branches/commits and open GitHub PRs.
-  - PR body includes scenario IDs, failure cause, code changes, rerun evidence, and residual risk.
-
-## Phase 6 - Review Board and Reporting
-
-### SF-6001 Review board UI
+### SF-4002 Execute loop with evidence capture
 
 - Priority: P0
 - Status: todo
 - Acceptance criteria:
-  - Consolidate findings, risks, recommendations, and real PR status from persisted evidence.
-  - Highlight unresolved failures and merge-order dependencies.
+  - Codex executes run/fix/rerun/PR flow with repo tools.
+  - Persist evidence references by scenario/run IDs.
 
-### SF-6002 Exportable challenge report
+### SF-4003 Live execution stream
 
 - Priority: P1
 - Status: todo
 - Acceptance criteria:
-  - Export report references real run/fix/PR artifacts and source manifests.
-  - Report is reproducible for any historical run.
+  - UI displays real queued/running/passed/failed/blocked transitions.
+  - Surface raw errors and stop reasons clearly.
+
+## Phase 5 - Reliability and UX Hardening
+
+### SF-5001 GitHub persistence hardening
+
+- Priority: P0
+- Status: todo
+- Acceptance criteria:
+  - Avoid repeated reconnect prompts on normal restarts.
+  - Reconnect only on expiry/revocation/installation change.
+
+### SF-5002 Action affordances and retry UX
+
+- Priority: P0
+- Status: todo
+- Acceptance criteria:
+  - Clear loading/progress affordance for scan/generate/execute actions.
+  - Explicit retry/resume behavior after action failures.
+
+### SF-5003 Raw error visibility
+
+- Priority: P1
+- Status: todo
+- Acceptance criteria:
+  - Preserve Codex/tooling error text in UI and logs.
+  - Include correlation metadata for debugging.
+
+## Phase 6 - Review and Reporting
+
+### SF-6001 Review board from persisted evidence
+
+- Priority: P0
+- Status: todo
+- Acceptance criteria:
+  - Build review board using real run/fix/PR artifacts.
+  - Highlight unresolved failures and dependency risks.
+
+### SF-6002 Exportable report
+
+- Priority: P1
+- Status: todo
+- Acceptance criteria:
+  - Export report with manifest, scenario, run, and PR linkage.
+  - Reproducible for historical runs.
 
 ## Immediate Next 5 Tickets
 
-1. `SF-2001` Replace hard-coded source candidates with connected-repo source discovery and typing.
-2. `SF-2002` Implement real relevance/staleness scoring using recency + doc/code drift signals.
-3. `SF-3001` Integrate `$scenario`-aligned scenario generation and persist `scenarios.md` + JSON outputs.
-4. `SF-4001` Implement real scenario execution runner with evidence capture and live event streaming.
-5. `SF-5001` Implement real auto-fix loop (patch + rerun gate) and GitHub PR creation.
+1. `SF-3001` Implement thin `generate` action endpoint with locked contract.
+2. `SF-3002` Implement generation event streaming passthrough.
+3. `SF-3004` Add update-scenarios intent path (`mode=update`).
+4. `SF-4001` Implement thin `execute` action endpoint with locked contract.
+5. `SF-5001` Harden GitHub persistence to remove repeated reconnect prompts.

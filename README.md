@@ -2,71 +2,49 @@
 
 ![ScenarioForge Cover](public/scenarioForge.png)
 
-Scenario-first collaboration platform for builders who want concrete, real-world quality checks instead of abstract test noise.
+Scenario-first quality workflow for fast-moving teams: click intent in UI, let Codex do the work in-repo, stream evidence back live.
+
+## Product Direction (Locked)
+
+ScenarioForge is a RedwoodSDK UI plus a thin Codex app-server bridge.
+
+The bridge exposes only two core actions:
+- `generate`: create or update scenario packs from selected trusted sources.
+- `execute`: run scenarios, fix failures, rerun impacted checks, and open PRs with evidence.
+
+Everything in the UI is intent capture. Buttons are structured user intent, not local orchestration.
 
 ## Why This Exists
 
-We started from a challenge prompt: build a collaborative app using Codex.
+Traditional test layers often drift from how users actually use the product. At the same time, planning docs drift from the codebase.
 
-The pain was clear:
-- Conventional tests can feel abstract and disconnected from how users actually use products.
-- Teams moving fast often have PRDs/specs/plans that drift from current code.
-- This creates uncertainty about what should actually be validated.
+ScenarioForge solves this by:
+- enforcing a source trust gate before generation,
+- generating realistic scenario contracts from selected sources,
+- executing a fix loop directly in repo context,
+- attaching evidence and PR traceability to each scenario outcome.
 
-The core idea we shaped together:
-- Generate realistic scenarios from code + product docs.
-- Let users select and deselect sources before generation.
-- Run scenarios with visible progress and evidence.
-- Auto-fix failures with Codex.
-- Open PRs with scenario-linked proof.
-- Present everything in a clean review board.
+## Core Flow
 
-## Narrative Build-Up (How We Got Here)
+1. Sign in with ChatGPT.
+2. Connect GitHub once (reconnect only on token expiry/revocation).
+3. Select and confirm trusted planning sources.
+4. Generate scenarios (`generate`, mode `initial` or `update`).
+5. Execute loop (`execute`) for run -> fix -> rerun -> PR.
+6. Review outcomes and recommendations.
 
-1. Brainstormed a challenge-ready concept around collaboration and Codex-native workflows.
-2. Identified scenario-based validation as the strongest differentiator for "vibe coding" teams.
-3. Expanded from a simple demo into a full-flow product:
-- ChatGPT sign-in
-- GitHub repo connection
-- Scenario generation and execution
-- Auto-fix and PR creation
-- Review and recommendations
-4. Added a critical safeguard from real-world experience:
-- users must be able to de-select outdated PRDs/specs/plans so stale docs do not corrupt scenario generation.
-5. Locked model strategy:
-- `codex spark` for scenario research and synthesis.
-- `gpt-5.3-xhigh` for implementation-grade fixes.
-6. Captured the full architecture and delivery plan in `docs/IMPLEMENTATION_PLAN.md`.
+## Architecture Summary
 
-## What We Are Building
+- UI: intent layer and live stream display.
+- Bridge: pass-through request, stream relay, minimal persistence, raw errors.
+- Codex app-server: actual reasoning, tool usage, scenario/fix/PR loop.
 
-`ScenarioForge` (RedwoodSDK + Codex app-server) with:
-- ChatGPT authentication
-- GitHub integration
-- Source relevance gate
-- Feature/outcome grouped scenarios
-- Live scenario runner
-- Auto-fix pipeline
-- PR generation
-- Detailed collaborative review board
+No complex server-side orchestration beyond routing, auth, and persistence.
 
-## How Codex Is Used
+## Current Plan Sources
 
-Codex is used for:
-- Product architecture and scoping
-- Scenario research and generation
-- Failure analysis and fix planning
-- Code implementation for scenario failures
-- PR drafting and review insights
-
-This project is intentionally designed so Codex is both:
-- the collaboration partner in building the product, and
-- the engine that powers the product workflow.
-
-## Current Plan
-
-See:
 - `docs/IMPLEMENTATION_PLAN.md`
+- `docs/EXECUTION_BACKLOG.md`
 - `AGENTS.md`
 - `.agent/POINTER.md`
 
@@ -75,7 +53,7 @@ See:
 ### Prerequisites
 
 - Node.js
-- pnpm (recommended)
+- pnpm
 
 ### Install
 
@@ -85,13 +63,11 @@ pnpm install
 
 ### Run
 
-Start the full local stack (app + ChatGPT auth bridge):
-
 ```bash
 pnpm dev
 ```
 
-Optional: run only the app UI/worker (without auto-starting the auth bridge):
+Optional (app only):
 
 ```bash
 pnpm dev:app
@@ -99,13 +75,6 @@ pnpm dev:app
 
 ## Security and Repo Hygiene
 
-- Do not commit API keys or tokens.
-- Use environment variables for secrets.
-- Keep OAuth and token scopes least-privileged.
-
-## Challenge Fit
-
-This submission directly addresses the challenge requirements:
-- Collaborative app: shared scenario run/review workflow.
-- Meaningful Codex usage: generation, execution guidance, fixes, and review.
-- Clear narrative of how Codex was used to shape and build the project.
+- No secrets committed.
+- Keep token scopes least privilege.
+- Keep all generated PRs traceable to scenario IDs and rerun evidence.
