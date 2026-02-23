@@ -17,21 +17,34 @@
 
 ## Current Status Snapshot
 
-- Docs have been realigned to the locked 2-action architecture.
-- Phase 1 is complete.
-- Phase 2 remains in progress.
-- Next implementation focus is Phase 3 and Phase 4 action contracts.
+- Docs are aligned to the locked 2-action architecture.
+- Legacy Codex session scaffold was removed from worker/UI.
+- Bridge now supports action endpoints:
+  - `POST /actions/generate`
+  - `POST /actions/execute`
+  - optional stream variants (`/stream`) with SSE events.
+- Bridge now extracts structured turn outputs when no `agentMessage` text is emitted.
+- Worker now exposes thin action routes:
+  - `POST /api/projects/:projectId/actions/generate`
+  - `POST /api/projects/:projectId/actions/execute`
+- UI Stage 3+4 now uses intent actions:
+  - Generate
+  - Update Scenarios
+  - Execute Loop
+- Auth persistence hardened:
+  - principals are persisted on sign-in completion,
+  - principal reuse path added when ChatGPT email is unavailable.
 
 ## Immediate Next Actions
 
-1. Implement thin `generate` endpoint contract and stream passthrough.
-2. Implement `generate(mode=update)` from UI intent.
-3. Implement thin `execute` endpoint contract and stream passthrough.
-4. Persist scenario revisions, run evidence, and PR linkage records.
-5. Harden GitHub persistence/reconnect behavior.
+1. Add worker stream passthrough for action routes so UI can consume live Codex events directly.
+2. Harden execute-output parsing against broader Codex output variants and include explicit mismatch diagnostics.
+3. Replace placeholder PR record URLs with real GitHub PR creation flow in execute mode when tool/auth context allows.
+4. Remove/retire legacy non-action endpoints once no longer needed by UI.
+5. Add integration tests covering `actions/generate` and `actions/execute` request/response contracts.
 
 ## Risks to Watch
 
-- Hidden orchestration logic reappearing in bridge code.
-- Event-stream mismatches between Codex output and UI expectations.
-- Tool availability/auth drift causing execution instability.
+- Tool/auth availability drift can still block full execute loop behavior.
+- Execute JSON shape can vary by model behavior and needs strict validation + fallback messaging.
+- Streaming is implemented in the bridge, but worker/UI passthrough is not yet end-to-end.
