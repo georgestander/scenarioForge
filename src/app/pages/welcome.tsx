@@ -1062,6 +1062,16 @@ export const Welcome = () => {
     );
   };
 
+  const handleDownloadScenarioArtifact = (format: "markdown" | "json") => {
+    if (!selectedPack) {
+      setStatusMessage("Generate and select a scenario pack first.");
+      return;
+    }
+
+    const target = `/api/scenario-packs/${selectedPack.id}/artifacts/${format}`;
+    window.open(target, "_blank", "noopener");
+  };
+
   const handleRunScenarios = async () => {
     if (!selectedProjectId || !selectedPack) {
       setStatusMessage("Generate and select a scenario pack first.");
@@ -1568,6 +1578,33 @@ export const Welcome = () => {
                     Generated with <strong>{selectedPack.model}</strong> and manifest{" "}
                     <strong>{selectedPack.manifestId}</strong>.
                   </p>
+                  <p className={styles.hint}>
+                    Repo <strong>{selectedPack.repositoryFullName}</strong> on{" "}
+                    <strong>{selectedPack.branch}</strong> @{" "}
+                    <strong>{selectedPack.headCommitSha.slice(0, 12)}</strong>.
+                  </p>
+                  <p className={styles.hint}>
+                    Codex turn <strong>{selectedPack.generationAudit.threadId}</strong> /{" "}
+                    <strong>{selectedPack.generationAudit.turnId}</strong> (
+                    {selectedPack.generationAudit.turnStatus}).
+                  </p>
+
+                  <div className={styles.inlineActions}>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => handleDownloadScenarioArtifact("markdown")}
+                    >
+                      Download scenarios.md
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => handleDownloadScenarioArtifact("json")}
+                    >
+                      Download scenarios.json
+                    </button>
+                  </div>
 
                   <h3>Feature Groups</h3>
                   <ul className={styles.flatList}>

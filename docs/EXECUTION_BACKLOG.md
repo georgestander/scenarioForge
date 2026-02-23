@@ -121,6 +121,7 @@
 - Priority: P0
 - Status: todo
 - Acceptance criteria:
+  - Worker API invokes Codex app-server turns for scenario generation.
   - Use `codex spark` with selected sources to generate scenario groups by feature and user outcome.
   - Scenario groups are traceable to selected source IDs/hashes.
 
@@ -132,6 +133,7 @@
   - Generate contract-complete scenarios aligned to the `$scenario` skill quality bar.
   - Include preconditions, steps, expected checkpoints, edge variants, and binary pass criteria.
   - Generate realistic persona-based flows, not static templates.
+  - UI only initiates and displays generation; it does not synthesize scenario content.
 
 ### SF-3003 Scenarios persistence
 
@@ -139,6 +141,8 @@
 - Status: todo
 - Acceptance criteria:
   - Persist structured scenario JSON and `scenarios.md` with manifest linkage.
+  - Persist generation audit metadata (model, thread/turn IDs, repo, branch, head SHA).
+  - Expose generated artifacts as downloadable files in the UI.
   - Keep revision history so each run can be traced to the generation artifact used.
 
 ## Phase 4 - Run Engine

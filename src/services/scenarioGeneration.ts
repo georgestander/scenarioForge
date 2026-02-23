@@ -2,268 +2,251 @@ import type {
   Project,
   ScenarioContract,
   ScenarioPack,
+  ScenarioPriority,
   SourceManifest,
   SourceRecord,
 } from "@/domain/models";
 
-const SCENARIO_BLUEPRINTS: Array<
-  Omit<ScenarioContract, "id"> & { slug: string }
-> = [
-  {
-    slug: "auth-connect-repo",
-    feature: "Workspace Onboarding",
-    outcome: "User establishes a valid workspace context",
-    title: "Sign in, connect GitHub, and initialize project workspace",
-    persona: "Solo builder",
-    preconditions: ["User is signed out", "GitHub app is not yet connected"],
-    testData: ["Display name", "Optional email", "GitHub installation callback"],
-    steps: [
-      "Sign in with ChatGPT credentials.",
-      "Connect GitHub App and return via callback.",
-      "Create project from repository metadata.",
-    ],
-    expectedCheckpoints: [
-      "Principal session is persisted.",
-      "Repository list is available for selection.",
-      "Project is stored with default branch.",
-    ],
-    edgeVariants: [
-      "GitHub callback has expired state token.",
-      "Project created without repo selection.",
-    ],
-    passCriteria:
-      "All three setup steps complete without API auth or ownership errors.",
-    priority: "critical",
-  },
-  {
-    slug: "source-trust-gate",
-    feature: "Source Relevance Gate",
-    outcome: "User curates trusted context before generation",
-    title: "Scan source inventory and confirm relevance selection",
-    persona: "QA lead",
-    preconditions: [
-      "Project exists",
-      "Source scan endpoint returns mixed trusted/suspect/stale records",
-    ],
-    testData: ["Source IDs", "Confirmation note"],
-    steps: [
-      "Trigger scan and review trust statuses.",
-      "Deselect stale sources.",
-      "Confirm relevance and save source manifest.",
-    ],
-    expectedCheckpoints: [
-      "Statuses and warnings appear for each source.",
-      "Manifest hash is persisted with selected sources.",
-      "Stale selections require explicit confirmation.",
-    ],
-    edgeVariants: [
-      "No sources selected.",
-      "User includes stale sources without confirmation.",
-    ],
-    passCriteria:
-      "Generation remains blocked until at least one source is selected and relevance is confirmed.",
-    priority: "critical",
-  },
-  {
-    slug: "scenario-pack-by-feature",
-    feature: "Scenario Generation",
-    outcome: "User receives grouped scenario packs",
-    title: "Generate feature-grouped scenario pack from selected sources",
-    persona: "Product engineer",
-    preconditions: ["Valid source manifest exists"],
-    testData: ["Manifest ID", "Selected source IDs"],
-    steps: [
-      "Submit generation request for active project.",
-      "Review generated scenarios grouped by feature.",
-      "Inspect per-scenario contract fields.",
-    ],
-    expectedCheckpoints: [
-      "Each scenario has preconditions, steps, checkpoints, edge variants, and pass criteria.",
-      "Feature groups map to scenario IDs.",
-      "Scenario markdown output is available.",
-    ],
-    edgeVariants: [
-      "Manifest ID is missing.",
-      "Manifest references excluded sources.",
-    ],
-    passCriteria:
-      "Generated pack includes contract-complete scenarios and grouping metadata.",
-    priority: "high",
-  },
-  {
-    slug: "scenario-pack-by-outcome",
-    feature: "Scenario Generation",
-    outcome: "User can reason by outcome clusters",
-    title: "Generate outcome-grouped scenario perspective for review",
-    persona: "PM reviewer",
-    preconditions: ["At least one scenario pack exists"],
-    testData: ["Outcome group map"],
-    steps: [
-      "Open latest generated scenario pack.",
-      "Switch grouping view from feature to outcome.",
-      "Review scenario coverage per outcome.",
-    ],
-    expectedCheckpoints: [
-      "Outcome grouping map contains all scenario IDs.",
-      "No orphan scenarios are missing from both groupings.",
-      "Outcome labels are human-readable.",
-    ],
-    edgeVariants: ["Single-feature project with multiple outcomes."],
-    passCriteria:
-      "Outcome grouping remains complete and consistent with scenario list.",
-    priority: "medium",
-  },
-  {
-    slug: "run-orchestration",
-    feature: "Run Engine",
-    outcome: "User executes and observes scenario progress",
-    title: "Run all scenarios with queued/running/final statuses",
-    persona: "Test operator",
-    preconditions: ["Scenario pack exists"],
-    testData: ["Scenario IDs selected for run"],
-    steps: [
-      "Start run for selected scenarios.",
-      "Watch status transitions from queued to running to final status.",
-      "Inspect run summary totals.",
-    ],
-    expectedCheckpoints: [
-      "Run record is created with deterministic timeline.",
-      "Summary totals match per-scenario outcomes.",
-      "Completed run has immutable evidence payloads.",
-    ],
-    edgeVariants: [
-      "Run started with subset of scenarios.",
-      "Scenario is marked blocked due missing precondition.",
-    ],
-    passCriteria:
-      "Run transitions are persisted and summary totals remain internally consistent.",
-    priority: "critical",
-  },
-  {
-    slug: "failure-evidence",
-    feature: "Run Engine",
-    outcome: "Failure records are actionable",
-    title: "Capture observed-vs-expected and evidence on failure",
-    persona: "Debugging engineer",
-    preconditions: ["At least one scenario fails"],
-    testData: ["Log refs", "Trace refs", "Screenshot refs"],
-    steps: [
-      "Open failed scenario details.",
-      "Review observed versus expected mismatch.",
-      "Read generated failure hypothesis.",
-    ],
-    expectedCheckpoints: [
-      "Failure has artifacts for logs/traces/screenshots.",
-      "Hypothesis references probable root cause domain.",
-      "Evidence is linked to run and scenario IDs.",
-    ],
-    edgeVariants: [
-      "Scenario fails without screenshot artifact.",
-      "Multiple failures in same feature cluster.",
-    ],
-    passCriteria:
-      "Every failed scenario exposes enough evidence to plan a fix.",
-    priority: "high",
-  },
-  {
-    slug: "auto-fix-pipeline",
-    feature: "Auto-Fix",
-    outcome: "User gets targeted fixes for failed scenarios",
-    title: "Trigger auto-fix and generate fix attempt artifact",
-    persona: "Maintainer",
-    preconditions: ["Failed scenarios exist in latest run"],
-    testData: ["Failed scenario IDs"],
-    steps: [
-      "Trigger auto-fix on failed scenarios.",
-      "Inspect patch summary and impacted files.",
-      "Confirm rerun summary is attached.",
-    ],
-    expectedCheckpoints: [
-      "Fix attempt captures probable root cause.",
-      "Patch summary maps to failed scenario IDs.",
-      "Status advances to validated once rerun is recorded.",
-    ],
-    edgeVariants: ["No failed scenarios available for fix."],
-    passCriteria:
-      "Auto-fix records are traceable to specific failed scenarios and rerun evidence.",
-    priority: "critical",
-  },
-  {
-    slug: "pr-creation-gate",
-    feature: "PR Pipeline",
-    outcome: "PR includes scenario linkage and rerun proof",
-    title: "Create PR record only after rerun evidence is available",
-    persona: "Code reviewer",
-    preconditions: ["Validated fix attempt exists"],
-    testData: ["Fix attempt ID", "Rerun stats"],
-    steps: [
-      "Create PR record from fix attempt.",
-      "Inspect branch naming and scenario linkage.",
-      "Review residual risks before merge.",
-    ],
-    expectedCheckpoints: [
-      "PR contains scenario IDs and root-cause summary.",
-      "Rerun evidence stats are attached.",
-      "PR status is open only when rerun failed count is zero.",
-    ],
-    edgeVariants: [
-      "Rerun still contains failures.",
-      "Fix attempt rerun data missing.",
-    ],
-    passCriteria:
-      "PR artifact enforces rerun gate and provides reviewer-ready context.",
-    priority: "critical",
-  },
-  {
-    slug: "review-board",
-    feature: "Review Board",
-    outcome: "User gets consolidated risk and recommendation view",
-    title: "Generate review board with run/fix/PR analytics",
-    persona: "Tech lead",
-    preconditions: ["At least one run exists"],
-    testData: ["Run summaries", "PR statuses", "Failure counts"],
-    steps: [
-      "Open review board for project.",
-      "Check risk map and recommendation ordering.",
-      "Validate PR statuses against run outcomes.",
-    ],
-    expectedCheckpoints: [
-      "Coverage and pass-rate metrics are populated.",
-      "Risk map references failed or blocked scenarios.",
-      "Recommendations prioritize unresolved risk.",
-    ],
-    edgeVariants: ["No PRs yet despite failures."],
-    passCriteria:
-      "Review board reflects persisted evidence and supports release decisions.",
-    priority: "high",
-  },
-  {
-    slug: "challenge-report",
-    feature: "Reporting",
-    outcome: "User exports challenge-ready narrative",
-    title: "Export report summarizing source trust, runs, fixes, and PR outcomes",
-    persona: "Challenge submitter",
-    preconditions: ["Review board can be generated"],
-    testData: ["Project metadata", "Manifest hash", "Run/PR aggregates"],
-    steps: [
-      "Trigger report export.",
-      "Review markdown summary sections.",
-      "Share report with stakeholders.",
-    ],
-    expectedCheckpoints: [
-      "Report includes source manifest traceability.",
-      "Run/failure/fix/PR evidence summaries are present.",
-      "Recommendations and residual risks are explicit.",
-    ],
-    edgeVariants: ["No failures occurred in latest run."],
-    passCriteria:
-      "Report is readable, complete, and traceable to stored records.",
-    priority: "medium",
-  },
-];
+const PRIORITIES: readonly ScenarioPriority[] = ["critical", "high", "medium"];
 
-const scenarioId = (packSeed: string, index: number): string =>
-  `${packSeed}_scn_${String(index + 1).padStart(2, "0")}`;
+const nowIso = () => new Date().toISOString();
+
+type JsonRecord = Record<string, unknown>;
+
+export interface ScenarioGenerationMetadata {
+  transport: "codex-app-server";
+  requestedSkill: string;
+  usedSkill: string | null;
+  skillAvailable: boolean;
+  skillPath: string | null;
+  threadId: string;
+  turnId: string;
+  turnStatus: string;
+  cwd: string;
+  generatedAt?: string;
+}
+
+interface ParsedScenarioOutput {
+  scenarios: ScenarioContract[];
+  groupedByFeature: Record<string, string[]>;
+  groupedByOutcome: Record<string, string[]>;
+}
+
+interface GenerateScenarioPackInput {
+  project: Project;
+  ownerId: string;
+  manifest: SourceManifest;
+  selectedSources: SourceRecord[];
+  model: string;
+  rawOutput: unknown;
+  metadata: ScenarioGenerationMetadata;
+}
+
+const isRecord = (value: unknown): value is JsonRecord =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const parseRawOutput = (rawOutput: unknown): unknown => {
+  if (typeof rawOutput !== "string") {
+    return rawOutput;
+  }
+
+  const trimmed = rawOutput.trim();
+  if (!trimmed) {
+    throw new Error("Codex scenario generation returned an empty response.");
+  }
+
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = fenced ? fenced[1].trim() : trimmed;
+
+  try {
+    return JSON.parse(candidate) as unknown;
+  } catch {
+    throw new Error("Codex scenario generation response was not valid JSON.");
+  }
+};
+
+const requireString = (value: unknown, fieldName: string): string => {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid scenario output: ${fieldName} must be a non-empty string.`);
+  }
+  return value.trim();
+};
+
+const requireStringArray = (value: unknown, fieldName: string): string[] => {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid scenario output: ${fieldName} must be an array of strings.`);
+  }
+
+  const normalized = value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0);
+
+  if (normalized.length === 0) {
+    throw new Error(`Invalid scenario output: ${fieldName} must include at least one entry.`);
+  }
+
+  return normalized;
+};
+
+const normalizePriority = (value: unknown): ScenarioPriority => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (PRIORITIES.includes(normalized as ScenarioPriority)) {
+    return normalized as ScenarioPriority;
+  }
+
+  throw new Error(
+    `Invalid scenario output: priority must be one of ${PRIORITIES.join(", ")}.`,
+  );
+};
+
+const normalizeScenario = (value: unknown, index: number): ScenarioContract => {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid scenario output: scenario at index ${index} is not an object.`);
+  }
+
+  return {
+    id: requireString(value.id, `scenarios[${index}].id`),
+    feature: requireString(value.feature, `scenarios[${index}].feature`),
+    outcome: requireString(value.outcome, `scenarios[${index}].outcome`),
+    title: requireString(value.title, `scenarios[${index}].title`),
+    persona: requireString(value.persona, `scenarios[${index}].persona`),
+    preconditions: requireStringArray(
+      value.preconditions,
+      `scenarios[${index}].preconditions`,
+    ),
+    testData: requireStringArray(value.testData, `scenarios[${index}].testData`),
+    steps: requireStringArray(value.steps, `scenarios[${index}].steps`),
+    expectedCheckpoints: requireStringArray(
+      value.expectedCheckpoints,
+      `scenarios[${index}].expectedCheckpoints`,
+    ),
+    edgeVariants: requireStringArray(
+      value.edgeVariants,
+      `scenarios[${index}].edgeVariants`,
+    ),
+    passCriteria: requireString(value.passCriteria, `scenarios[${index}].passCriteria`),
+    priority: normalizePriority(value.priority),
+  };
+};
+
+const normalizeScenarios = (value: unknown): ScenarioContract[] => {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid scenario output: scenarios must be an array.");
+  }
+
+  const scenarios = value.map((scenario, index) => normalizeScenario(scenario, index));
+  if (scenarios.length < 8) {
+    throw new Error("Invalid scenario output: expected at least 8 scenarios.");
+  }
+
+  const seenIds = new Set<string>();
+  scenarios.forEach((scenario) => {
+    if (seenIds.has(scenario.id)) {
+      throw new Error(`Invalid scenario output: duplicate scenario id ${scenario.id}.`);
+    }
+    seenIds.add(scenario.id);
+  });
+
+  return scenarios;
+};
+
+const normalizeGroupMap = (
+  value: unknown,
+  mapName: string,
+): Record<string, string[]> => {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const output: Record<string, string[]> = {};
+
+  Object.entries(value).forEach(([groupKey, ids]) => {
+    if (!Array.isArray(ids)) {
+      return;
+    }
+
+    const normalizedIds = ids
+      .map((id) => (typeof id === "string" ? id.trim() : ""))
+      .filter((id) => id.length > 0);
+
+    if (normalizedIds.length > 0) {
+      output[groupKey] = normalizedIds;
+    }
+  });
+
+  if (Object.keys(output).length === 0 && isRecord(value)) {
+    return {};
+  }
+
+  if (!isRecord(output)) {
+    throw new Error(`Invalid scenario output: ${mapName} must map group names to id arrays.`);
+  }
+
+  return output;
+};
+
+const deriveGroupsFromScenarios = (
+  scenarios: ScenarioContract[],
+): {
+  byFeature: Record<string, string[]>;
+  byOutcome: Record<string, string[]>;
+} => {
+  const byFeature: Record<string, string[]> = {};
+  const byOutcome: Record<string, string[]> = {};
+
+  scenarios.forEach((scenario) => {
+    byFeature[scenario.feature] = byFeature[scenario.feature] ?? [];
+    byFeature[scenario.feature].push(scenario.id);
+
+    byOutcome[scenario.outcome] = byOutcome[scenario.outcome] ?? [];
+    byOutcome[scenario.outcome].push(scenario.id);
+  });
+
+  return {
+    byFeature,
+    byOutcome,
+  };
+};
+
+const parseScenarioOutput = (rawOutput: unknown): ParsedScenarioOutput => {
+  const parsed = parseRawOutput(rawOutput);
+
+  if (!isRecord(parsed)) {
+    throw new Error("Invalid scenario output: expected a JSON object.");
+  }
+
+  const container = isRecord(parsed.scenarioPack)
+    ? parsed.scenarioPack
+    : isRecord(parsed.result)
+      ? parsed.result
+      : parsed;
+
+  const scenarios = normalizeScenarios(container.scenarios);
+  const generatedGroupsByFeature = normalizeGroupMap(
+    container.groupedByFeature,
+    "groupedByFeature",
+  );
+  const generatedGroupsByOutcome = normalizeGroupMap(
+    container.groupedByOutcome,
+    "groupedByOutcome",
+  );
+  const derivedGroups = deriveGroupsFromScenarios(scenarios);
+
+  return {
+    scenarios,
+    groupedByFeature:
+      Object.keys(generatedGroupsByFeature).length > 0
+        ? generatedGroupsByFeature
+        : derivedGroups.byFeature,
+    groupedByOutcome:
+      Object.keys(generatedGroupsByOutcome).length > 0
+        ? generatedGroupsByOutcome
+        : derivedGroups.byOutcome,
+  };
+};
 
 const renderScenarioMarkdown = (scenarios: ScenarioContract[]): string => {
   const lines: string[] = ["# Generated Scenarios", ""];
@@ -277,6 +260,8 @@ const renderScenarioMarkdown = (scenarios: ScenarioContract[]): string => {
     lines.push(`- Pass Criteria: ${scenario.passCriteria}`);
     lines.push("- Preconditions:");
     scenario.preconditions.forEach((item) => lines.push(`  - ${item}`));
+    lines.push("- Test Data:");
+    scenario.testData.forEach((item) => lines.push(`  - ${item}`));
     lines.push("- Steps:");
     scenario.steps.forEach((item) => lines.push(`  - ${item}`));
     lines.push("- Expected Checkpoints:");
@@ -290,55 +275,35 @@ const renderScenarioMarkdown = (scenarios: ScenarioContract[]): string => {
 };
 
 export const generateScenarioPack = (
-  project: Project,
-  ownerId: string,
-  manifest: SourceManifest,
-  selectedSources: SourceRecord[],
+  input: GenerateScenarioPackInput,
 ): Omit<ScenarioPack, "id" | "createdAt" | "updatedAt"> => {
-  const packSeed = manifest.manifestHash.slice(0, 10);
-  const sourceWeight = Math.max(1, Math.ceil(selectedSources.length / 3));
-  const scenarioCount = Math.min(
-    SCENARIO_BLUEPRINTS.length,
-    Math.max(8, sourceWeight + 7),
-  );
-
-  const selectedBlueprints = SCENARIO_BLUEPRINTS.slice(0, scenarioCount);
-  const scenarios: ScenarioContract[] = selectedBlueprints.map((blueprint, index) => ({
-    id: scenarioId(packSeed, index),
-    feature: blueprint.feature,
-    outcome: blueprint.outcome,
-    title: blueprint.title,
-    persona: blueprint.persona,
-    preconditions: blueprint.preconditions,
-    testData: blueprint.testData,
-    steps: blueprint.steps,
-    expectedCheckpoints: blueprint.expectedCheckpoints,
-    edgeVariants: blueprint.edgeVariants,
-    passCriteria: blueprint.passCriteria,
-    priority: blueprint.priority,
-  }));
-
-  const groupedByFeature: Record<string, string[]> = {};
-  const groupedByOutcome: Record<string, string[]> = {};
-
-  scenarios.forEach((scenario) => {
-    groupedByFeature[scenario.feature] = groupedByFeature[scenario.feature] ?? [];
-    groupedByFeature[scenario.feature].push(scenario.id);
-
-    groupedByOutcome[scenario.outcome] = groupedByOutcome[scenario.outcome] ?? [];
-    groupedByOutcome[scenario.outcome].push(scenario.id);
-  });
+  const parsedOutput = parseScenarioOutput(input.rawOutput);
 
   return {
-    ownerId,
-    projectId: project.id,
-    manifestId: manifest.id,
-    manifestHash: manifest.manifestHash,
-    sourceIds: selectedSources.map((source) => source.id),
-    model: "codex spark",
-    groupedByFeature,
-    groupedByOutcome,
-    scenarios,
-    scenariosMarkdown: renderScenarioMarkdown(scenarios),
+    ownerId: input.ownerId,
+    projectId: input.project.id,
+    manifestId: input.manifest.id,
+    manifestHash: input.manifest.manifestHash,
+    repositoryFullName: input.manifest.repositoryFullName,
+    branch: input.manifest.branch,
+    headCommitSha: input.manifest.headCommitSha,
+    sourceIds: input.selectedSources.map((source) => source.id),
+    model: input.model,
+    generationAudit: {
+      transport: input.metadata.transport,
+      requestedSkill: input.metadata.requestedSkill,
+      usedSkill: input.metadata.usedSkill,
+      skillAvailable: input.metadata.skillAvailable,
+      skillPath: input.metadata.skillPath,
+      threadId: input.metadata.threadId,
+      turnId: input.metadata.turnId,
+      turnStatus: input.metadata.turnStatus,
+      cwd: input.metadata.cwd,
+      generatedAt: input.metadata.generatedAt ?? nowIso(),
+    },
+    groupedByFeature: parsedOutput.groupedByFeature,
+    groupedByOutcome: parsedOutput.groupedByOutcome,
+    scenarios: parsedOutput.scenarios,
+    scenariosMarkdown: renderScenarioMarkdown(parsedOutput.scenarios),
   };
 };

@@ -12,7 +12,7 @@ Primary objective:
 Core flow:
 1. User signs in with ChatGPT.
 2. User connects GitHub repository.
-3. User curates source inputs (PRD/specs/plans/code).
+3. User curates source inputs (planning/spec/task docs); code is baseline context, not a selectable source.
 4. System generates grouped scenarios.
 5. System runs scenarios and captures evidence.
 6. System fixes failures and opens PRs.
@@ -35,6 +35,7 @@ Owns:
 Does not own:
 - Long-running job execution.
 - Source-of-truth scenario execution state.
+- Scenario synthesis and agent reasoning.
 
 ### 3.2 API Layer (Worker Routes)
 
@@ -76,6 +77,7 @@ Responsibilities:
 - Build JSON-RPC payloads for Codex app-server lifecycle.
 - Track local session metadata.
 - Provide transition point to real app-server transport bridge.
+- Execute scenario synthesis turns from confirmed source manifests.
 
 Phase 0 implementation:
 - Session skeleton with `initialize` and `thread/start` payload blueprints.
@@ -83,6 +85,12 @@ Phase 0 implementation:
 Planned upgrades:
 - Full transport bridge (stdio/ws relay service).
 - Turn streaming and review mode ingestion.
+
+Phase 3 contract:
+- Worker validates selected source manifest and repo/branch/commit context.
+- Worker invokes Codex app-server for scenario synthesis (`codex spark`).
+- Codex output is persisted as structured scenario JSON + `scenarios.md`.
+- UI consumes status and artifacts and offers download; UI does not generate scenarios.
 
 ### 3.6 GitHub Integration Service
 

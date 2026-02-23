@@ -137,14 +137,31 @@ export interface ScenarioContract {
   priority: ScenarioPriority;
 }
 
+export interface ScenarioGenerationAudit {
+  transport: "codex-app-server";
+  requestedSkill: string;
+  usedSkill: string | null;
+  skillAvailable: boolean;
+  skillPath: string | null;
+  threadId: string;
+  turnId: string;
+  turnStatus: string;
+  cwd: string;
+  generatedAt: string;
+}
+
 export interface ScenarioPack {
   id: string;
   projectId: string;
   ownerId: string;
   manifestId: string;
   manifestHash: string;
+  repositoryFullName: string;
+  branch: string;
+  headCommitSha: string;
   sourceIds: string[];
   model: string;
+  generationAudit: ScenarioGenerationAudit;
   groupedByFeature: Record<string, string[]>;
   groupedByOutcome: Record<string, string[]>;
   scenarios: ScenarioContract[];

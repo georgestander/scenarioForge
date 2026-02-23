@@ -21,6 +21,7 @@ import {
 } from "@/services/chatgptAuth";
 import { startCodexSession } from "@/services/codexSession";
 import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
+import { generateScenariosViaCodex } from "@/services/codexScenario";
 import {
   connectGitHubInstallation,
   consumeGitHubConnectState,
@@ -851,17 +852,117 @@ export default defineApp([
           return json({ error: "Manifest contains no selected sources." }, 400);
         }
 
-        const scenarioPackInput = generateScenarioPack(
+        const githubConnection = getGitHubConnectionForPrincipal(principal.id);
+        if (!githubConnection) {
+          return json(
+            { error: "Connect GitHub before generating scenarios." },
+            400,
+          );
+        }
+
+        let codexGeneration;
+        try {
+          codexGeneration = await generateScenariosViaCodex({
+            project,
+            manifest,
+            selectedSources: sources,
+            githubToken: githubConnection.accessToken,
+          });
+        } catch (error) {
+          return json(
+            {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Failed to generate scenarios through Codex app-server.",
+            },
+            502,
+          );
+        }
+
+        const scenarioPackInput = generateScenarioPack({
           project,
-          principal.id,
+          ownerId: principal.id,
           manifest,
-          sources,
-        );
+          selectedSources: sources,
+          model: codexGeneration.model,
+          rawOutput: codexGeneration.responseText,
+          metadata: {
+            transport: "codex-app-server",
+            requestedSkill: codexGeneration.skillRequested,
+            usedSkill: codexGeneration.skillUsed,
+            skillAvailable: codexGeneration.skillAvailable,
+            skillPath: codexGeneration.skillPath,
+            threadId: codexGeneration.threadId,
+            turnId: codexGeneration.turnId,
+            turnStatus: codexGeneration.turnStatus,
+            cwd: codexGeneration.cwd,
+            generatedAt: codexGeneration.completedAt,
+          },
+        });
         const pack = createScenarioPack(scenarioPackInput);
         return json({ pack }, 201);
       }
 
       return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/scenario-packs/:packId/artifacts/:format", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const packId = String(params?.packId ?? "").trim();
+      const format = String(params?.format ?? "").trim().toLowerCase();
+      const pack = getScenarioPackById(principal.id, packId);
+
+      if (!pack) {
+        return json({ error: "Scenario pack not found." }, 404);
+      }
+
+      if (format === "md" || format === "markdown") {
+        return new Response(pack.scenariosMarkdown, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Content-Disposition": `attachment; filename=\"${pack.id}-scenarios.md\"`,
+          },
+        });
+      }
+
+      if (format === "json") {
+        const artifact = {
+          packId: pack.id,
+          manifestId: pack.manifestId,
+          manifestHash: pack.manifestHash,
+          repositoryFullName: pack.repositoryFullName,
+          branch: pack.branch,
+          headCommitSha: pack.headCommitSha,
+          model: pack.model,
+          generationAudit: pack.generationAudit,
+          groupedByFeature: pack.groupedByFeature,
+          groupedByOutcome: pack.groupedByOutcome,
+          scenarios: pack.scenarios,
+          generatedAt: pack.createdAt,
+        };
+
+        return new Response(JSON.stringify(artifact, null, 2), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": `attachment; filename=\"${pack.id}-scenarios.json\"`,
+          },
+        });
+      }
+
+      return json({ error: "Unsupported artifact format." }, 400);
     },
   ]),
   route("/api/projects/:projectId/scenario-runs", [

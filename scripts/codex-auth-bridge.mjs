@@ -14,6 +14,9 @@ const CODEX_ARGS =
     "app-server",
   ];
 const RPC_TIMEOUT_MS = Number(process.env.CODEX_AUTH_BRIDGE_RPC_TIMEOUT_MS || "15000");
+const TURN_COMPLETION_TIMEOUT_MS = Number(
+  process.env.CODEX_AUTH_BRIDGE_TURN_TIMEOUT_MS || "180000",
+);
 
 let requestId = 1;
 let isInitialized = false;
@@ -22,6 +25,8 @@ let initializePromise = null;
 
 const pendingRequests = new Map();
 const loginCompletions = new Map();
+const turnCompletionWatchers = new Map();
+const completedTurns = new Map();
 
 const codexProc = spawn(CODEX_BIN, CODEX_ARGS, {
   stdio: ["pipe", "pipe", "inherit"],
@@ -68,6 +73,48 @@ const sendNotification = (method, params = {}) => {
   });
 };
 
+const recordCompletedTurn = (turn) => {
+  if (!turn || typeof turn.id !== "string" || !turn.id) {
+    return;
+  }
+
+  completedTurns.set(turn.id, turn);
+  const watcher = turnCompletionWatchers.get(turn.id);
+
+  if (!watcher) {
+    return;
+  }
+
+  clearTimeout(watcher.timeout);
+  turnCompletionWatchers.delete(turn.id);
+  watcher.resolve(turn);
+};
+
+const waitForTurnCompletion = (turnId, timeoutMs = TURN_COMPLETION_TIMEOUT_MS) =>
+  new Promise((resolve, reject) => {
+    if (!turnId || typeof turnId !== "string") {
+      reject(new Error("turnId is required to wait for completion."));
+      return;
+    }
+
+    const cached = completedTurns.get(turnId);
+    if (cached) {
+      resolve(cached);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      turnCompletionWatchers.delete(turnId);
+      reject(new Error(`turn ${turnId} did not complete within ${timeoutMs}ms.`));
+    }, timeoutMs);
+
+    turnCompletionWatchers.set(turnId, {
+      resolve,
+      reject,
+      timeout,
+    });
+  });
+
 const setLoginCompletion = (payload) => {
   const key = payload.loginId ?? "__NO_LOGIN_ID__";
   loginCompletions.set(key, {
@@ -104,6 +151,11 @@ const consumeNotification = (message) => {
 
   if (message.method === "account/login/completed") {
     setLoginCompletion(message.params ?? {});
+    return;
+  }
+
+  if (message.method === "turn/completed") {
+    recordCompletedTurn(message.params?.turn ?? null);
   }
 };
 
@@ -167,6 +219,215 @@ const sendJson = (response, statusCode, payload) => {
 
 const sendError = (response, statusCode, error) => {
   sendJson(response, statusCode, { error });
+};
+
+const readString = (value) => (typeof value === "string" ? value.trim() : "");
+
+const normalizeSkillEntries = (skillsResult, cwd) => {
+  const data = Array.isArray(skillsResult?.data) ? skillsResult.data : [];
+  const normalizedCwd = readString(cwd);
+  const output = [];
+
+  data.forEach((entry) => {
+    const entryCwd = readString(entry?.cwd);
+    if (normalizedCwd && entryCwd && entryCwd !== normalizedCwd) {
+      return;
+    }
+
+    const skills = Array.isArray(entry?.skills) ? entry.skills : [];
+    skills.forEach((skill) => {
+      output.push({
+        name: readString(skill?.name),
+        path: readString(skill?.path) || null,
+      });
+    });
+  });
+
+  return output.filter((skill) => skill.name.length > 0);
+};
+
+const resolveSkill = async (skillName, cwd) => {
+  const normalizedSkillName = readString(skillName);
+  const normalizedCwd = readString(cwd) || process.cwd();
+
+  if (!normalizedSkillName) {
+    return {
+      requested: null,
+      available: false,
+      selected: null,
+    };
+  }
+
+  try {
+    const skillsResult = await sendRpc("skills/list", {
+      cwds: [normalizedCwd],
+      forceReload: true,
+    });
+    const skills = normalizeSkillEntries(skillsResult, normalizedCwd);
+    const selected =
+      skills.find(
+        (skill) => skill.name.toLowerCase() === normalizedSkillName.toLowerCase(),
+      ) ?? null;
+
+    return {
+      requested: normalizedSkillName,
+      available: Boolean(selected),
+      selected,
+    };
+  } catch {
+    return {
+      requested: normalizedSkillName,
+      available: false,
+      selected: null,
+    };
+  }
+};
+
+const extractTurnId = (turnResult) => readString(turnResult?.turn?.id);
+
+const extractThreadId = (threadResult) => readString(threadResult?.thread?.id);
+
+const extractTurnFromThreadRead = (threadReadResult, turnId) => {
+  const turns = Array.isArray(threadReadResult?.thread?.turns)
+    ? threadReadResult.thread.turns
+    : [];
+  return (
+    turns.find((turn) => readString(turn?.id) === turnId) ??
+    turns[turns.length - 1] ??
+    null
+  );
+};
+
+const extractAgentMessageText = (items) => {
+  if (!Array.isArray(items)) {
+    return "";
+  }
+
+  let finalText = "";
+
+  items.forEach((item) => {
+    if (item?.type === "agentMessage" && typeof item?.text === "string") {
+      finalText = item.text;
+    }
+  });
+
+  return finalText.trim();
+};
+
+const runScenarioGenerationTurn = async (body) => {
+  const prompt = readString(body?.prompt);
+  if (!prompt) {
+    throw new Error("prompt is required.");
+  }
+
+  const model = readString(body?.model) || "codex spark";
+  const cwd = readString(body?.cwd) || process.cwd();
+  const skillName = readString(body?.skillName) || "scenario";
+  const outputSchema =
+    body?.outputSchema && typeof body.outputSchema === "object"
+      ? body.outputSchema
+      : null;
+  const approvalPolicy = readString(body?.approvalPolicy) || "never";
+  const sandboxPolicy =
+    body?.sandboxPolicy && typeof body.sandboxPolicy === "object"
+      ? body.sandboxPolicy
+      : {
+          type: "workspaceWrite",
+          networkAccess: true,
+        };
+  const turnTimeoutMs =
+    Number.isFinite(Number(body?.turnTimeoutMs)) && Number(body.turnTimeoutMs) > 0
+      ? Number(body.turnTimeoutMs)
+      : TURN_COMPLETION_TIMEOUT_MS;
+
+  const skillResolution = await resolveSkill(skillName, cwd);
+  const textPrefix = skillResolution.available
+    ? `$${skillName} `
+    : "Scenario generation request: ";
+  const input = [
+    {
+      type: "text",
+      text: `${textPrefix}${prompt}`,
+    },
+  ];
+
+  if (skillResolution.available && skillResolution.selected?.path) {
+    input.push({
+      type: "skill",
+      name: skillName,
+      path: skillResolution.selected.path,
+    });
+  }
+
+  const threadResult = await sendRpc("thread/start", {
+    model,
+    cwd,
+    approvalPolicy,
+    sandbox: "workspaceWrite",
+  });
+  const threadId = extractThreadId(threadResult);
+
+  if (!threadId) {
+    throw new Error("Failed to create a Codex thread for scenario generation.");
+  }
+
+  const turnStartParams = {
+    threadId,
+    input,
+    cwd,
+    model,
+    approvalPolicy,
+    sandboxPolicy,
+    outputSchema,
+  };
+  const turnResult = await sendRpc("turn/start", turnStartParams);
+  const turnId = extractTurnId(turnResult);
+
+  if (!turnId) {
+    throw new Error("Codex did not return a turn id for scenario generation.");
+  }
+
+  let completedTurn = null;
+  try {
+    completedTurn = await waitForTurnCompletion(turnId, turnTimeoutMs);
+  } catch {
+    completedTurn = null;
+  }
+
+  let finalTurn = completedTurn;
+  try {
+    const threadRead = await sendRpc("thread/read", {
+      threadId,
+      includeTurns: true,
+    });
+    const readTurn = extractTurnFromThreadRead(threadRead, turnId);
+    if (readTurn) {
+      finalTurn = readTurn;
+    }
+  } catch {
+    // Keep notification-derived turn if thread/read is unavailable.
+  }
+
+  const responseText = extractAgentMessageText(finalTurn?.items ?? []);
+  if (!responseText) {
+    throw new Error(
+      "Codex completed the turn but did not emit an agentMessage text payload.",
+    );
+  }
+
+  return {
+    model,
+    cwd,
+    threadId,
+    turnId,
+    turnStatus: readString(finalTurn?.status) || "completed",
+    skillRequested: skillResolution.requested ?? skillName,
+    skillAvailable: skillResolution.available,
+    skillUsed: skillResolution.available ? skillName : null,
+    skillPath: skillResolution.selected?.path ?? null,
+    responseText,
+    completedAt: nowIso(),
+  };
 };
 
 const ensureInitialized = async () => {
@@ -273,6 +534,13 @@ const handleRequest = async (request, response) => {
 
   if (request.method === "POST" && path === "/account/logout") {
     const result = await sendRpc("account/logout", {});
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (request.method === "POST" && path === "/scenario/generate") {
+    const body = await parseBody(request);
+    const result = await runScenarioGenerationTurn(body);
     sendJson(response, 200, result);
     return;
   }

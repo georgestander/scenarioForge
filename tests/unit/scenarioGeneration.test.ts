@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
 import { buildSourceManifest } from "@/services/sourceGate";
-import { buildProject, buildSelectedSources } from "../helpers/fixtures.ts";
+import {
+  buildGeneratedOutput,
+  buildProject,
+  buildSelectedSources,
+} from "../helpers/fixtures.ts";
 
 test("buildSourceManifest links selected source IDs and hash", () => {
   const project = buildProject();
@@ -31,12 +35,25 @@ test("generateScenarioPack returns contract-complete grouped scenarios", () => {
     confirmationNote: "Test confirmation",
   });
 
-  const pack = generateScenarioPack(
+  const pack = generateScenarioPack({
     project,
-    project.ownerId,
-    { ...manifest, id: "smf_test", createdAt: "", updatedAt: "" },
-    sources,
-  );
+    ownerId: project.ownerId,
+    manifest: { ...manifest, id: "smf_test", createdAt: "", updatedAt: "" },
+    selectedSources: sources,
+    model: "codex spark",
+    rawOutput: buildGeneratedOutput(),
+    metadata: {
+      transport: "codex-app-server",
+      requestedSkill: "scenario",
+      usedSkill: "scenario",
+      skillAvailable: true,
+      skillPath: "/Users/example/.codex/skills/scenario/SKILL.md",
+      threadId: "thr_test",
+      turnId: "turn_test",
+      turnStatus: "completed",
+      cwd: "/tmp/scenarioforge",
+    },
+  });
 
   assert.ok(pack.scenarios.length >= 8);
   assert.ok(Object.keys(pack.groupedByFeature).length > 0);

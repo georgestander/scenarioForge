@@ -6,6 +6,7 @@ import { createScenarioRunRecord } from "@/services/runEngine";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
 import type { RepositorySnapshot } from "@/services/sourceGate";
 import { buildSourceManifest, scanSourcesForProject } from "@/services/sourceGate";
+import { buildGeneratedOutput } from "../helpers/fixtures.ts";
 import {
   createFixAttempt,
   createProject,
@@ -100,7 +101,25 @@ test("phase2-6 flow persists source -> generation -> run -> fix -> review artifa
   const manifest = createSourceManifest(manifestInput);
   assert.equal(listSourceManifestsForProject(ownerId, project.id).length, 1);
 
-  const packInput = generateScenarioPack(project, ownerId, manifest, selectedSources);
+  const packInput = generateScenarioPack({
+    project,
+    ownerId,
+    manifest,
+    selectedSources,
+    model: "codex spark",
+    rawOutput: buildGeneratedOutput(),
+    metadata: {
+      transport: "codex-app-server",
+      requestedSkill: "scenario",
+      usedSkill: "scenario",
+      skillAvailable: true,
+      skillPath: "/Users/example/.codex/skills/scenario/SKILL.md",
+      threadId: "thr_regression",
+      turnId: "turn_regression",
+      turnStatus: "completed",
+      cwd: "/tmp/scenarioforge",
+    },
+  });
   const pack = createScenarioPack(packInput);
   assert.equal(listScenarioPacksForProject(ownerId, project.id).length, 1);
 

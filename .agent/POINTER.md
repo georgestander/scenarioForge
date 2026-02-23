@@ -28,14 +28,16 @@ Ship a full-flow scenario-first quality product for the Codex challenge.
 - Phase 0 foundation: implemented.
 - Phase 1 auth + repo connect: implemented.
 - Phase 2 source relevance gate: implemented.
-- Phase 3 scenario generation: implemented.
-- Phase 4 run engine + observability: implemented.
-- Phase 5 auto-fix + PR creation records: implemented.
-- Phase 6 review board + export report: implemented.
+- Phase 3 scenario generation: implemented with Codex app-server turn execution and artifact downloads.
+- Phase 4 run engine + observability: scaffolded (deterministic simulation still in place).
+- Phase 5 auto-fix + PR creation records: scaffolded (deterministic simulation still in place).
+- Phase 6 review board + export report: scaffolded on top of current deterministic run/fix/PR records.
 - Available now:
   - Full linear workflow UI: connect -> select sources -> generate -> run -> fix -> review.
   - Source inventory scanner with trust scoring (`trusted/suspect/stale/excluded`), deselection, and explicit manifest confirmation.
-  - Scenario pack generation grouped by feature and outcome, with contract-complete scenarios + markdown persistence payload.
+  - Scenario pack generation executed by Codex app-server (`codex spark`) with skill-first (`$scenario`) invocation and fallback prompt contract.
+  - Scenario artifacts persisted as structured pack JSON + `scenarios.md`, including generation audit metadata (thread/turn/model/skill/repo/branch/head SHA).
+  - Stage 3 UI download actions for `scenarios.md` and `scenarios.json`.
   - Run engine records with deterministic per-scenario statuses, event timelines, and evidence artifacts.
   - Auto-fix attempt records with root-cause summaries and PR records gated by rerun evidence.
   - Review board aggregation and one-click challenge report export API.
@@ -43,13 +45,16 @@ Ship a full-flow scenario-first quality product for the Codex challenge.
 
 ## Immediate Next Step
 
-Productionize Phase 7 hardening:
-1. Replace in-memory state with durable DB/object storage.
-2. Integrate real Codex transport streaming and review mode.
-3. Replace simulated fix/PR artifacts with real branch commit + PR creation.
+Execute Phase 4 with real runner semantics:
+1. Replace deterministic run outcomes with real scenario execution against repo/app context.
+2. Capture resolvable evidence artifacts (logs/traces/screenshots/diffs) tied to scenario/run IDs.
+3. Keep existing review/fix contracts but switch inputs from simulated to real runner output.
 
 ## Session Audit Trail
 
+- 2026-02-23: Implemented real Phase 3 generation path through Codex app-server bridge (`/scenario/generate`) with `skills/list` capability check, `$scenario` skill-first invocation, and fallback prompt contract.
+- Decision: Scenario packs are now built from Codex turn output (no static blueprints), validated against strict scenario schema, and persisted with generation audit metadata (`threadId`, `turnId`, model, skill availability/path, cwd, repo/branch/head SHA).
+- Next action: Replace Phase 4 deterministic run simulation with real execution + evidence capture while preserving current API and UI contracts.
 - 2026-02-23: Implemented real Phase 2 source relevance gate against the connected GitHub repository and selected branch, replacing hard-coded source candidates.
 - Decision: Source scan now discovers only planning/spec/task docs (`.md/.txt/.json`) from repository tree, computes recency + doc/code alignment signals, flags stale/conflicting selections, and requires explicit confirmation before manifest creation.
 - Next action: Wire Phase 3 scenario generation to consume manifest-traceable source docs and produce `scenarios.md` using the scenario skill contract.

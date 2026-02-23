@@ -53,24 +53,25 @@ Out of scope (initial release):
 - Specs.
 - Tasks/plans.
 - Architecture docs.
-- Code map and route/module inventory.
+- Code map and route/module inventory (baseline context only; not user-selectable).
 2. System displays each source with:
 - Last modified timestamp.
 - Path.
 - Type.
 - Relevance score.
 - Staleness/conflict warnings.
-3. User can select/deselect any source.
+3. User can select/deselect discovered planning/spec/task documents (`.md`, `.txt`, `.json`).
 4. User must confirm: "Selected sources are relevant to current app direction."
 5. System stores source manifest for reproducibility.
 
 ### 4.3 Scenario Generation
 
 1. User clicks "Generate Scenarios".
-2. System creates scenario packs grouped by:
+2. Worker API validates the confirmed source manifest and invokes Codex app-server turns.
+3. Codex app-server performs source synthesis and creates scenario packs grouped by:
 - Feature areas.
 - End-user outcomes.
-3. Each scenario includes:
+4. Each scenario includes:
 - ID.
 - Persona.
 - Preconditions and test data.
@@ -78,7 +79,8 @@ Out of scope (initial release):
 - Expected results checkpoints.
 - Edge variants.
 - Binary pass criteria.
-4. User reviews and optionally excludes scenarios before run.
+5. System persists structured scenario JSON and `scenarios.md` linked to manifest hash + repo/branch/head SHA.
+6. UI presents generated scenarios and offers artifact download; UI does not perform scenario synthesis.
 
 ### 4.4 Run and Feedback
 
@@ -124,6 +126,11 @@ Responsibilities:
 - Repo/source/scenario management UI.
 - Live execution dashboard.
 - PR/review board.
+- Artifact viewing and download controls.
+
+Does not own:
+- Scenario synthesis logic.
+- Agent execution logic.
 
 Why RedwoodSDK:
 - Server-first React model.
@@ -138,6 +145,7 @@ Responsibilities:
 - Approval handling.
 - Review mode invocation.
 - Skills and app integration.
+- Scenario generation and source synthesis execution.
 
 Protocol shape:
 - JSON-RPC 2.0 style over stdio/ws.
@@ -347,14 +355,15 @@ Exit criteria:
 
 ### Phase 3: Scenario Generation (Day 4-5)
 
-- Scenario pack generation using sub-agents.
+- Scenario pack generation through Codex app-server turns using `codex spark`.
 - Grouping by feature/outcome.
-- Persist `scenarios.md` and structured scenario JSON.
+- Persist `scenarios.md` and structured scenario JSON with source manifest + repo/branch/SHA linkage.
+- Surface generated artifacts in UI with explicit download actions.
 
 Exit criteria:
 - User gets high-volume, structured, testable scenarios.
-- save in /docs or created and saved in /docs.
-- also available to download in the ui.
+- Generation execution is performed by Codex app-server (not by UI client code).
+- Generated artifacts are persisted in backend storage and are downloadable from the UI.
 
 ### Phase 4: Run Engine + Observability (Day 5-6)
 
