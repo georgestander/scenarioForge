@@ -10,7 +10,6 @@ import type { AuthPrincipal, AuthSession, GitHubConnection } from "@/domain/mode
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import {
   hydrateCoreStateFromD1,
-  persistCodexSessionToD1,
   persistGitHubConnectionToD1,
   persistProjectToD1,
   reconcilePrincipalIdentityInD1,
@@ -22,7 +21,6 @@ import {
   readChatGptLoginCompletion,
   startChatGptLogin,
 } from "@/services/chatgptAuth";
-import { startCodexSession } from "@/services/codexSession";
 import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
 import { generateScenariosViaCodex } from "@/services/codexScenario";
 import {
@@ -58,7 +56,6 @@ import {
   getScenarioPackById,
   getScenarioRunById,
   getSourceManifestById,
-  listCodexSessionsForOwner,
   listFixAttemptsForProject,
   listProjectsForOwner,
   listPullRequestsForProject,
@@ -538,50 +535,6 @@ export default defineApp([
         await persistProjectToD1(project);
 
         return json({ project }, 201);
-      }
-
-      return json({ error: "Method not allowed." }, 405);
-    },
-  ]),
-  route("/api/codex/sessions", [
-    requireAuth,
-    async ({ request, ctx }) => {
-      const principal = getPrincipalFromContext(ctx);
-
-      if (!principal) {
-        return json({ error: "Authentication required." }, 401);
-      }
-
-      if (request.method === "GET") {
-        return json({ data: listCodexSessionsForOwner(principal.id) });
-      }
-
-      if (request.method === "POST") {
-        const payload = await parseJsonBody(request);
-        const projectId = String(payload?.projectId ?? "").trim();
-
-        if (!projectId) {
-          return json({ error: "projectId is required" }, 400);
-        }
-
-        try {
-          const session = startCodexSession({
-            ownerId: principal.id,
-            projectId,
-          });
-          await persistCodexSessionToD1(session);
-          return json({ session }, 201);
-        } catch (error) {
-          return json(
-            {
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Failed to initialize Codex session",
-            },
-            400,
-          );
-        }
       }
 
       return json({ error: "Method not allowed." }, 405);

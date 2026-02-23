@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AuthPrincipal,
-  CodexSession,
   FixAttempt,
   GitHubRepository,
   Project,
@@ -150,7 +149,6 @@ const stageTitle = (stage: Stage): string => {
 
 export const Welcome = () => {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [sessions, setSessions] = useState<CodexSession[]>([]);
   const [authPrincipal, setAuthPrincipal] = useState<AuthPrincipal | null>(null);
   const [githubConnection, setGithubConnection] =
     useState<GitHubConnectionView | null>(null);
@@ -382,7 +380,6 @@ export const Welcome = () => {
 
     if (!principal) {
       setProjects([]);
-      setSessions([]);
       setGithubConnection(null);
       setGithubRepos([]);
       setSelectedProjectId("");
@@ -398,13 +395,11 @@ export const Welcome = () => {
       return;
     }
 
-    const [projectRes, sessionRes, githubConnectionRes, githubReposRes] =
-      await Promise.all([
-        fetch("/api/projects"),
-        fetch("/api/codex/sessions"),
-        fetch("/api/github/connection"),
-        fetch("/api/github/repos"),
-      ]);
+    const [projectRes, githubConnectionRes, githubReposRes] = await Promise.all([
+      fetch("/api/projects"),
+      fetch("/api/github/connection"),
+      fetch("/api/github/repos"),
+    ]);
 
     let nextProjects: Project[] = [];
     if (projectRes.ok) {
@@ -420,13 +415,6 @@ export const Welcome = () => {
     } else {
       setProjects([]);
       setSelectedProjectId("");
-    }
-
-    if (sessionRes.ok) {
-      const payload = (await sessionRes.json()) as CollectionPayload<CodexSession>;
-      setSessions(payload.data ?? []);
-    } else {
-      setSessions([]);
     }
 
     if (githubConnectionRes.ok) {
@@ -935,27 +923,6 @@ export const Welcome = () => {
     setSelectedProjectId(payload.project.id);
     await loadBaseData();
     setStatusMessage(`Created project ${payload.project.name}.`);
-  };
-
-  const handleStartSession = async () => {
-    if (!selectedProjectId) {
-      setStatusMessage("Select a project first.");
-      return;
-    }
-
-    const response = await fetch("/api/codex/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: selectedProjectId }),
-    });
-
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to initialize Codex session."));
-      return;
-    }
-
-    await loadBaseData();
-    setStatusMessage("Codex session initialized.");
   };
 
   const handleScanSources = async () => {
@@ -1473,9 +1440,6 @@ export const Welcome = () => {
               </label>
 
               <div className={styles.inlineActions}>
-                <button type="button" onClick={handleStartSession} disabled={!selectedProjectId}>
-                  Initialize Codex Session
-                </button>
                 <button
                   type="button"
                   className={styles.secondaryButton}
@@ -1806,9 +1770,6 @@ export const Welcome = () => {
             <p>
               <strong>GitHub:</strong>{" "}
               {githubConnection ? `Connected (#${githubConnection.installationId})` : "None"}
-            </p>
-            <p>
-              <strong>Sessions:</strong> {sessions.length}
             </p>
             <p>
               <strong>Sources:</strong> {sources.length}
