@@ -6,10 +6,16 @@ import { defineApp } from "rwsdk/worker";
 import { Document } from "@/app/document";
 import { setCommonHeaders } from "@/app/headers";
 import { Home } from "@/app/pages/home";
-import type { AuthPrincipal, AuthSession, GitHubConnection } from "@/domain/models";
+import type {
+  AuthPrincipal,
+  AuthSession,
+  GitHubConnection,
+  ScenarioPack,
+} from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import {
   hydrateCoreStateFromD1,
+  persistPrincipalToD1,
   persistGitHubConnectionToD1,
   persistProjectToD1,
   reconcilePrincipalIdentityInD1,
@@ -21,6 +27,7 @@ import {
   readChatGptLoginCompletion,
   startChatGptLogin,
 } from "@/services/chatgptAuth";
+import { executeScenariosViaCodex } from "@/services/codexExecute";
 import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
 import { generateScenariosViaCodex } from "@/services/codexScenario";
 import {
@@ -120,6 +127,353 @@ const readStringArray = (value: unknown): string[] => {
   return value
     .map((item) => String(item ?? "").trim())
     .filter((item) => item.length > 0);
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const readNumber = (value: unknown, fallback: number): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return fallback;
+  }
+  return Math.floor(numeric);
+};
+
+const normalizeExecutionMode = (
+  value: unknown,
+): "run" | "fix" | "pr" | "full" => {
+  const mode = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (mode === "run" || mode === "fix" || mode === "pr" || mode === "full") {
+    return mode;
+  }
+  return "full";
+};
+
+const normalizeRunItemStatus = (value: unknown): "passed" | "failed" | "blocked" => {
+  const status = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (status === "passed" || status === "failed" || status === "blocked") {
+    return status;
+  }
+  return "blocked";
+};
+
+const normalizePullRequestStatus = (
+  value: unknown,
+): "draft" | "open" | "merged" | "blocked" => {
+  const status = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (status === "draft" || status === "open" || status === "merged" || status === "blocked") {
+    return status;
+  }
+  return "blocked";
+};
+
+const normalizeFixAttemptStatus = (
+  value: unknown,
+): "planned" | "in_progress" | "validated" | "failed" => {
+  const status = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (status === "planned" || status === "in_progress" || status === "validated" || status === "failed") {
+    return status;
+  }
+  return "failed";
+};
+
+const normalizeArtifacts = (value: unknown): Array<{
+  kind: "log" | "screenshot" | "trace";
+  label: string;
+  value: string;
+}> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const rawKind = String(item.kind ?? "")
+        .trim()
+        .toLowerCase();
+      const kind =
+        rawKind === "log" || rawKind === "screenshot" || rawKind === "trace"
+          ? rawKind
+          : "log";
+      const label = String(item.label ?? "").trim() || "Artifact";
+      const artifactValue = String(item.value ?? "").trim();
+
+      if (!artifactValue) {
+        return null;
+      }
+
+      return {
+        kind,
+        label,
+        value: artifactValue,
+      };
+    })
+    .filter((item): item is { kind: "log" | "screenshot" | "trace"; label: string; value: string } => Boolean(item));
+};
+
+type PullRequestCreateInput = Parameters<typeof createPullRequestRecord>[0];
+
+const buildScenarioRunInputFromCodexOutput = (
+  ownerId: string,
+  projectId: string,
+  pack: ScenarioPack,
+  parsedOutput: unknown,
+) => {
+  const now = new Date();
+  const startedAt = now.toISOString();
+
+  const scenariosById = new Map(pack.scenarios.map((scenario) => [scenario.id, scenario]));
+  const outputContainer = isRecord(parsedOutput) ? parsedOutput : {};
+  const runRecord = isRecord(outputContainer.run) ? outputContainer.run : {};
+  const rawItems = Array.isArray(runRecord.items) ? runRecord.items : [];
+
+  const items = rawItems
+    .map((item, index) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const scenarioId = String(item.scenarioId ?? "").trim();
+      const scenario = scenariosById.get(scenarioId);
+      if (!scenario) {
+        return null;
+      }
+
+      const timestamp = new Date(now.getTime() + index * 250).toISOString();
+      const status = normalizeRunItemStatus(item.status);
+      const observed = String(item.observed ?? "").trim() || "No observed output captured.";
+      const expected = String(item.expected ?? "").trim() || scenario.passCriteria;
+
+      return {
+        scenarioId,
+        status,
+        startedAt: timestamp,
+        completedAt: timestamp,
+        observed,
+        expected,
+        failureHypothesis:
+          item.failureHypothesis === null
+            ? null
+            : String(item.failureHypothesis ?? "").trim() || null,
+        artifacts: normalizeArtifacts(item.artifacts),
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        scenarioId: string;
+        status: "passed" | "failed" | "blocked";
+        startedAt: string;
+        completedAt: string;
+        observed: string;
+        expected: string;
+        failureHypothesis: string | null;
+        artifacts: Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>;
+      } => Boolean(item),
+    );
+
+  const finalItems =
+    items.length > 0
+      ? items
+      : pack.scenarios.map((scenario, index) => {
+          const timestamp = new Date(now.getTime() + index * 250).toISOString();
+          return {
+            scenarioId: scenario.id,
+            status: "blocked" as const,
+            startedAt: timestamp,
+            completedAt: timestamp,
+            observed: "Codex execute output did not provide scenario item details.",
+            expected: scenario.passCriteria,
+            failureHypothesis: "Execution output schema mismatch or tool limitations.",
+            artifacts: [],
+          };
+        });
+
+  const computedSummary = finalItems.reduce(
+    (acc, item) => {
+      if (item.status === "passed") {
+        acc.passed += 1;
+      } else if (item.status === "failed") {
+        acc.failed += 1;
+      } else if (item.status === "blocked") {
+        acc.blocked += 1;
+      }
+      return acc;
+    },
+    { total: finalItems.length, passed: 0, failed: 0, blocked: 0 },
+  );
+
+  const summaryRecord = isRecord(runRecord.summary) ? runRecord.summary : {};
+  const summary = {
+    total: computedSummary.total,
+    passed: readNumber(summaryRecord.passed, computedSummary.passed),
+    failed: readNumber(summaryRecord.failed, computedSummary.failed),
+    blocked: readNumber(summaryRecord.blocked, computedSummary.blocked),
+  };
+
+  const events = finalItems.flatMap((item, index) => {
+    const queuedAt = new Date(now.getTime() + index * 250).toISOString();
+    const runningAt = new Date(now.getTime() + index * 250 + 60).toISOString();
+    const completedAt = item.completedAt;
+
+    return [
+      {
+        id: `evt_${item.scenarioId}_queued_${index}`,
+        scenarioId: item.scenarioId,
+        status: "queued" as const,
+        message: `${item.scenarioId} queued`,
+        timestamp: queuedAt,
+      },
+      {
+        id: `evt_${item.scenarioId}_running_${index}`,
+        scenarioId: item.scenarioId,
+        status: "running" as const,
+        message: `${item.scenarioId} running`,
+        timestamp: runningAt,
+      },
+      {
+        id: `evt_${item.scenarioId}_${item.status}_${index}`,
+        scenarioId: item.scenarioId,
+        status: item.status,
+        message: `${item.scenarioId} ${item.status}`,
+        timestamp: completedAt,
+      },
+    ];
+  });
+
+  return {
+    ownerId,
+    projectId,
+    scenarioPackId: pack.id,
+    status: "completed" as const,
+    startedAt,
+    completedAt: new Date(now.getTime() + finalItems.length * 250 + 200).toISOString(),
+    items: finalItems,
+    summary,
+    events,
+  };
+};
+
+const buildFixAttemptInputFromCodexOutput = (
+  ownerId: string,
+  projectId: string,
+  run: ReturnType<typeof createScenarioRun>,
+  parsedOutput: unknown,
+) => {
+  const fallback = createFixAttemptFromRun({
+    ownerId,
+    projectId,
+    run,
+  });
+  const outputContainer = isRecord(parsedOutput) ? parsedOutput : {};
+  const fixRecord = isRecord(outputContainer.fixAttempt) ? outputContainer.fixAttempt : null;
+
+  if (!fixRecord) {
+    return fallback;
+  }
+
+  const failedScenarioIds = readStringArray(fixRecord.failedScenarioIds);
+  const impactedFiles = readStringArray(fixRecord.impactedFiles);
+  const rerunSummaryRecord = isRecord(fixRecord.rerunSummary)
+    ? fixRecord.rerunSummary
+    : null;
+
+  return {
+    ownerId,
+    projectId,
+    scenarioRunId: run.id,
+    failedScenarioIds:
+      failedScenarioIds.length > 0 ? failedScenarioIds : fallback.failedScenarioIds,
+    probableRootCause:
+      String(fixRecord.probableRootCause ?? "").trim() || fallback.probableRootCause,
+    patchSummary: String(fixRecord.patchSummary ?? "").trim() || fallback.patchSummary,
+    impactedFiles: impactedFiles.length > 0 ? impactedFiles : fallback.impactedFiles,
+    model: "gpt-5.3-xhigh",
+    status: normalizeFixAttemptStatus(fixRecord.status),
+    rerunSummary: rerunSummaryRecord
+      ? {
+          runId: run.id,
+          passed: readNumber(rerunSummaryRecord.passed, fallback.rerunSummary?.passed ?? 0),
+          failed: readNumber(rerunSummaryRecord.failed, fallback.rerunSummary?.failed ?? 0),
+          blocked: readNumber(
+            rerunSummaryRecord.blocked,
+            fallback.rerunSummary?.blocked ?? 0,
+          ),
+        }
+      : fallback.rerunSummary,
+  };
+};
+
+const buildPullRequestInputsFromCodexOutput = (
+  ownerId: string,
+  projectId: string,
+  fixAttempt: ReturnType<typeof createFixAttempt> | null,
+  parsedOutput: unknown,
+) => {
+  if (!fixAttempt) {
+    return [] as PullRequestCreateInput[];
+  }
+
+  const outputContainer = isRecord(parsedOutput) ? parsedOutput : {};
+  const pullRequests = Array.isArray(outputContainer.pullRequests)
+    ? outputContainer.pullRequests
+    : [];
+
+  if (pullRequests.length === 0) {
+    return [createPullRequestFromFix({ ownerId, projectId, fixAttempt })];
+  }
+
+  const fallback = createPullRequestFromFix({ ownerId, projectId, fixAttempt });
+
+  return pullRequests
+    .map((record, index) => {
+      if (!isRecord(record)) {
+        return null;
+      }
+
+      const scenarioIds = readStringArray(record.scenarioIds);
+      const riskNotes = readStringArray(record.riskNotes);
+
+      return {
+        ownerId,
+        projectId,
+        fixAttemptId: fixAttempt.id,
+        scenarioIds: scenarioIds.length > 0 ? scenarioIds : fallback.scenarioIds,
+        title:
+          String(record.title ?? "").trim() ||
+          `${fallback.title} (${index + 1})`,
+        branchName:
+          String(record.branchName ?? "").trim() ||
+          `${fallback.branchName}-${index + 1}`,
+        url: String(record.url ?? "").trim() || fallback.url,
+        status: normalizePullRequestStatus(record.status),
+        rootCauseSummary:
+          String(record.rootCauseSummary ?? "").trim() || fallback.rootCauseSummary,
+        rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? fallback.rerunEvidenceRunId,
+        rerunEvidenceSummary:
+          fixAttempt.rerunSummary ?? fallback.rerunEvidenceSummary,
+        riskNotes: riskNotes.length > 0 ? riskNotes : fallback.riskNotes,
+      };
+    })
+    .filter(
+      (
+        record,
+      ): record is PullRequestCreateInput => Boolean(record),
+    );
 };
 
 const getPrincipalFromContext = (ctx: AppContext): AuthPrincipal | null =>
@@ -422,6 +776,7 @@ export default defineApp([
             email,
           });
 
+        await persistPrincipalToD1(principal);
         await saveAuthSession(response.headers, createAuthSession(principal.id));
 
         return json({
@@ -937,6 +1292,234 @@ export default defineApp([
       }
 
       return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/actions/generate", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const payload = await parseJsonBody(request);
+      const manifestId =
+        String(payload?.sourceManifestId ?? payload?.manifestId ?? "").trim();
+      const manifest =
+        (manifestId
+          ? getSourceManifestById(principal.id, manifestId)
+          : getLatestSourceManifestForProject(principal.id, project.id)) ?? null;
+
+      if (!manifest || manifest.projectId !== project.id) {
+        return json({ error: "Source manifest not found." }, 404);
+      }
+
+      const selectedSources = listSourcesForProject(principal.id, project.id).filter(
+        (source) => manifest.sourceIds.includes(source.id),
+      );
+      if (selectedSources.length === 0) {
+        return json({ error: "Manifest contains no selected sources." }, 400);
+      }
+
+      const modeValue = String(payload?.mode ?? "initial")
+        .trim()
+        .toLowerCase();
+      const mode = modeValue === "update" ? "update" : "initial";
+      const userInstruction = String(payload?.userInstruction ?? "").trim();
+      const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const existingPack =
+        mode === "update"
+          ? scenarioPackId
+            ? getScenarioPackById(principal.id, scenarioPackId)
+            : listScenarioPacksForProject(principal.id, project.id)[0] ?? null
+          : null;
+
+      const githubConnection = await ensureGitHubConnectionForPrincipal(principal.id);
+      if (!githubConnection) {
+        return json({ error: "Connect GitHub before generating scenarios." }, 400);
+      }
+
+      let scenarioPackInput:
+        | ReturnType<typeof generateScenarioPack>
+        | null = null;
+      const attemptErrors: string[] = [];
+
+      for (const useSkill of [true, false]) {
+        try {
+          const codexGeneration = await generateScenariosViaCodex({
+            project,
+            manifest,
+            selectedSources,
+            githubToken: githubConnection.accessToken,
+            mode,
+            userInstruction,
+            existingPack,
+            useSkill,
+          });
+
+          scenarioPackInput = generateScenarioPack({
+            project,
+            ownerId: principal.id,
+            manifest,
+            selectedSources,
+            model: codexGeneration.model,
+            rawOutput: codexGeneration.responseText,
+            metadata: {
+              transport: "codex-app-server",
+              requestedSkill: codexGeneration.skillRequested,
+              usedSkill: codexGeneration.skillUsed,
+              skillAvailable: codexGeneration.skillAvailable,
+              skillPath: codexGeneration.skillPath,
+              threadId: codexGeneration.threadId,
+              turnId: codexGeneration.turnId,
+              turnStatus: codexGeneration.turnStatus,
+              cwd: codexGeneration.cwd,
+              generatedAt: codexGeneration.completedAt,
+            },
+          });
+          break;
+        } catch (error) {
+          attemptErrors.push(
+            error instanceof Error
+              ? `[${useSkill ? "skill-first" : "fallback"}] ${error.message}`
+              : `[${useSkill ? "skill-first" : "fallback"}] generation failed`,
+          );
+        }
+      }
+
+      if (!scenarioPackInput) {
+        return json(
+          {
+            error: [
+              "Failed to generate scenarios through Codex app-server.",
+              ...attemptErrors,
+            ].join(" "),
+          },
+          502,
+        );
+      }
+
+      const pack = createScenarioPack(scenarioPackInput);
+      return json(
+        {
+          pack,
+          mode,
+          userInstruction: userInstruction || null,
+        },
+        201,
+      );
+    },
+  ]),
+  route("/api/projects/:projectId/actions/execute", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const payload = await parseJsonBody(request);
+      const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const pack =
+        (scenarioPackId
+          ? getScenarioPackById(principal.id, scenarioPackId)
+          : listScenarioPacksForProject(principal.id, project.id)[0]) ?? null;
+
+      if (!pack || pack.projectId !== project.id) {
+        return json({ error: "Scenario pack not found." }, 404);
+      }
+
+      const executionMode = normalizeExecutionMode(payload?.executionMode);
+      const userInstruction = String(payload?.userInstruction ?? "").trim();
+      const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+
+      let codexExecution;
+      try {
+        codexExecution = await executeScenariosViaCodex({
+          project,
+          pack,
+          executionMode,
+          userInstruction,
+          constraints,
+        });
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to execute scenarios through Codex app-server.",
+          },
+          502,
+        );
+      }
+
+      const runInput = buildScenarioRunInputFromCodexOutput(
+        principal.id,
+        project.id,
+        pack,
+        codexExecution.parsedOutput,
+      );
+      const run = createScenarioRun(runInput);
+
+      let fixAttempt = null;
+      if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
+        const fixInput = buildFixAttemptInputFromCodexOutput(
+          principal.id,
+          project.id,
+          run,
+          codexExecution.parsedOutput,
+        );
+        fixAttempt = createFixAttempt(fixInput);
+      }
+
+      let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];
+      if ((executionMode === "pr" || executionMode === "full") && fixAttempt) {
+        const pullRequestInputs = buildPullRequestInputsFromCodexOutput(
+          principal.id,
+          project.id,
+          fixAttempt,
+          codexExecution.parsedOutput,
+        );
+        pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
+      }
+
+      return json(
+        {
+          run,
+          fixAttempt,
+          pullRequests,
+          executionMode,
+          executionAudit: {
+            model: codexExecution.model,
+            threadId: codexExecution.threadId,
+            turnId: codexExecution.turnId,
+            turnStatus: codexExecution.turnStatus,
+            completedAt: codexExecution.completedAt,
+          },
+        },
+        201,
+      );
     },
   ]),
   route("/api/projects/:projectId/scenario-packs", [

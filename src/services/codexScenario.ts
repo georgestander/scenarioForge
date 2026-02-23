@@ -1,5 +1,10 @@
 import { env } from "cloudflare:workers";
-import type { Project, SourceManifest, SourceRecord } from "@/domain/models";
+import type {
+  Project,
+  ScenarioPack,
+  SourceManifest,
+  SourceRecord,
+} from "@/domain/models";
 
 interface GitHubContentResponse {
   content?: string;
@@ -16,6 +21,7 @@ interface LoadedSource {
 }
 
 interface BridgeScenarioGenerateResponse {
+  action?: string;
   model: string;
   cwd: string;
   threadId: string;
@@ -26,6 +32,7 @@ interface BridgeScenarioGenerateResponse {
   skillUsed: string | null;
   skillPath: string | null;
   responseText: string;
+  output?: unknown;
   completedAt: string;
 }
 
@@ -48,6 +55,9 @@ interface GenerateScenariosViaCodexInput {
   manifest: SourceManifest;
   selectedSources: SourceRecord[];
   githubToken: string;
+  mode?: "initial" | "update";
+  userInstruction?: string;
+  existingPack?: ScenarioPack | null;
   useSkill?: boolean;
 }
 
@@ -320,11 +330,26 @@ const buildScenarioPrompt = (
 ): string => {
   const scenarioCount = recommendedScenarioCount(input.selectedSources.length);
   const sourcePaths = input.selectedSources.map((source) => source.path).join("\n- ");
+  const mode = input.mode ?? "initial";
+  const userInstruction = input.userInstruction?.trim() ?? "";
+  const updateContext =
+    mode === "update" && input.existingPack
+      ? [
+          "Update context:",
+          `- Existing pack id: ${input.existingPack.id}`,
+          `- Existing scenarios: ${input.existingPack.scenarios.length}`,
+          `- Existing manifest id: ${input.existingPack.manifestId}`,
+          userInstruction
+            ? `- User update request: ${userInstruction}`
+            : "- User update request: refresh and improve the current scenarios.",
+        ].join("\n")
+      : "Update context: none";
 
   return [
     "Generate realistic end-to-end user scenarios for ScenarioForge.",
     "",
     "Hard constraints:",
+    `- Generation mode: ${mode}`,
     `- Repository: ${input.manifest.repositoryFullName}`,
     `- Branch: ${input.manifest.branch}`,
     `- Head commit: ${input.manifest.headCommitSha}`,
@@ -341,6 +366,8 @@ const buildScenarioPrompt = (
     "",
     "Selected source paths:",
     `- ${sourcePaths}`,
+    "",
+    updateContext,
     "",
     "Return strict JSON only; no markdown and no code fences.",
     "",
@@ -372,7 +399,7 @@ export const generateScenariosViaCodex = async (
   const prompt = buildScenarioPrompt(input, loadedSources);
 
   const payload = await bridgeFetchJson<BridgeScenarioGenerateResponse>(
-    "/scenario/generate",
+    "/actions/generate",
     {
       method: "POST",
       body: JSON.stringify({
@@ -390,7 +417,15 @@ export const generateScenariosViaCodex = async (
     },
   );
 
-  if (!payload.responseText?.trim()) {
+  const responseText =
+    payload.responseText?.trim() ||
+    (typeof payload.output === "string"
+      ? payload.output.trim()
+      : payload.output
+        ? JSON.stringify(payload.output)
+        : "");
+
+  if (!responseText) {
     throw new Error("Codex scenario generation returned an empty response payload.");
   }
 
@@ -404,7 +439,7 @@ export const generateScenariosViaCodex = async (
     skillAvailable: payload.skillAvailable,
     skillUsed: payload.skillUsed,
     skillPath: payload.skillPath,
-    responseText: payload.responseText,
+    responseText,
     completedAt: payload.completedAt,
   };
 };

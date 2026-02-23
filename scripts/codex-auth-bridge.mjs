@@ -20,6 +20,9 @@ const TURN_COMPLETION_TIMEOUT_MS = Number(
 const AGENT_MESSAGE_GRACE_MS = Number(
   process.env.CODEX_AUTH_BRIDGE_AGENT_MESSAGE_GRACE_MS || "15000",
 );
+const SSE_KEEPALIVE_MS = Number(
+  process.env.CODEX_AUTH_BRIDGE_SSE_KEEPALIVE_MS || "12000",
+);
 
 let requestId = 1;
 let isInitialized = false;
@@ -31,6 +34,7 @@ const loginCompletions = new Map();
 const turnCompletionWatchers = new Map();
 const completedTurns = new Map();
 const turnAgentMessages = new Map();
+const turnEventSubscribers = new Map();
 
 const codexProc = spawn(CODEX_BIN, CODEX_ARGS, {
   stdio: ["pipe", "pipe", "inherit"],
@@ -84,7 +88,15 @@ const sleep = (ms) =>
     setTimeout(resolve, ms);
   });
 
-const isAgentMessageType = (value) => readString(value).toLowerCase() === "agentmessage";
+const isAgentMessageType = (value) => {
+  const normalized = readString(value).toLowerCase();
+  return (
+    normalized === "agentmessage" ||
+    normalized === "agent_message" ||
+    normalized === "assistantmessage" ||
+    normalized === "assistant_message"
+  );
+};
 
 const extractMessageContentText = (content) => {
   if (!Array.isArray(content)) {
@@ -95,6 +107,14 @@ const extractMessageContentText = (content) => {
     .map((item) => {
       if (typeof item?.text === "string") {
         return item.text;
+      }
+
+      if (typeof item?.value === "string") {
+        return item.value;
+      }
+
+      if (typeof item?.content === "string") {
+        return item.content;
       }
 
       return "";
@@ -146,6 +166,57 @@ const waitForTurnAgentMessage = async (
 
   return readString(turnAgentMessages.get(normalizedTurnId));
 };
+
+const subscribeTurnEvents = (turnId, handler) => {
+  const normalizedTurnId = readString(turnId);
+  if (!normalizedTurnId) {
+    return () => {};
+  }
+
+  const current = turnEventSubscribers.get(normalizedTurnId) ?? new Set();
+  current.add(handler);
+  turnEventSubscribers.set(normalizedTurnId, current);
+
+  return () => {
+    const next = turnEventSubscribers.get(normalizedTurnId);
+    if (!next) {
+      return;
+    }
+
+    next.delete(handler);
+    if (next.size === 0) {
+      turnEventSubscribers.delete(normalizedTurnId);
+    }
+  };
+};
+
+const emitTurnEvent = (turnId, event) => {
+  const normalizedTurnId = readString(turnId);
+  if (!normalizedTurnId) {
+    return;
+  }
+
+  const listeners = turnEventSubscribers.get(normalizedTurnId);
+  if (!listeners || listeners.size === 0) {
+    return;
+  }
+
+  listeners.forEach((listener) => {
+    try {
+      listener(event);
+    } catch {
+      // Never allow event listeners to break bridge processing.
+    }
+  });
+};
+
+const extractTurnIdFromNotification = (message) =>
+  readString(
+    message?.params?.turnId ??
+      message?.params?.turn?.id ??
+      message?.params?.msg?.turn_id ??
+      message?.params?.id,
+  );
 
 const recordCompletedTurn = (turn) => {
   if (!turn || typeof turn.id !== "string" || !turn.id) {
@@ -218,6 +289,15 @@ const consumeRpcResponse = (message) => {
 };
 
 const consumeNotification = (message) => {
+  const turnId = extractTurnIdFromNotification(message);
+  if (turnId) {
+    emitTurnEvent(turnId, {
+      method: readString(message.method) || "unknown",
+      params: message.params ?? {},
+      timestamp: nowIso(),
+    });
+  }
+
   if (message.method === "account/updated") {
     authMode = message.params?.authMode ?? null;
     return;
@@ -346,6 +426,20 @@ const sendError = (response, statusCode, error) => {
   sendJson(response, statusCode, { error });
 };
 
+const setSseHeaders = (response) => {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+};
+
+const sendSse = (response, event, payload) => {
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(payload)}\n\n`);
+};
+
 const parseTurnErrorMessage = (message) => {
   const raw = readString(message);
   if (!raw) {
@@ -366,9 +460,7 @@ const assertAuthenticated = async () => {
   const hasAccount = Boolean(account?.account);
 
   if (requiresAuth && !hasAccount) {
-    throw new Error(
-      "ChatGPT sign-in is required in Stage 1 before scenario generation can run.",
-    );
+    throw new Error("ChatGPT sign-in is required before Codex actions can run.");
   }
 };
 
@@ -557,15 +649,90 @@ const extractAgentMessageText = (items) => {
   return finalText.trim();
 };
 
-const runScenarioGenerationTurn = async (body) => {
+const normalizeTurnOutput = (value) => {
+  if (value === null || typeof value === "undefined") {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+
+  return value;
+};
+
+const extractTurnOutputObject = (turn) => {
+  if (!turn || typeof turn !== "object") {
+    return null;
+  }
+
+  const candidates = [
+    turn.output,
+    turn.outputText,
+    turn.result?.output,
+    turn.result?.response,
+    turn.result,
+    turn.response,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeTurnOutput(candidate);
+    if (normalized !== null) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const extractResponseText = (turnId, readTurn, completedTurn) => {
+  const cachedMessage = readString(turnAgentMessages.get(turnId));
+  if (cachedMessage) {
+    return cachedMessage;
+  }
+
+  const itemMessage = extractAgentMessageText(readTurn?.items ?? completedTurn?.items ?? []);
+  if (itemMessage) {
+    return itemMessage;
+  }
+
+  const readOutput = extractTurnOutputObject(readTurn);
+  if (typeof readOutput === "string" && readOutput.trim()) {
+    return readOutput.trim();
+  }
+
+  if (readOutput && typeof readOutput === "object") {
+    return JSON.stringify(readOutput);
+  }
+
+  const completedOutput = extractTurnOutputObject(completedTurn);
+  if (typeof completedOutput === "string" && completedOutput.trim()) {
+    return completedOutput.trim();
+  }
+
+  if (completedOutput && typeof completedOutput === "object") {
+    return JSON.stringify(completedOutput);
+  }
+
+  return "";
+};
+
+const runActionTurn = async (actionName, body, onEvent = () => {}) => {
+  const action = readString(actionName).toLowerCase();
   const prompt = readString(body?.prompt);
+
   if (!prompt) {
     throw new Error("prompt is required.");
   }
 
+  if (action !== "generate" && action !== "execute") {
+    throw new Error(`Unsupported action '${actionName}'.`);
+  }
+
   await assertAuthenticated();
 
-  const requestedModel = readString(body?.model) || "codex spark";
+  const defaultModel = action === "execute" ? "gpt-5.3-xhigh" : "codex spark";
+  const requestedModel = readString(body?.model) || defaultModel;
   const resolvedModel = await resolveModelId(requestedModel);
   const model = resolvedModel.selected;
   const cwd = readString(body?.cwd) || process.cwd();
@@ -575,14 +742,19 @@ const runScenarioGenerationTurn = async (body) => {
       ? body.outputSchema
       : null;
   const approvalPolicy = readString(body?.approvalPolicy) || "never";
-  const threadSandbox = readString(body?.sandbox) || "workspace-write";
+  const threadSandbox =
+    readString(body?.sandbox) || (action === "generate" ? "read-only" : "workspace-write");
   const sandboxPolicy =
     body?.sandboxPolicy && typeof body.sandboxPolicy === "object"
       ? body.sandboxPolicy
-      : {
-        type: "workspaceWrite",
-        networkAccess: true,
-      };
+      : action === "generate"
+        ? {
+            type: "readOnly",
+          }
+        : {
+            type: "workspaceWrite",
+            networkAccess: true,
+          };
   const turnTimeoutMs =
     Number.isFinite(Number(body?.turnTimeoutMs)) && Number(body.turnTimeoutMs) > 0
       ? Number(body.turnTimeoutMs)
@@ -591,13 +763,15 @@ const runScenarioGenerationTurn = async (body) => {
   const skillResolution = requestedSkillName
     ? await resolveSkill(requestedSkillName, cwd)
     : {
-      requested: null,
-      available: false,
-      selected: null,
-    };
+        requested: null,
+        available: false,
+        selected: null,
+      };
+
   const textPrefix = skillResolution.available
     ? `$${requestedSkillName} `
-    : "Scenario generation request: ";
+    : `${action} request: `;
+
   const input = [
     {
       type: "text",
@@ -613,6 +787,13 @@ const runScenarioGenerationTurn = async (body) => {
     });
   }
 
+  onEvent({
+    phase: "thread.starting",
+    status: "running",
+    message: `Starting ${action} thread...`,
+    timestamp: nowIso(),
+  });
+
   const threadResult = await sendRpc("thread/start", {
     model,
     cwd,
@@ -622,8 +803,16 @@ const runScenarioGenerationTurn = async (body) => {
   const threadId = extractThreadId(threadResult);
 
   if (!threadId) {
-    throw new Error("Failed to create a Codex thread for scenario generation.");
+    throw new Error(`Failed to create a Codex thread for action '${action}'.`);
   }
+
+  onEvent({
+    phase: "thread.started",
+    status: "running",
+    message: `Thread ${threadId} started.`,
+    timestamp: nowIso(),
+    threadId,
+  });
 
   const turnStartParams = {
     threadId,
@@ -638,8 +827,29 @@ const runScenarioGenerationTurn = async (body) => {
   const turnId = extractTurnId(turnResult);
 
   if (!turnId) {
-    throw new Error("Codex did not return a turn id for scenario generation.");
+    throw new Error(`Codex did not return a turn id for action '${action}'.`);
   }
+
+  onEvent({
+    phase: "turn.started",
+    status: "running",
+    message: `Turn ${turnId} started.`,
+    timestamp: nowIso(),
+    threadId,
+    turnId,
+  });
+
+  const unsubscribe = subscribeTurnEvents(turnId, (event) => {
+    onEvent({
+      phase: "turn.event",
+      status: "running",
+      message: event.method,
+      timestamp: event.timestamp ?? nowIso(),
+      threadId,
+      turnId,
+      event,
+    });
+  });
 
   try {
     let completedTurn = null;
@@ -669,9 +879,8 @@ const runScenarioGenerationTurn = async (body) => {
     const turnErrorMessage =
       parseTurnErrorMessage(completedTurn?.error?.message) ||
       parseTurnErrorMessage(readTurn?.error?.message);
-    let responseText =
-      readString(turnAgentMessages.get(turnId)) ||
-      extractAgentMessageText(readTurn?.items ?? completedTurn?.items ?? []);
+
+    let responseText = extractResponseText(turnId, readTurn, completedTurn);
 
     if (!responseText) {
       responseText = await waitForTurnAgentMessage(turnId);
@@ -680,18 +889,22 @@ const runScenarioGenerationTurn = async (body) => {
     if (turnStatus === "failed") {
       throw new Error(
         turnErrorMessage ||
-          "Codex scenario generation turn failed without a detailed error message.",
+          `Codex ${action} turn failed without a detailed error message.`,
       );
     }
 
-    if (!responseText) {
-      throw new Error(
-        turnErrorMessage ||
-          "Codex completed the turn but did not emit an agentMessage text payload.",
-      );
-    }
+    onEvent({
+      phase: "turn.completed",
+      status: "completed",
+      message: `Turn ${turnId} completed with status ${turnStatus}.`,
+      timestamp: nowIso(),
+      threadId,
+      turnId,
+      turnStatus,
+    });
 
     return {
+      action,
       model,
       cwd,
       threadId,
@@ -702,11 +915,50 @@ const runScenarioGenerationTurn = async (body) => {
       skillUsed: skillResolution.available ? requestedSkillName : null,
       skillPath: skillResolution.selected?.path ?? null,
       responseText,
+      output:
+        extractTurnOutputObject(readTurn) ?? extractTurnOutputObject(completedTurn) ?? null,
       completedAt: nowIso(),
     };
   } finally {
+    unsubscribe();
     turnAgentMessages.delete(turnId);
     completedTurns.delete(turnId);
+  }
+};
+
+const runActionTurnStreaming = async (action, request, response) => {
+  const body = await parseBody(request);
+  setSseHeaders(response);
+
+  const keepalive = setInterval(() => {
+    response.write(`: keepalive ${nowIso()}\n\n`);
+  }, SSE_KEEPALIVE_MS);
+
+  try {
+    sendSse(response, "started", {
+      action,
+      timestamp: nowIso(),
+    });
+
+    const result = await runActionTurn(action, body, (event) => {
+      sendSse(response, "event", event);
+    });
+
+    sendSse(response, "completed", {
+      action,
+      result,
+      timestamp: nowIso(),
+    });
+    response.end();
+  } catch (error) {
+    sendSse(response, "error", {
+      action,
+      error: error instanceof Error ? error.message : "Unknown bridge error.",
+      timestamp: nowIso(),
+    });
+    response.end();
+  } finally {
+    clearInterval(keepalive);
   }
 };
 
@@ -726,7 +978,7 @@ const ensureInitialized = async () => {
         clientInfo: {
           name: "scenarioforge",
           title: "ScenarioForge Auth Bridge",
-          version: "0.1.0",
+          version: "0.2.0",
         },
       });
       sendNotification("initialized", {});
@@ -746,6 +998,18 @@ const ensureInitialized = async () => {
   })();
 
   await initializePromise;
+};
+
+const parseActionPath = (path) => {
+  const match = path.match(/^\/actions\/(generate|execute)(\/stream)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    action: match[1].toLowerCase(),
+    stream: Boolean(match[2]),
+  };
 };
 
 const handleRequest = async (request, response) => {
@@ -818,9 +1082,23 @@ const handleRequest = async (request, response) => {
     return;
   }
 
+  const actionMatch = parseActionPath(path);
+  if (request.method === "POST" && actionMatch) {
+    if (actionMatch.stream) {
+      await runActionTurnStreaming(actionMatch.action, request, response);
+      return;
+    }
+
+    const body = await parseBody(request);
+    const result = await runActionTurn(actionMatch.action, body);
+    sendJson(response, 200, result);
+    return;
+  }
+
+  // Backward compatibility for older worker wiring.
   if (request.method === "POST" && path === "/scenario/generate") {
     const body = await parseBody(request);
-    const result = await runScenarioGenerationTurn(body);
+    const result = await runActionTurn("generate", body);
     sendJson(response, 200, result);
     return;
   }
@@ -830,6 +1108,15 @@ const handleRequest = async (request, response) => {
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
+    if (response.headersSent) {
+      try {
+        response.end();
+      } catch {
+        // Best effort close for streaming failures.
+      }
+      return;
+    }
+
     sendError(response, 500, error instanceof Error ? error.message : "Unknown bridge error.");
   });
 });

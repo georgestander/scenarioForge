@@ -158,6 +158,22 @@ export const createPrincipal = (input: CreatePrincipalInput): AuthPrincipal => {
   const timestamp = nowIso();
   const normalizedEmail = input.email?.trim().toLowerCase() || null;
 
+  if (!normalizedEmail) {
+    const normalizedDisplayName = input.displayName.trim().toLowerCase();
+    const existing = state.principals.find(
+      (principal) =>
+        principal.provider === input.provider &&
+        principal.email === null &&
+        principal.displayName.trim().toLowerCase() === normalizedDisplayName,
+    );
+
+    if (existing) {
+      existing.displayName = input.displayName;
+      existing.updatedAt = timestamp;
+      return existing;
+    }
+  }
+
   if (normalizedEmail) {
     const existing = state.principals.find(
       (principal) =>
