@@ -21,6 +21,15 @@ On each session, read in this order:
 2. `docs/IMPLEMENTATION_PLAN.md`
 3. `.agent/POINTER.md`
 
+## Pointer File Scope
+
+- `.agent/POINTER.md` is an audit and session handoff artifact only.
+- It is not an implementation spec, architecture source, or backlog source.
+- If there is any conflict, implementation authority is:
+  1. `docs/IMPLEMENTATION_PLAN.md`
+  2. `docs/ARCHITECTURE.md`
+  3. `docs/EXECUTION_BACKLOG.md`
+
 ## Non-Negotiables
 
 1. Source trust gate is mandatory.
@@ -65,8 +74,11 @@ Use `gpt-5.3-xhigh` for:
 
 Primary plan lives at:
 - `docs/IMPLEMENTATION_PLAN.md`
+- Supporting implementation authority:
+  - `docs/ARCHITECTURE.md`
+  - `docs/EXECUTION_BACKLOG.md`
 
 ## Update Contract
 
 At the end of every meaningful build session, update:
-- `.agent/POINTER.md` with status, decisions, and next actions.
+- `.agent/POINTER.md` with audit status, decisions, and next actions (audit trail only).
