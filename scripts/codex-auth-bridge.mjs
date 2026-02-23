@@ -27,6 +27,7 @@ const pendingRequests = new Map();
 const loginCompletions = new Map();
 const turnCompletionWatchers = new Map();
 const completedTurns = new Map();
+const turnAgentMessages = new Map();
 
 const codexProc = spawn(CODEX_BIN, CODEX_ARGS, {
   stdio: ["pipe", "pipe", "inherit"],
@@ -71,6 +72,17 @@ const sendNotification = (method, params = {}) => {
     method,
     params,
   });
+};
+
+const captureTurnAgentMessage = (turnId, text) => {
+  const normalizedTurnId = readString(turnId);
+  const normalizedText = readString(text);
+
+  if (!normalizedTurnId || !normalizedText) {
+    return;
+  }
+
+  turnAgentMessages.set(normalizedTurnId, normalizedText);
 };
 
 const recordCompletedTurn = (turn) => {
@@ -156,6 +168,22 @@ const consumeNotification = (message) => {
 
   if (message.method === "turn/completed") {
     recordCompletedTurn(message.params?.turn ?? null);
+    return;
+  }
+
+  if (message.method === "item/completed") {
+    const item = message.params?.item;
+    if (item?.type === "agentMessage") {
+      captureTurnAgentMessage(message.params?.turnId, item?.text);
+    }
+    return;
+  }
+
+  if (message.method === "codex/event/task_complete") {
+    captureTurnAgentMessage(
+      message.params?.msg?.turn_id ?? message.params?.id,
+      message.params?.msg?.last_agent_message,
+    );
   }
 };
 
@@ -222,6 +250,116 @@ const sendError = (response, statusCode, error) => {
 };
 
 const readString = (value) => (typeof value === "string" ? value.trim() : "");
+
+const parseTurnErrorMessage = (message) => {
+  const raw = readString(message);
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return readString(parsed?.detail) || raw;
+  } catch {
+    return raw;
+  }
+};
+
+const assertAuthenticated = async () => {
+  const account = await sendRpc("account/read", { refreshToken: true });
+  const requiresAuth = Boolean(account?.requiresOpenaiAuth);
+  const hasAccount = Boolean(account?.account);
+
+  if (requiresAuth && !hasAccount) {
+    throw new Error(
+      "ChatGPT sign-in is required in Stage 1 before scenario generation can run.",
+    );
+  }
+};
+
+const resolveModelId = async (requestedModel) => {
+  const requested = readString(requestedModel);
+  if (!requested) {
+    return {
+      requested: "codex spark",
+      selected: "codex spark",
+      available: false,
+    };
+  }
+
+  let models = [];
+  try {
+    const modelList = await sendRpc("model/list", {
+      includeHidden: true,
+      limit: 200,
+    });
+    models = Array.isArray(modelList?.data) ? modelList.data : [];
+  } catch {
+    return {
+      requested,
+      selected: requested,
+      available: false,
+    };
+  }
+
+  const byId = new Map();
+  models.forEach((entry) => {
+    const id = readString(entry?.id);
+    if (id) {
+      byId.set(id.toLowerCase(), id);
+    }
+  });
+
+  const exact = byId.get(requested.toLowerCase());
+  if (exact) {
+    return {
+      requested,
+      selected: exact,
+      available: true,
+    };
+  }
+
+  const requestedLower = requested.toLowerCase();
+  const aliasCandidates =
+    requestedLower === "codex spark" || requestedLower === "spark"
+      ? [
+          "gpt-5.3-codex-spark",
+          "gpt-5.2-codex-spark",
+          "gpt-5.1-codex-spark",
+          "gpt-5-codex-spark",
+        ]
+      : [];
+
+  for (const alias of aliasCandidates) {
+    const matched = byId.get(alias);
+    if (matched) {
+      return {
+        requested,
+        selected: matched,
+        available: true,
+      };
+    }
+  }
+
+  const defaultModel =
+    models.find((entry) => entry?.isDefault && readString(entry?.id)) ??
+    models.find((entry) => readString(entry?.id));
+  const fallbackId = readString(defaultModel?.id);
+
+  if (fallbackId) {
+    return {
+      requested,
+      selected: fallbackId,
+      available: true,
+    };
+  }
+
+  return {
+    requested,
+    selected: requested,
+    available: false,
+  };
+};
 
 const normalizeSkillEntries = (skillsResult, cwd) => {
   const data = Array.isArray(skillsResult?.data) ? skillsResult.data : [];
@@ -320,29 +458,40 @@ const runScenarioGenerationTurn = async (body) => {
     throw new Error("prompt is required.");
   }
 
-  const model = readString(body?.model) || "codex spark";
+  await assertAuthenticated();
+
+  const requestedModel = readString(body?.model) || "codex spark";
+  const resolvedModel = await resolveModelId(requestedModel);
+  const model = resolvedModel.selected;
   const cwd = readString(body?.cwd) || process.cwd();
-  const skillName = readString(body?.skillName) || "scenario";
+  const requestedSkillName = readString(body?.skillName);
   const outputSchema =
     body?.outputSchema && typeof body.outputSchema === "object"
       ? body.outputSchema
       : null;
   const approvalPolicy = readString(body?.approvalPolicy) || "never";
+  const threadSandbox = readString(body?.sandbox) || "workspace-write";
   const sandboxPolicy =
     body?.sandboxPolicy && typeof body.sandboxPolicy === "object"
       ? body.sandboxPolicy
       : {
-          type: "workspaceWrite",
-          networkAccess: true,
-        };
+        type: "workspaceWrite",
+        networkAccess: true,
+      };
   const turnTimeoutMs =
     Number.isFinite(Number(body?.turnTimeoutMs)) && Number(body.turnTimeoutMs) > 0
       ? Number(body.turnTimeoutMs)
       : TURN_COMPLETION_TIMEOUT_MS;
 
-  const skillResolution = await resolveSkill(skillName, cwd);
+  const skillResolution = requestedSkillName
+    ? await resolveSkill(requestedSkillName, cwd)
+    : {
+      requested: null,
+      available: false,
+      selected: null,
+    };
   const textPrefix = skillResolution.available
-    ? `$${skillName} `
+    ? `$${requestedSkillName} `
     : "Scenario generation request: ";
   const input = [
     {
@@ -354,7 +503,7 @@ const runScenarioGenerationTurn = async (body) => {
   if (skillResolution.available && skillResolution.selected?.path) {
     input.push({
       type: "skill",
-      name: skillName,
+      name: requestedSkillName,
       path: skillResolution.selected.path,
     });
   }
@@ -363,7 +512,7 @@ const runScenarioGenerationTurn = async (body) => {
     model,
     cwd,
     approvalPolicy,
-    sandbox: "workspaceWrite",
+    sandbox: threadSandbox,
   });
   const threadId = extractThreadId(threadResult);
 
@@ -387,47 +536,65 @@ const runScenarioGenerationTurn = async (body) => {
     throw new Error("Codex did not return a turn id for scenario generation.");
   }
 
-  let completedTurn = null;
   try {
-    completedTurn = await waitForTurnCompletion(turnId, turnTimeoutMs);
-  } catch {
-    completedTurn = null;
-  }
-
-  let finalTurn = completedTurn;
-  try {
-    const threadRead = await sendRpc("thread/read", {
-      threadId,
-      includeTurns: true,
-    });
-    const readTurn = extractTurnFromThreadRead(threadRead, turnId);
-    if (readTurn) {
-      finalTurn = readTurn;
+    let completedTurn = null;
+    try {
+      completedTurn = await waitForTurnCompletion(turnId, turnTimeoutMs);
+    } catch {
+      completedTurn = null;
     }
-  } catch {
-    // Keep notification-derived turn if thread/read is unavailable.
-  }
 
-  const responseText = extractAgentMessageText(finalTurn?.items ?? []);
-  if (!responseText) {
-    throw new Error(
-      "Codex completed the turn but did not emit an agentMessage text payload.",
-    );
-  }
+    let finalTurn = completedTurn;
+    try {
+      const threadRead = await sendRpc("thread/read", {
+        threadId,
+        includeTurns: true,
+      });
+      const readTurn = extractTurnFromThreadRead(threadRead, turnId);
+      if (readTurn) {
+        finalTurn = readTurn;
+      }
+    } catch {
+      // Keep notification-derived turn if thread/read is unavailable.
+    }
 
-  return {
-    model,
-    cwd,
-    threadId,
-    turnId,
-    turnStatus: readString(finalTurn?.status) || "completed",
-    skillRequested: skillResolution.requested ?? skillName,
-    skillAvailable: skillResolution.available,
-    skillUsed: skillResolution.available ? skillName : null,
-    skillPath: skillResolution.selected?.path ?? null,
-    responseText,
-    completedAt: nowIso(),
-  };
+    const turnStatus = readString(finalTurn?.status) || "completed";
+    const turnErrorMessage = parseTurnErrorMessage(finalTurn?.error?.message);
+    const responseText =
+      readString(turnAgentMessages.get(turnId)) ||
+      extractAgentMessageText(finalTurn?.items ?? []);
+
+    if (turnStatus === "failed") {
+      throw new Error(
+        turnErrorMessage ||
+          "Codex scenario generation turn failed without a detailed error message.",
+      );
+    }
+
+    if (!responseText) {
+      throw new Error(
+        turnErrorMessage ||
+          "Codex completed the turn but did not emit an agentMessage text payload.",
+      );
+    }
+
+    return {
+      model,
+      cwd,
+      threadId,
+      turnId,
+      turnStatus,
+      skillRequested: skillResolution.requested ?? (requestedSkillName || "none"),
+      skillAvailable: skillResolution.available,
+      skillUsed: skillResolution.available ? requestedSkillName : null,
+      skillPath: skillResolution.selected?.path ?? null,
+      responseText,
+      completedAt: nowIso(),
+    };
+  } finally {
+    turnAgentMessages.delete(turnId);
+    completedTurns.delete(turnId);
+  }
 };
 
 const ensureInitialized = async () => {

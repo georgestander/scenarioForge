@@ -860,46 +860,63 @@ export default defineApp([
           );
         }
 
-        let codexGeneration;
-        try {
-          codexGeneration = await generateScenariosViaCodex({
-            project,
-            manifest,
-            selectedSources: sources,
-            githubToken: githubConnection.accessToken,
-          });
-        } catch (error) {
+        const attemptErrors: string[] = [];
+        let scenarioPackInput:
+          | ReturnType<typeof generateScenarioPack>
+          | null = null;
+
+        for (const useSkill of [true, false]) {
+          try {
+            const codexGeneration = await generateScenariosViaCodex({
+              project,
+              manifest,
+              selectedSources: sources,
+              githubToken: githubConnection.accessToken,
+              useSkill,
+            });
+
+            scenarioPackInput = generateScenarioPack({
+              project,
+              ownerId: principal.id,
+              manifest,
+              selectedSources: sources,
+              model: codexGeneration.model,
+              rawOutput: codexGeneration.responseText,
+              metadata: {
+                transport: "codex-app-server",
+                requestedSkill: codexGeneration.skillRequested,
+                usedSkill: codexGeneration.skillUsed,
+                skillAvailable: codexGeneration.skillAvailable,
+                skillPath: codexGeneration.skillPath,
+                threadId: codexGeneration.threadId,
+                turnId: codexGeneration.turnId,
+                turnStatus: codexGeneration.turnStatus,
+                cwd: codexGeneration.cwd,
+                generatedAt: codexGeneration.completedAt,
+              },
+            });
+            break;
+          } catch (error) {
+            attemptErrors.push(
+              error instanceof Error
+                ? `[${useSkill ? "skill-first" : "fallback"}] ${error.message}`
+                : `[${useSkill ? "skill-first" : "fallback"}] generation failed`,
+            );
+          }
+        }
+
+        if (!scenarioPackInput) {
           return json(
             {
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Failed to generate scenarios through Codex app-server.",
+              error: [
+                "Failed to generate scenarios through Codex app-server.",
+                ...attemptErrors,
+              ].join(" "),
             },
             502,
           );
         }
 
-        const scenarioPackInput = generateScenarioPack({
-          project,
-          ownerId: principal.id,
-          manifest,
-          selectedSources: sources,
-          model: codexGeneration.model,
-          rawOutput: codexGeneration.responseText,
-          metadata: {
-            transport: "codex-app-server",
-            requestedSkill: codexGeneration.skillRequested,
-            usedSkill: codexGeneration.skillUsed,
-            skillAvailable: codexGeneration.skillAvailable,
-            skillPath: codexGeneration.skillPath,
-            threadId: codexGeneration.threadId,
-            turnId: codexGeneration.turnId,
-            turnStatus: codexGeneration.turnStatus,
-            cwd: codexGeneration.cwd,
-            generatedAt: codexGeneration.completedAt,
-          },
-        });
         const pack = createScenarioPack(scenarioPackInput);
         return json({ pack }, 201);
       }

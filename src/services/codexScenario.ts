@@ -48,6 +48,7 @@ interface GenerateScenariosViaCodexInput {
   manifest: SourceManifest;
   selectedSources: SourceRecord[];
   githubToken: string;
+  useSkill?: boolean;
 }
 
 const MAX_PROMPT_SOURCES = 12;
@@ -316,6 +317,8 @@ const buildScenarioPrompt = (
     `- Generate approximately ${scenarioCount} scenarios.`,
     "- Group scenarios by both feature and user outcome.",
     "- If source docs conflict with current code behavior, preserve current behavior and encode the conflict as edge variants/checkpoints.",
+    "- Return final output directly as JSON response text.",
+    "- Do not call apply_patch or write files.",
     "",
     "Selected source paths:",
     `- ${sourcePaths}`,
@@ -334,6 +337,7 @@ const buildScenarioPrompt = (
 export const generateScenariosViaCodex = async (
   input: GenerateScenariosViaCodexInput,
 ): Promise<CodexScenarioGenerationResult> => {
+  const useSkill = input.useSkill ?? true;
   const envWithWorkspace = env as unknown as Record<string, string | undefined>;
   const configuredWorkspaceCwd = envWithWorkspace.SCENARIOFORGE_WORKSPACE_CWD?.trim();
   const token = input.githubToken.trim();
@@ -354,12 +358,12 @@ export const generateScenariosViaCodex = async (
       method: "POST",
       body: JSON.stringify({
         model: "codex spark",
-        skillName: "scenario",
+        skillName: useSkill ? "scenario" : "",
         cwd: configuredWorkspaceCwd || undefined,
+        sandbox: "read-only",
         approvalPolicy: "never",
         sandboxPolicy: {
-          type: "workspaceWrite",
-          networkAccess: true,
+          type: "readOnly",
         },
         outputSchema: SCENARIO_OUTPUT_SCHEMA,
         prompt,
