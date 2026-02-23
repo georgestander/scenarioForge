@@ -43,7 +43,9 @@ interface GitHubConnectionPayload {
 }
 
 interface GitHubInstallPayload {
-  installUrl: string;
+  alreadyConnected?: boolean;
+  installUrl?: string;
+  manageUrl?: string;
 }
 
 interface ManifestCreatePayload {
@@ -450,21 +452,44 @@ export const Welcome = () => {
     setStatusMessage("Signed out.");
   };
 
-  const handleInstallGitHubApp = async () => {
+  const openInNewTab = (url: string): void => {
+    const newWindow = window.open(url, "_blank", "noopener,noreferrer");
+
+    if (!newWindow) {
+      setStatusMessage(
+        "Pop-up blocked. Allow pop-ups for this site and retry opening GitHub in a new tab.",
+      );
+    }
+  };
+
+  const handleInstallGitHubApp = async (forceReconnect = false) => {
     if (!authPrincipal) {
       setStatusMessage("Sign in first to connect GitHub.");
       return;
     }
 
-    const response = await fetch("/api/github/connect/start");
+    const suffix = forceReconnect ? "?force=1" : "";
+    const response = await fetch(`/api/github/connect/start${suffix}`);
     if (!response.ok) {
       setStatusMessage(await readError(response, "Failed to start GitHub connect."));
       return;
     }
 
     const payload = (await response.json()) as GitHubInstallPayload;
-    setStatusMessage("Redirecting to GitHub App installation...");
-    window.location.assign(payload.installUrl);
+
+    if (payload.alreadyConnected && payload.manageUrl) {
+      setStatusMessage("GitHub already connected. Opening installation settings in a new tab.");
+      openInNewTab(payload.manageUrl);
+      return;
+    }
+
+    if (!payload.installUrl) {
+      setStatusMessage("Unable to find GitHub installation URL.");
+      return;
+    }
+
+    setStatusMessage("Opening GitHub App installation in a new tab...");
+    openInNewTab(payload.installUrl);
   };
 
   const handleDisconnectGitHub = async () => {
@@ -864,8 +889,12 @@ export const Welcome = () => {
               )}
 
               <div className={styles.inlineActions}>
-                <button type="button" onClick={handleInstallGitHubApp} disabled={!isSignedIn}>
-                  {isGitHubConnected ? "Reconnect GitHub" : "Connect GitHub"}
+                <button
+                  type="button"
+                  onClick={() => handleInstallGitHubApp(false)}
+                  disabled={!isSignedIn}
+                >
+                  {isGitHubConnected ? "Open GitHub Installation" : "Connect GitHub"}
                 </button>
                 <button
                   type="button"
@@ -876,6 +905,16 @@ export const Welcome = () => {
                   Disconnect GitHub
                 </button>
               </div>
+
+              {isGitHubConnected ? (
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => handleInstallGitHubApp(true)}
+                >
+                  Reconnect GitHub App (Auth)
+                </button>
+              ) : null}
 
               <label className={styles.inlineLabel}>
                 Repository selection (optional prefill)

@@ -302,11 +302,23 @@ export default defineApp([
   ]),
   route("/api/github/connect/start", [
     requireAuth,
-    ({ ctx }) => {
+    ({ request, ctx }) => {
       const principal = getPrincipalFromContext(ctx);
 
       if (!principal) {
         return json({ error: "Authentication required." }, 401);
+      }
+
+      const url = new URL(request.url);
+      const forceReconnect = url.searchParams.get("force") === "1";
+      const existing = getGitHubConnectionForPrincipal(principal.id);
+
+      if (existing && !forceReconnect) {
+        return json({
+          alreadyConnected: true,
+          connection: githubConnectionView(existing),
+          manageUrl: `https://github.com/settings/installations/${existing.installationId}`,
+        });
       }
 
       try {
