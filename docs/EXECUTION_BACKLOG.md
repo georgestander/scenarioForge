@@ -83,21 +83,21 @@
 ### SF-2001 Source inventory scanner
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - PRDs/specs/plans/code candidates discovered and typed.
 
 ### SF-2002 Relevance scoring
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Each source receives trusted/suspect/stale status.
 
 ### SF-2003 Source selection UX
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - User can select/deselect sources and confirm relevance before generation.
 
@@ -106,21 +106,21 @@
 ### SF-3001 Feature/outcome clustering
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Scenarios grouped by feature and user outcome.
 
 ### SF-3002 Scenario contract generation
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Scenarios include preconditions, steps, expected checkpoints, edge variants, binary pass criteria.
 
 ### SF-3003 Scenarios persistence
 
 - Priority: P1
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Scenario packs stored with source manifest references.
 
@@ -129,21 +129,21 @@
 ### SF-4001 Runner orchestration
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Run selected scenario sets and track per-scenario status.
 
 ### SF-4002 Evidence capture
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Logs/screenshots/traces linked to scenario run records.
 
 ### SF-4003 Live progress streaming
 
 - Priority: P1
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - UI reflects queued/running/passed/failed/blocked in near real time.
 
@@ -152,21 +152,21 @@
 ### SF-5001 Failure classifier
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Failure records include probable root-cause summary.
 
 ### SF-5002 Fix implementation agent flow
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Failed scenarios can trigger model-driven code patches.
 
 ### SF-5003 PR creation pipeline
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - PR contains scenario linkage and rerun evidence.
 
@@ -175,21 +175,21 @@
 ### SF-6001 Review board UI
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Consolidated findings, risks, recommendations, and PR status.
 
 ### SF-6002 Exportable challenge report
 
 - Priority: P1
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - One-click export summary suitable for challenge submission.
 
 ## Immediate Next 5 Tickets
 
-1. `SF-2001` Source inventory scanner.
-2. `SF-2002` Relevance scoring.
-3. `SF-2003` Source selection UX.
-4. `SF-3001` Feature/outcome clustering.
-5. `SF-3002` Scenario contract generation.
+1. `SF-7001` Replace in-memory persistence with durable DB/object storage adapters.
+2. `SF-7002` Integrate real Codex app-server transport with streamed turns/review mode.
+3. `SF-7003` Wire real fix-to-branch commit + GitHub PR opening flow.
+4. `SF-7004` Add run queue retries/backoff and flaky-run heuristics.
+5. `SF-7005` Add auth hardening + production observability dashboards.

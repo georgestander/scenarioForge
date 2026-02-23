@@ -27,21 +27,26 @@ Ship a full-flow scenario-first quality product for the Codex challenge.
 
 - Phase 0 foundation: implemented.
 - Phase 1 auth + repo connect: implemented.
+- Phase 2 source relevance gate: implemented.
+- Phase 3 scenario generation: implemented.
+- Phase 4 run engine + observability: implemented.
+- Phase 5 auto-fix + PR creation records: implemented.
+- Phase 6 review board + export report: implemented.
 - Available now:
-  - ChatGPT sign-in/sign-out + session status API
-  - GitHub App installation connect + repo list API
-  - Project/session ownership enforcement by signed-in principal
-  - Project create/list API
-  - Codex session skeleton API (owner-scoped)
-  - Phase 1 UI shell for auth/repo/project/session bootstrap
-  - Architecture and execution docs
+  - Full linear workflow UI: connect -> select sources -> generate -> run -> fix -> review.
+  - Source inventory scanner with trust scoring (`trusted/suspect/stale/excluded`), deselection, and explicit manifest confirmation.
+  - Scenario pack generation grouped by feature and outcome, with contract-complete scenarios + markdown persistence payload.
+  - Run engine records with deterministic per-scenario statuses, event timelines, and evidence artifacts.
+  - Auto-fix attempt records with root-cause summaries and PR records gated by rerun evidence.
+  - Review board aggregation and one-click challenge report export API.
+  - Unit + regression suites aligned to the scenario coverage matrix (`npm run test:unit`, `npm run test:regression`).
 
 ## Immediate Next Step
 
-Implement Phase 2:
-1. Source inventory scanner (`SF-2001`).
-2. Relevance scoring (`SF-2002`).
-3. Source selection UX with explicit confirmation (`SF-2003`).
+Productionize Phase 7 hardening:
+1. Replace in-memory state with durable DB/object storage.
+2. Integrate real Codex transport streaming and review mode.
+3. Replace simulated fix/PR artifacts with real branch commit + PR creation.
 
 ## Session Audit Trail
 
@@ -54,3 +59,6 @@ Implement Phase 2:
 - 2026-02-23: Added model normalization in session storage/listing so all thread start payloads are forced to `gpt-5.3-xhigh`, including legacy in-memory sessions created with `gpt-5.1-codex`.
 - Decision: Prevent stale local state from surfacing old model names in Advanced debug output.
 - Next action: Keep this enforcement until full persistent storage migration and auth hardening are complete.
+- 2026-02-23: Implemented phases 2 through 6 end-to-end with new API contracts, services, UI flow, review export, and validation suites.
+- Decision: Keep deterministic in-memory simulation for run/fix/PR evidence in this milestone to ensure auditable contracts while real integrations are phased in next.
+- Next action: Start durable persistence and real transport/PR wiring while preserving the established API shapes and scenario evidence model.
