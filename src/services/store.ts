@@ -11,6 +11,7 @@ import type {
   SourceManifest,
   SourceRecord,
 } from "@/domain/models";
+import { isSelectableSourceRecord } from "@/services/sourceSelection";
 
 const STATE_KEY = "__SCENARIOFORGE_APP_STATE__";
 const DEFAULT_IMPLEMENTATION_MODEL = "gpt-5.3-xhigh";
@@ -286,7 +287,11 @@ export const upsertProjectSources = (
       source.ownerId === input.ownerId && source.projectId === input.projectId,
   );
 
-  const nextRecords: SourceRecord[] = input.sources.map((candidate) => {
+  const selectableCandidates = input.sources.filter((candidate) =>
+    isSelectableSourceRecord(candidate),
+  );
+
+  const nextRecords: SourceRecord[] = selectableCandidates.map((candidate) => {
     const match = existing.find((source) => source.path === candidate.path);
 
     if (match) {
@@ -329,7 +334,10 @@ export const listSourcesForProject = (
   const state = getState();
   return sortByUpdatedDesc(
     state.sources.filter(
-      (source) => source.ownerId === ownerId && source.projectId === projectId,
+      (source) =>
+        source.ownerId === ownerId &&
+        source.projectId === projectId &&
+        isSelectableSourceRecord(source),
     ),
   );
 };
@@ -345,6 +353,13 @@ export const updateSourceSelections = (
 
   state.sources.forEach((source) => {
     if (source.ownerId !== ownerId || source.projectId !== projectId) {
+      return;
+    }
+
+    if (!isSelectableSourceRecord(source)) {
+      source.selected = false;
+      source.status = "excluded";
+      source.updatedAt = timestamp;
       return;
     }
 

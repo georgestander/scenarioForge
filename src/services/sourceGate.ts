@@ -6,6 +6,7 @@ import type {
   SourceRelevanceStatus,
   SourceType,
 } from "@/domain/models";
+import { isSelectableSourcePath } from "@/services/sourceSelection";
 
 const SOURCE_CANDIDATES: Array<{ path: string; title: string; freshnessDays: number }> = [
   { path: "README.md", title: "Product README", freshnessDays: 1 },
@@ -20,12 +21,14 @@ const SOURCE_CANDIDATES: Array<{ path: string; title: string; freshnessDays: num
     title: "Execution backlog",
     freshnessDays: 1,
   },
+  {
+    path: "docs/PHASE2_6_SCENARIO_PLAN.md",
+    title: "Phase plan",
+    freshnessDays: 2,
+  },
   { path: "docs/PRD.md", title: "Product requirements", freshnessDays: 4 },
   { path: "docs/SPEC.md", title: "Feature specification", freshnessDays: 4 },
-  { path: "src/worker.tsx", title: "API routes and orchestration", freshnessDays: 0 },
-  { path: "src/services/store.ts", title: "State and persistence model", freshnessDays: 0 },
-  { path: "src/app/pages/welcome.tsx", title: "Primary UX workflow", freshnessDays: 0 },
-  { path: "src/domain/models.ts", title: "Domain contracts", freshnessDays: 0 },
+  { path: ".agent/POINTER.md", title: "Session pointer", freshnessDays: 1 },
 ];
 
 const now = () => Date.now();
@@ -60,6 +63,14 @@ const inferSourceType = (path: string): SourceType => {
   if (normalized.includes("architecture")) {
     return "architecture";
   }
+  if (
+    normalized.endsWith(".md") ||
+    normalized.endsWith(".markdown") ||
+    normalized.endsWith(".json") ||
+    normalized.endsWith(".txt")
+  ) {
+    return "plan";
+  }
   return "code";
 };
 
@@ -86,7 +97,7 @@ const typeScore = (type: SourceType): number => {
     case "spec":
       return 18;
     case "plan":
-      return 16;
+      return 20;
     case "architecture":
       return 14;
     case "code":
@@ -158,7 +169,9 @@ export const scanSourcesForProject = (
   ownerId: string,
   _repositories: GitHubRepository[] = [],
 ): Omit<SourceRecord, "id" | "createdAt" | "updatedAt">[] => {
-  const candidates = SOURCE_CANDIDATES;
+  const candidates = SOURCE_CANDIDATES.filter((candidate) =>
+    isSelectableSourcePath(candidate.path),
+  );
 
   return candidates.map((candidate) => {
     const type = inferSourceType(candidate.path);

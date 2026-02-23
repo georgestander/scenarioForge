@@ -50,6 +50,9 @@ Productionize Phase 7 hardening:
 
 ## Session Audit Trail
 
+- 2026-02-23: Restricted Source Relevance Gate selection inventory to planning artifacts only (`.md/.json/.txt` with planning signals), removing application logic/code files from selectable scan results.
+- Decision: Code remains baseline execution context and is no longer user-selectable/deselectable in Stage 2; only planning/task/PRD/spec-oriented documents participate in source manifests.
+- Next action: Add a focused UI regression check to ensure source scan lists never include `src/*` or other application logic paths.
 - 2026-02-23: Removed same-tab ChatGPT auth fallback so Stage 1 sign-in no longer navigates users away from ScenarioForge when popups are blocked.
 - Decision: Sign-in UX must remain in-app; blocked popup state now keeps context and offers explicit "Open ChatGPT Sign-In Tab" + complete/cancel controls.
 - Next action: Add a UI regression check to ensure ChatGPT sign-in never triggers same-tab navigation from the core workflow.

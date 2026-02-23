@@ -13,6 +13,10 @@ test("scanSourcesForProject returns typed records with mixed trust statuses", ()
 
   assert.ok(sources.length >= 8);
   assert.ok(sources.every((source) => source.projectId === project.id));
+  assert.ok(sources.every((source) => source.type !== "code"));
+  assert.ok(
+    sources.every((source) => /\.(md|markdown|json|txt)$/i.test(source.path)),
+  );
   assert.ok(sources.some((source) => source.status === "trusted"));
   assert.ok(sources.some((source) => source.status === "stale"));
 });
