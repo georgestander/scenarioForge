@@ -287,7 +287,7 @@ Response `201`:
       "method": "thread/start",
       "id": 2,
       "params": {
-        "model": "gpt-5.1-codex",
+        "model": "gpt-5.3-xhigh",
         "approvalPolicy": "unlessTrusted",
         "sandbox": "workspaceWrite"
       }
