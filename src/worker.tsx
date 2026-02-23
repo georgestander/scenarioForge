@@ -8,7 +8,17 @@ import { setCommonHeaders } from "@/app/headers";
 import { Home } from "@/app/pages/home";
 import type { AuthPrincipal, AuthSession, GitHubConnection } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
-import { persistCodexSessionToD1, persistProjectToD1 } from "@/services/durableCore";
+import {
+  persistCodexSessionToD1,
+  persistProjectToD1,
+} from "@/services/durableCore";
+import {
+  cancelChatGptLogin,
+  logoutChatGpt,
+  readChatGptAccount,
+  readChatGptLoginCompletion,
+  startChatGptLogin,
+} from "@/services/chatgptAuth";
 import { startCodexSession } from "@/services/codexSession";
 import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
 import {
@@ -194,28 +204,137 @@ export default defineApp([
     },
   }),
   route("/api/auth/chatgpt/sign-in", {
+    post: async () => {
+      try {
+        const login = await startChatGptLogin();
+        return json(login, 201);
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to start ChatGPT sign-in flow.",
+          },
+          503,
+        );
+      }
+    },
+  }),
+  route("/api/auth/chatgpt/sign-in/complete", {
     post: async ({ request, response }) => {
+      try {
+        const payload = await parseJsonBody(request);
+        const loginId = String(payload?.loginId ?? "").trim();
+
+        if (loginId) {
+          const completion = await readChatGptLoginCompletion(loginId);
+
+          if (completion && !completion.success) {
+            return json(
+              {
+                error: completion.error ?? "ChatGPT sign-in did not complete successfully.",
+              },
+              409,
+            );
+          }
+        }
+
+        const account = await readChatGptAccount(true);
+
+        if (!account) {
+          return json(
+            {
+              authenticated: false,
+              principal: null,
+              pending: true,
+            },
+            202,
+          );
+        }
+
+        const email = account.email;
+        const principal = createPrincipal({
+          provider: "chatgpt",
+          displayName: email ?? "ChatGPT User",
+          email,
+        });
+
+        await saveAuthSession(response.headers, createAuthSession(principal.id));
+
+        return json({
+          authenticated: true,
+          principal,
+        });
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to complete ChatGPT sign-in.",
+          },
+          503,
+        );
+      }
+    },
+  }),
+  route("/api/auth/chatgpt/sign-in/status", {
+    get: async ({ request }) => {
+      const url = new URL(request.url);
+      const loginId = String(url.searchParams.get("loginId") ?? "").trim();
+
+      if (!loginId) {
+        return json({ error: "loginId is required." }, 400);
+      }
+
+      try {
+        const completed = await readChatGptLoginCompletion(loginId);
+        return json({
+          completed,
+        });
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error ? error.message : "Failed to read login status.",
+          },
+          503,
+        );
+      }
+    },
+  }),
+  route("/api/auth/chatgpt/sign-in/cancel", {
+    post: async ({ request }) => {
       const payload = await parseJsonBody(request);
-      const displayName =
-        String(payload?.displayName ?? "").trim() || "ScenarioForge Builder";
-      const email = String(payload?.email ?? "").trim().toLowerCase() || null;
+      const loginId = String(payload?.loginId ?? "").trim();
 
-      const principal = createPrincipal({
-        provider: "chatgpt",
-        displayName,
-        email,
-      });
+      if (!loginId) {
+        return json({ error: "loginId is required." }, 400);
+      }
 
-      await saveAuthSession(response.headers, createAuthSession(principal.id));
-
-      return json({
-        authenticated: true,
-        principal,
-      });
+      try {
+        await cancelChatGptLogin(loginId);
+        return json({ ok: true });
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error ? error.message : "Failed to cancel ChatGPT login.",
+          },
+          503,
+        );
+      }
     },
   }),
   route("/api/auth/sign-out", {
     post: async ({ request, response }) => {
+      try {
+        await logoutChatGpt();
+      } catch {
+        // Keep local sign-out reliable even if remote logout cannot be reached.
+      }
+
       await clearAuthSession(request, response.headers);
       return json({ ok: true });
     },

@@ -50,6 +50,18 @@ Productionize Phase 7 hardening:
 
 ## Session Audit Trail
 
+- 2026-02-23: Removed same-tab ChatGPT auth fallback so Stage 1 sign-in no longer navigates users away from ScenarioForge when popups are blocked.
+- Decision: Sign-in UX must remain in-app; blocked popup state now keeps context and offers explicit "Open ChatGPT Sign-In Tab" + complete/cancel controls.
+- Next action: Add a UI regression check to ensure ChatGPT sign-in never triggers same-tab navigation from the core workflow.
+- 2026-02-23: Updated local developer startup so `pnpm dev` launches both the app and ChatGPT auth bridge automatically, eliminating the two-terminal requirement for sign-in.
+- Decision: Keep `dev:app` and `dev:auth-bridge` available for advanced debugging, but make `dev` the one-command default path.
+- Next action: Add a CI/dev smoke check for `pnpm dev` startup orchestration so bridge readiness failures are caught earlier.
+- 2026-02-23: Hardened ChatGPT sign-in reliability by adding popup-block fallback (same-tab redirect with login resume), persistent pending-login recovery, and a serialized app-server initialize guard in the auth bridge.
+- Decision: Sign-in must progress even when browser popup policy blocks `window.open`; pending login IDs now survive navigation via session storage until completion/cancel.
+- Next action: Add a browser-level regression test that covers blocked-popup fallback and resumed sign-in completion after return to app.
+- 2026-02-23: Replaced local ChatGPT sign-in stub (manual name/email form) with managed ChatGPT browser login start/complete/cancel flow backed by Codex app-server account auth via bridge endpoints.
+- Decision: Identity is now sourced from ChatGPT account state (email) instead of user-entered profile fields; local session is created only after verified ChatGPT auth completion.
+- Next action: Replace the temporary HTTP auth bridge with direct app-server transport integration in worker runtime so production deploys do not require a sidecar process.
 - 2026-02-23: Home page hero image was constrained to prevent it from dominating the viewport and pushing core UI/forms below the fold.
 - Decision: Keep hero art as supporting context only, with bounded card/image height so the primary workflow remains visible on first view.
 - Next action: Continue Phase 2 source trust gate work (`SF-2001` to `SF-2003`) on top of the current UI shell.

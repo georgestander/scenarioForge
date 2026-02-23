@@ -10,7 +10,9 @@
   "private": true,
   "scripts": {
     "build": "vite build",
-    "dev": "vite dev",
+    "dev": "node ./scripts/dev-with-auth.mjs",
+    "dev:app": "vite dev",
+    "dev:auth-bridge": "node ./scripts/codex-auth-bridge.mjs",
     "dev:init": "rw-scripts dev-init",
     "preview": "vite preview",
     "worker:run": "rw-scripts worker-run",

@@ -85,8 +85,16 @@ pnpm install
 
 ### Run
 
+Start the full local stack (app + ChatGPT auth bridge):
+
 ```bash
 pnpm dev
+```
+
+Optional: run only the app UI/worker (without auto-starting the auth bridge):
+
+```bash
+pnpm dev:app
 ```
 
 ## Security and Repo Hygiene

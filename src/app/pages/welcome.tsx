@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AuthPrincipal,
   CodexSession,
@@ -23,6 +23,26 @@ interface CollectionPayload<T> {
 interface AuthSessionPayload {
   authenticated: boolean;
   principal: AuthPrincipal | null;
+}
+
+interface ChatGptSignInStartPayload {
+  loginId: string;
+  authUrl: string;
+}
+
+interface ChatGptSignInCompletePayload {
+  authenticated: boolean;
+  principal: AuthPrincipal | null;
+  pending?: boolean;
+}
+
+interface ChatGptSignInStatusPayload {
+  completed: {
+    loginId: string | null;
+    success: boolean;
+    error: string | null;
+    receivedAt: string;
+  } | null;
 }
 
 interface GitHubConnectionView {
@@ -87,16 +107,15 @@ interface GitHubSyncPayload {
 }
 
 type Stage = 1 | 2 | 3 | 4 | 5 | 6;
+type OpenInNewTabResult = "opened" | "blocked";
+
+const CHATGPT_LOGIN_STORAGE_KEY = "sf_chatgpt_login_id";
+const CHATGPT_LOGIN_URL_STORAGE_KEY = "sf_chatgpt_login_url";
 
 const initialProjectForm = {
   name: "",
   repoUrl: "",
   defaultBranch: "main",
-};
-
-const initialSignInForm = {
-  displayName: "",
-  email: "",
 };
 
 const readError = async (
@@ -140,7 +159,10 @@ export const Welcome = () => {
   const [pendingInstallationId, setPendingInstallationId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectForm, setProjectForm] = useState(initialProjectForm);
-  const [signInForm, setSignInForm] = useState(initialSignInForm);
+  const [chatGptLoginId, setChatGptLoginId] = useState<string | null>(null);
+  const [chatGptLoginUrl, setChatGptLoginUrl] = useState<string | null>(null);
+  const [chatGptLoginPending, setChatGptLoginPending] = useState(false);
+  const chatGptLoginIdRef = useRef<string | null>(null);
 
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
@@ -206,6 +228,37 @@ export const Welcome = () => {
     4: scenarioRuns.length > 0,
     5: fixAttempts.length > 0,
     6: Boolean(reviewBoard),
+  };
+
+  const setChatGptLoginState = (
+    loginId: string | null,
+    pending: boolean,
+    authUrl?: string | null,
+  ) => {
+    chatGptLoginIdRef.current = loginId;
+    setChatGptLoginId(loginId);
+    setChatGptLoginPending(pending);
+    if (typeof authUrl !== "undefined") {
+      setChatGptLoginUrl(authUrl);
+    } else if (!pending) {
+      setChatGptLoginUrl(null);
+    }
+
+    try {
+      if (loginId && pending) {
+        window.sessionStorage.setItem(CHATGPT_LOGIN_STORAGE_KEY, loginId);
+      } else {
+        window.sessionStorage.removeItem(CHATGPT_LOGIN_STORAGE_KEY);
+      }
+
+      if (authUrl && pending) {
+        window.sessionStorage.setItem(CHATGPT_LOGIN_URL_STORAGE_KEY, authUrl);
+      } else if (!pending || authUrl === null) {
+        window.sessionStorage.removeItem(CHATGPT_LOGIN_URL_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage errors in private browsing or restricted contexts.
+    }
   };
 
   const ensureActiveStage = () => {
@@ -318,6 +371,10 @@ export const Welcome = () => {
     const principal = authPayload.principal ?? null;
     setAuthPrincipal(principal);
 
+    if (principal) {
+      setChatGptLoginState(null, false);
+    }
+
     if (!principal) {
       setProjects([]);
       setSessions([]);
@@ -393,6 +450,12 @@ export const Welcome = () => {
     const githubStatus = url.searchParams.get("github");
     const githubError = url.searchParams.get("githubError");
     const installationIdFromQuery = url.searchParams.get("installation_id");
+    const pendingChatGptLoginId = window.sessionStorage.getItem(
+      CHATGPT_LOGIN_STORAGE_KEY,
+    );
+    const pendingChatGptLoginUrl = window.sessionStorage.getItem(
+      CHATGPT_LOGIN_URL_STORAGE_KEY,
+    );
 
     if (githubStatus === "connected") {
       setStatusMessage("GitHub App connected successfully.");
@@ -415,6 +478,20 @@ export const Welcome = () => {
       url.searchParams.delete("githubError");
       url.searchParams.delete("installation_id");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+
+    if (pendingChatGptLoginId) {
+      setChatGptLoginState(
+        pendingChatGptLoginId,
+        true,
+        pendingChatGptLoginUrl ?? null,
+      );
+      setStatusMessage("Resuming pending ChatGPT sign-in.");
+      void completeChatGptSignIn(pendingChatGptLoginId).then((completed) => {
+        if (!completed) {
+          pollForChatGptSignIn(pendingChatGptLoginId);
+        }
+      });
     }
 
     void loadBaseData();
@@ -441,23 +518,176 @@ export const Welcome = () => {
     pullRequests.length,
   ]);
 
-  const handleSignIn = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const response = await fetch("/api/auth/chatgpt/sign-in", {
+  const completeChatGptSignIn = async (loginId: string): Promise<boolean> => {
+    const response = await fetch("/api/auth/chatgpt/sign-in/complete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(signInForm),
+      body: JSON.stringify({ loginId }),
+    });
+
+    if (response.status === 202) {
+      return false;
+    }
+
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to complete ChatGPT sign-in."));
+      return false;
+    }
+
+    const payload = (await response.json()) as ChatGptSignInCompletePayload;
+    if (!payload.authenticated) {
+      return false;
+    }
+
+    await loadBaseData();
+    setStatusMessage("ChatGPT sign-in complete.");
+    return true;
+  };
+
+  const readChatGptSignInStatus = async (
+    loginId: string,
+  ): Promise<ChatGptSignInStatusPayload["completed"]> => {
+    const response = await fetch(
+      `/api/auth/chatgpt/sign-in/status?loginId=${encodeURIComponent(loginId)}`,
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as ChatGptSignInStatusPayload;
+    return payload.completed ?? null;
+  };
+
+  const pollForChatGptSignIn = (loginId: string) => {
+    let attempts = 0;
+    const maxAttempts = 45;
+
+    const run = async () => {
+      if (chatGptLoginIdRef.current !== loginId) {
+        return;
+      }
+
+      attempts += 1;
+      const completed = await completeChatGptSignIn(loginId);
+
+      if (completed) {
+        return;
+      }
+
+      const status = await readChatGptSignInStatus(loginId);
+      if (status && !status.success) {
+        setChatGptLoginState(null, false);
+        setStatusMessage(
+          status.error
+            ? `ChatGPT sign-in failed (${status.error}).`
+            : "ChatGPT sign-in did not complete.",
+        );
+        return;
+      }
+
+      if (attempts < maxAttempts) {
+        window.setTimeout(run, 2000);
+        return;
+      }
+
+      setStatusMessage(
+        "Still waiting for ChatGPT sign-in. Finish sign-in in the opened tab, then click Complete ChatGPT Sign-In.",
+      );
+    };
+
+    window.setTimeout(run, 2000);
+  };
+
+  const handleSignIn = async () => {
+    const response = await fetch("/api/auth/chatgpt/sign-in", {
+      method: "POST",
     });
 
     if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to sign in."));
+      setStatusMessage(await readError(response, "Failed to start ChatGPT sign-in."));
       return;
     }
 
-    setSignInForm(initialSignInForm);
-    await loadBaseData();
-    setStatusMessage("ChatGPT sign-in complete.");
+    const payload = (await response.json()) as ChatGptSignInStartPayload;
+
+    if (!payload.authUrl || !payload.loginId) {
+      setStatusMessage("ChatGPT sign-in URL is unavailable.");
+      return;
+    }
+
+    setChatGptLoginState(payload.loginId, true, payload.authUrl);
+
+    const openResult = openInNewTab(payload.authUrl, "ChatGPT sign-in");
+
+    if (openResult === "blocked") {
+      setStatusMessage(
+        "Pop-up blocked. You are still in ScenarioForge. Click Open ChatGPT Sign-In Tab below.",
+      );
+      return;
+    }
+
+    setStatusMessage(
+      "Opened ChatGPT sign-in in a new tab. Finish the login there; this page will auto-complete when done.",
+    );
+    pollForChatGptSignIn(payload.loginId);
+  };
+
+  const handleOpenChatGptSignInTab = () => {
+    if (!chatGptLoginUrl || !chatGptLoginId) {
+      setStatusMessage("Start ChatGPT sign-in first.");
+      return;
+    }
+
+    const opened = openInNewTab(chatGptLoginUrl, "ChatGPT sign-in");
+    if (opened === "blocked") {
+      setStatusMessage(
+        "Pop-up is still blocked. Allow pop-ups for this site, then click Open ChatGPT Sign-In Tab again.",
+      );
+      return;
+    }
+
+    setStatusMessage(
+      "Opened ChatGPT sign-in in a new tab. Finish login there, then return here.",
+    );
+    pollForChatGptSignIn(chatGptLoginId);
+  };
+
+  const handleCompleteChatGptSignIn = async () => {
+    if (!chatGptLoginId) {
+      setStatusMessage("Start ChatGPT sign-in first.");
+      return;
+    }
+
+    const completed = await completeChatGptSignIn(chatGptLoginId);
+    if (completed) {
+      return;
+    }
+
+    setStatusMessage(
+      "ChatGPT sign-in is still in progress. Complete it in the opened tab and retry.",
+    );
+  };
+
+  const handleCancelChatGptSignIn = async () => {
+    if (!chatGptLoginId) {
+      setChatGptLoginState(null, false);
+      return;
+    }
+
+    const response = await fetch("/api/auth/chatgpt/sign-in/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: chatGptLoginId }),
+    });
+
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to cancel ChatGPT sign-in."));
+      return;
+    }
+
+    setChatGptLoginState(null, false);
+    setStatusMessage("ChatGPT sign-in cancelled.");
   };
 
   const handleSignOut = async () => {
@@ -467,22 +697,26 @@ export const Welcome = () => {
       return;
     }
 
+    setChatGptLoginState(null, false);
     setProjectForm(initialProjectForm);
     await loadBaseData();
     setStatusMessage("Signed out.");
   };
 
-  const openInNewTab = (url: string): boolean => {
+  const openInNewTab = (
+    url: string,
+    targetLabel = "link",
+  ): OpenInNewTabResult => {
     const newWindow = window.open(url, "_blank", "noopener,noreferrer");
 
-    if (!newWindow) {
-      setStatusMessage(
-        "Pop-up blocked. Allow pop-ups for this site and retry opening GitHub in a new tab.",
-      );
-      return false;
+    if (newWindow) {
+      return "opened";
     }
 
-    return true;
+    setStatusMessage(
+      `Pop-up blocked. Allow pop-ups for this site and retry opening ${targetLabel} in a new tab.`,
+    );
+    return "blocked";
   };
 
   const handleSyncGitHubConnection = async (): Promise<boolean> => {
@@ -616,7 +850,7 @@ export const Welcome = () => {
 
       if (payload.manageUrl) {
         setStatusMessage("GitHub already connected. Opening installation settings in a new tab.");
-        openInNewTab(payload.manageUrl);
+        openInNewTab(payload.manageUrl, "GitHub installation settings");
       }
       return;
     }
@@ -626,8 +860,8 @@ export const Welcome = () => {
       return;
     }
 
-    const opened = openInNewTab(payload.installUrl);
-    if (!opened) {
+    const opened = openInNewTab(payload.installUrl, "GitHub install");
+    if (opened === "blocked") {
       return;
     }
 
@@ -1010,36 +1244,44 @@ export const Welcome = () => {
                   {authPrincipal.email ? ` (${authPrincipal.email})` : ""}.
                 </p>
               ) : (
-                <form className={styles.form} onSubmit={handleSignIn}>
-                  <label>
-                    Display name
-                    <input
-                      value={signInForm.displayName}
-                      onChange={(event) =>
-                        setSignInForm((current) => ({
-                          ...current,
-                          displayName: event.target.value,
-                        }))
-                      }
-                      placeholder="ScenarioForge Builder"
-                    />
-                  </label>
-                  <label>
-                    Email (optional)
-                    <input
-                      value={signInForm.email}
-                      onChange={(event) =>
-                        setSignInForm((current) => ({
-                          ...current,
-                          email: event.target.value,
-                        }))
-                      }
-                      placeholder="builder@example.com"
-                    />
-                  </label>
-                  <button type="submit">Sign In With ChatGPT</button>
-                </form>
+                <div className={styles.inlineActions}>
+                  <button
+                    type="button"
+                    onClick={() => void handleSignIn()}
+                    disabled={chatGptLoginPending}
+                  >
+                    {chatGptLoginPending ? "Waiting for ChatGPT..." : "Sign In With ChatGPT"}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => void handleCompleteChatGptSignIn()}
+                    disabled={!chatGptLoginPending}
+                  >
+                    Complete ChatGPT Sign-In
+                  </button>
+                </div>
               )}
+
+              {chatGptLoginPending ? (
+                <div className={styles.inlineActions}>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={handleOpenChatGptSignInTab}
+                    disabled={!chatGptLoginUrl}
+                  >
+                    Open ChatGPT Sign-In Tab
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => void handleCancelChatGptSignIn()}
+                  >
+                    Cancel ChatGPT Sign-In
+                  </button>
+                </div>
+              ) : null}
 
               <div className={styles.inlineActions}>
                 <button
@@ -1086,6 +1328,7 @@ export const Welcome = () => {
                   onClick={() =>
                     openInNewTab(
                       `https://github.com/settings/installations/${manualInstallationId.trim()}`,
+                      "GitHub installation settings",
                     )
                   }
                   disabled={!manualInstallationId.trim()}
@@ -1109,6 +1352,7 @@ export const Welcome = () => {
                     onClick={() =>
                       openInNewTab(
                         `https://github.com/settings/installations/${githubConnection?.installationId ?? ""}`,
+                        "GitHub installation settings",
                       )
                     }
                     disabled={!githubConnection?.installationId}
