@@ -9,21 +9,49 @@ import { Home } from "@/app/pages/home";
 import type { AuthPrincipal, AuthSession, GitHubConnection } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import { startCodexSession } from "@/services/codexSession";
+import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
 import {
   connectGitHubInstallation,
   consumeGitHubConnectState,
   getGitHubInstallUrl,
   issueGitHubConnectState,
 } from "@/services/githubApp";
+import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
+import { createScenarioRunRecord } from "@/services/runEngine";
+import { generateScenarioPack } from "@/services/scenarioGeneration";
 import {
+  buildSourceManifest,
+  scanSourcesForProject,
+  validateGenerationSelection,
+} from "@/services/sourceGate";
+import {
+  createFixAttempt,
   createPrincipal,
   createProject,
+  createPullRequestRecord,
+  createScenarioPack,
+  createScenarioRun,
+  createSourceManifest,
   disconnectGitHubConnectionForPrincipal,
+  getFixAttemptById,
   getGitHubConnectionForPrincipal,
+  getLatestSourceManifestForProject,
   getPrincipalById,
+  getProjectByIdForOwner,
+  getScenarioPackById,
+  getScenarioRunById,
+  getSourceManifestById,
   listCodexSessionsForOwner,
+  listFixAttemptsForProject,
   listProjectsForOwner,
+  listPullRequestsForProject,
+  listScenarioPacksForProject,
+  listScenarioRunsForProject,
+  listSourceManifestsForProject,
+  listSourcesForProject,
+  updateSourceSelections,
   upsertGitHubConnection,
+  upsertProjectSources,
 } from "@/services/store";
 
 interface AuthContext {
@@ -70,8 +98,21 @@ const parseJsonBody = async (
   }
 };
 
+const readStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => item.length > 0);
+};
+
 const getPrincipalFromContext = (ctx: AppContext): AuthPrincipal | null =>
   ctx.auth?.principal ?? null;
+
+const getProjectId = (params: Record<string, unknown> | undefined): string =>
+  String(params?.projectId ?? "").trim();
 
 const githubConnectionView = (connection: GitHubConnection | null) => {
   if (!connection) {
@@ -137,7 +178,7 @@ export default defineApp([
     json({
       ok: true,
       service: "scenarioforge-api",
-      phase: "phase-1",
+      phase: "phase-6",
       timestamp: new Date().toISOString(),
     }),
   ),
@@ -379,12 +420,8 @@ export default defineApp([
         });
 
         return githubCallbackRedirect(request, "connected");
-      } catch (error) {
-        return githubCallbackRedirect(
-          request,
-          "error",
-          error instanceof Error ? "connect_failed" : "unknown_error",
-        );
+      } catch {
+        return githubCallbackRedirect(request, "error", "connect_failed");
       }
     },
   ]),
@@ -432,6 +469,402 @@ export default defineApp([
 
       disconnectGitHubConnectionForPrincipal(principal.id);
       return json({ ok: true });
+    },
+  ]),
+  route("/api/projects/:projectId/sources/scan", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const repositories =
+        getGitHubConnectionForPrincipal(principal.id)?.repositories ?? [];
+      const scanned = scanSourcesForProject(project, principal.id, repositories);
+      const data = upsertProjectSources({
+        ownerId: principal.id,
+        projectId: project.id,
+        sources: scanned,
+      });
+
+      return json({ data });
+    },
+  ]),
+  route("/api/projects/:projectId/sources", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({ data: listSourcesForProject(principal.id, project.id) });
+      }
+
+      if (request.method === "POST") {
+        const payload = await parseJsonBody(request);
+        const sourceIds = readStringArray(payload?.sourceIds);
+        const data = updateSourceSelections(principal.id, project.id, sourceIds);
+        return json({ data });
+      }
+
+      return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/source-manifests", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({ data: listSourceManifestsForProject(principal.id, project.id) });
+      }
+
+      if (request.method === "POST") {
+        const payload = await parseJsonBody(request);
+        const sourceIds = readStringArray(payload?.sourceIds);
+        const userConfirmed = Boolean(payload?.userConfirmed);
+        const confirmationNote = String(payload?.confirmationNote ?? "");
+
+        const allSources = listSourcesForProject(principal.id, project.id);
+        const selectedSet = new Set(sourceIds);
+        const selectedSources = allSources.filter((source) =>
+          selectedSet.has(source.id),
+        );
+        const validation = validateGenerationSelection(selectedSources, userConfirmed);
+
+        if (!validation.ok) {
+          return json({ error: validation.error }, 400);
+        }
+
+        const updatedSources = updateSourceSelections(
+          principal.id,
+          project.id,
+          sourceIds,
+        );
+        const finalSelectedSources = updatedSources.filter((source) =>
+          selectedSet.has(source.id),
+        );
+        const manifestInput = buildSourceManifest({
+          ownerId: principal.id,
+          projectId: project.id,
+          selectedSources: finalSelectedSources,
+          userConfirmed,
+          confirmationNote,
+        });
+
+        const manifest = createSourceManifest(manifestInput);
+
+        return json({
+          manifest,
+          selectedSources: finalSelectedSources,
+          includesStale: validation.includesStale,
+        });
+      }
+
+      return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/scenario-packs", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({ data: listScenarioPacksForProject(principal.id, project.id) });
+      }
+
+      if (request.method === "POST") {
+        const payload = await parseJsonBody(request);
+        const manifestId = String(payload?.manifestId ?? "").trim();
+        const manifest =
+          (manifestId
+            ? getSourceManifestById(principal.id, manifestId)
+            : getLatestSourceManifestForProject(principal.id, project.id)) ?? null;
+
+        if (!manifest || manifest.projectId !== project.id) {
+          return json({ error: "Source manifest not found." }, 404);
+        }
+
+        const sources = listSourcesForProject(principal.id, project.id).filter((source) =>
+          manifest.sourceIds.includes(source.id),
+        );
+
+        if (sources.length === 0) {
+          return json({ error: "Manifest contains no selected sources." }, 400);
+        }
+
+        const scenarioPackInput = generateScenarioPack(
+          project,
+          principal.id,
+          manifest,
+          sources,
+        );
+        const pack = createScenarioPack(scenarioPackInput);
+        return json({ pack }, 201);
+      }
+
+      return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/scenario-runs", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({ data: listScenarioRunsForProject(principal.id, project.id) });
+      }
+
+      if (request.method === "POST") {
+        const payload = await parseJsonBody(request);
+        const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+        const scenarioIds = readStringArray(payload?.scenarioIds);
+        const pack = getScenarioPackById(principal.id, scenarioPackId);
+
+        if (!pack || pack.projectId !== project.id) {
+          return json({ error: "Scenario pack not found." }, 404);
+        }
+
+        const runInput = createScenarioRunRecord({
+          ownerId: principal.id,
+          projectId: project.id,
+          pack,
+          selectedScenarioIds: scenarioIds,
+        });
+        const run = createScenarioRun(runInput);
+
+        return json({ run }, 201);
+      }
+
+      return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/scenario-runs/:runId", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const runId = String(params?.runId ?? "").trim();
+      const run = getScenarioRunById(principal.id, runId);
+
+      if (!run) {
+        return json({ error: "Scenario run not found." }, 404);
+      }
+
+      return json({ run });
+    },
+  ]),
+  route("/api/projects/:projectId/fix-attempts", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({ data: listFixAttemptsForProject(principal.id, project.id) });
+      }
+
+      if (request.method === "POST") {
+        const payload = await parseJsonBody(request);
+        const runId = String(payload?.runId ?? "").trim();
+        const run = getScenarioRunById(principal.id, runId);
+
+        if (!run || run.projectId !== project.id) {
+          return json({ error: "Scenario run not found." }, 404);
+        }
+
+        const fixAttemptInput = createFixAttemptFromRun({
+          ownerId: principal.id,
+          projectId: project.id,
+          run,
+        });
+        const fixAttempt = createFixAttempt(fixAttemptInput);
+        return json({ fixAttempt }, 201);
+      }
+
+      return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/pull-requests", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({ data: listPullRequestsForProject(principal.id, project.id) });
+      }
+
+      if (request.method === "POST") {
+        const payload = await parseJsonBody(request);
+        const fixAttemptId = String(payload?.fixAttemptId ?? "").trim();
+        const fixAttempt = getFixAttemptById(principal.id, fixAttemptId);
+
+        if (!fixAttempt || fixAttempt.projectId !== project.id) {
+          return json({ error: "Fix attempt not found." }, 404);
+        }
+
+        if (!fixAttempt.rerunSummary) {
+          return json(
+            { error: "Fix attempt missing rerun evidence. Cannot create PR." },
+            400,
+          );
+        }
+
+        const pullRequestInput = createPullRequestFromFix({
+          ownerId: principal.id,
+          projectId: project.id,
+          fixAttempt,
+        });
+        const pullRequest = createPullRequestRecord(pullRequestInput);
+        return json({ pullRequest }, 201);
+      }
+
+      return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/review-board", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const packs = listScenarioPacksForProject(principal.id, project.id);
+      const runs = listScenarioRunsForProject(principal.id, project.id);
+      const pullRequests = listPullRequestsForProject(principal.id, project.id);
+      const board = buildReviewBoard(project, packs, runs, pullRequests);
+
+      return json({ board });
+    },
+  ]),
+  route("/api/projects/:projectId/review-report", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const packs = listScenarioPacksForProject(principal.id, project.id);
+      const runs = listScenarioRunsForProject(principal.id, project.id);
+      const pullRequests = listPullRequestsForProject(principal.id, project.id);
+      const manifest = getLatestSourceManifestForProject(principal.id, project.id);
+      const board = buildReviewBoard(project, packs, runs, pullRequests);
+      const markdown = buildChallengeReport(project, manifest, board, runs[0] ?? null);
+
+      return json({
+        markdown,
+        generatedAt: new Date().toISOString(),
+      });
     },
   ]),
   render(Document, [route("/", Home)]),

@@ -72,3 +72,211 @@ export interface CodexSession {
     implementation: string;
   };
 }
+
+export type SourceType = "prd" | "spec" | "plan" | "architecture" | "code";
+export type SourceRelevanceStatus = "trusted" | "suspect" | "stale" | "excluded";
+
+export interface SourceRecord {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  path: string;
+  title: string;
+  type: SourceType;
+  lastModifiedAt: string;
+  relevanceScore: number;
+  status: SourceRelevanceStatus;
+  selected: boolean;
+  warnings: string[];
+  hash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourceManifest {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  sourceIds: string[];
+  sourceHashes: string[];
+  statusCounts: Record<SourceRelevanceStatus, number>;
+  includesStale: boolean;
+  userConfirmed: boolean;
+  confirmationNote: string;
+  confirmedAt: string | null;
+  manifestHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ScenarioPriority = "critical" | "high" | "medium";
+
+export interface ScenarioContract {
+  id: string;
+  feature: string;
+  outcome: string;
+  title: string;
+  persona: string;
+  preconditions: string[];
+  testData: string[];
+  steps: string[];
+  expectedCheckpoints: string[];
+  edgeVariants: string[];
+  passCriteria: string;
+  priority: ScenarioPriority;
+}
+
+export interface ScenarioPack {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  manifestId: string;
+  manifestHash: string;
+  sourceIds: string[];
+  model: string;
+  groupedByFeature: Record<string, string[]>;
+  groupedByOutcome: Record<string, string[]>;
+  scenarios: ScenarioContract[];
+  scenariosMarkdown: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ScenarioExecutionStatus =
+  | "queued"
+  | "running"
+  | "passed"
+  | "failed"
+  | "blocked";
+
+export interface ScenarioEvidenceArtifact {
+  kind: "log" | "screenshot" | "trace";
+  label: string;
+  value: string;
+}
+
+export interface ScenarioRunItem {
+  scenarioId: string;
+  status: ScenarioExecutionStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  observed: string;
+  expected: string;
+  failureHypothesis: string | null;
+  artifacts: ScenarioEvidenceArtifact[];
+}
+
+export interface ScenarioRunEvent {
+  id: string;
+  scenarioId: string;
+  status: ScenarioExecutionStatus;
+  message: string;
+  timestamp: string;
+}
+
+export interface ScenarioRun {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  scenarioPackId: string;
+  status: "queued" | "running" | "completed";
+  startedAt: string | null;
+  completedAt: string | null;
+  items: ScenarioRunItem[];
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    blocked: number;
+  };
+  events: ScenarioRunEvent[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type FixAttemptStatus = "planned" | "in_progress" | "validated" | "failed";
+
+export interface FixAttempt {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  scenarioRunId: string;
+  failedScenarioIds: string[];
+  probableRootCause: string;
+  patchSummary: string;
+  impactedFiles: string[];
+  model: string;
+  status: FixAttemptStatus;
+  rerunSummary: {
+    runId: string;
+    passed: number;
+    failed: number;
+    blocked: number;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PullRequestStatus = "draft" | "open" | "merged" | "blocked";
+
+export interface PullRequestRecord {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  fixAttemptId: string;
+  scenarioIds: string[];
+  title: string;
+  branchName: string;
+  url: string;
+  status: PullRequestStatus;
+  rootCauseSummary: string;
+  rerunEvidenceRunId: string | null;
+  rerunEvidenceSummary: {
+    passed: number;
+    failed: number;
+    blocked: number;
+  } | null;
+  riskNotes: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewRiskItem {
+  scenarioId: string;
+  severity: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface ReviewRecommendation {
+  id: string;
+  priority: "high" | "medium" | "low";
+  title: string;
+  detail: string;
+  scenarioIds: string[];
+}
+
+export interface ReviewBoard {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  generatedAt: string;
+  coverage: {
+    totalScenarios: number;
+    latestRunId: string | null;
+    passRate: number;
+  };
+  runSummary: {
+    runs: number;
+    failures: number;
+    blocked: number;
+  };
+  pullRequests: Array<{
+    id: string;
+    title: string;
+    status: PullRequestStatus;
+    url: string;
+    scenarioIds: string[];
+  }>;
+  risks: ReviewRiskItem[];
+  recommendations: ReviewRecommendation[];
+}
