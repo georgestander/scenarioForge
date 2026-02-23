@@ -54,23 +54,29 @@
 ### SF-1001 ChatGPT auth integration
 
 - Priority: P0
-- Status: todo
-- Acceptance criteria:
-  - User can authenticate with ChatGPT and see session status in app.
+- Status: done
+- Outcome:
+  - Session-backed ChatGPT sign-in/sign-out endpoints implemented.
+  - `GET /api/auth/session` exposes live auth state to UI.
+  - Phase 1 shell shows signed-in principal status.
 
 ### SF-1002 GitHub App auth
 
 - Priority: P0
-- Status: todo
-- Acceptance criteria:
-  - User can connect GitHub and select repository.
+- Status: done
+- Outcome:
+  - GitHub App install URL endpoint implemented.
+  - Installation connect endpoint exchanges app JWT for installation token.
+  - Repository list endpoint and UI repository selector implemented.
 
 ### SF-1003 Project ownership checks
 
 - Priority: P1
-- Status: todo
-- Acceptance criteria:
-  - API enforces project/session access by signed-in principal.
+- Status: done
+- Outcome:
+  - Project and Codex session APIs now require authenticated principal.
+  - Project/session records are owner-scoped per principal.
+  - Ownership enforced on create/list/session-init operations.
 
 ## Phase 2 - Source Relevance Gate
 
@@ -182,8 +188,8 @@
 
 ## Immediate Next 5 Tickets
 
-1. `SF-1001` ChatGPT auth integration.
-2. `SF-1002` GitHub App auth.
-3. `SF-2001` Source inventory scanner.
-4. `SF-2002` Relevance scoring.
-5. `SF-2003` Source selection UX.
+1. `SF-2001` Source inventory scanner.
+2. `SF-2002` Relevance scoring.
+3. `SF-2003` Source selection UX.
+4. `SF-3001` Feature/outcome clustering.
+5. `SF-3002` Scenario contract generation.

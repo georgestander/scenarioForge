@@ -45,7 +45,7 @@ Responsibilities:
 
 Owns:
 - Endpoint contracts.
-- Basic auth/session checks (as added in future phases).
+- Auth/session checks and ownership enforcement.
 
 ### 3.3 Domain Layer
 
@@ -54,7 +54,7 @@ Responsibilities:
 - Decision-safe object shapes for project/scenario/session records.
 
 Owns:
-- `Project` and `CodexSession` domain models in Phase 0.
+- `Project`, `CodexSession`, `AuthPrincipal`, and `GitHubConnection` models in Phase 1.
 
 ### 3.4 Persistence Adapter
 
@@ -62,8 +62,9 @@ Responsibilities:
 - Store/retrieve domain entities.
 - Hide storage implementation details from API handlers.
 
-Phase 0 implementation:
-- In-memory runtime store (worker process memory).
+Phase 1 implementation:
+- In-memory runtime store (worker process memory) for projects/sessions/principals/connections.
+- Session map-backed signed cookie auth session store.
 
 Planned upgrades:
 - Durable storage adapter (D1 or equivalent).
@@ -83,32 +84,36 @@ Planned upgrades:
 - Full transport bridge (stdio/ws relay service).
 - Turn streaming and review mode ingestion.
 
-### 3.6 GitHub Integration Service (Planned)
+### 3.6 GitHub Integration Service
 
 Responsibilities:
 - Repository linking.
 - Branch management.
 - PR creation/update.
 
-Recommended auth model:
-- GitHub App with fine-grained, short-lived credentials.
+Phase 1 implementation:
+- GitHub App installation connect flow.
+- App JWT signing + installation token exchange.
+- Installation repository listing for project source selection.
 
-## 4. Runtime Architecture (Phase 0)
+## 4. Runtime Architecture (Phase 1)
 
 ```mermaid
 flowchart LR
   U["User Browser"] --> W["RedwoodSDK UI"]
   W --> A["Worker API Routes"]
+  A --> S["Auth Session Store (Signed Cookie + In-Memory Session Map)"]
   A --> D["Domain Models"]
   A --> P["In-Memory Persistence"]
   A --> C["Codex Session Skeleton Adapter"]
+  A --> G["GitHub App Integration Service"]
 ```
 
 Notes:
-- This phase proves project/session creation and Codex lifecycle scaffolding.
-- No persistent database is required yet.
+- This phase adds auth state, ownership checks, and GitHub App installation connect.
+- Persistence remains in-memory and is non-durable across runtime restarts.
 
-## 5. API Contracts (Phase 0)
+## 5. API Contracts (Phase 1)
 
 ## 5.1 `GET /api/health`
 
@@ -120,12 +125,40 @@ Response `200`:
 {
   "ok": true,
   "service": "scenarioforge-api",
-  "phase": "phase-0",
+  "phase": "phase-1",
   "timestamp": "2026-02-23T10:00:00.000Z"
 }
 ```
 
-## 5.2 `GET /api/projects`
+## 5.2 `GET /api/auth/session`
+
+Purpose:
+- Retrieve current ChatGPT auth state for the requester.
+
+Response `200`:
+```json
+{
+  "authenticated": true,
+  "principal": {
+    "id": "usr_...",
+    "provider": "chatgpt",
+    "displayName": "ScenarioForge Builder",
+    "email": "builder@example.com"
+  }
+}
+```
+
+## 5.3 `POST /api/auth/chatgpt/sign-in`
+
+Purpose:
+- Create/update a ChatGPT principal and establish a signed session cookie.
+
+## 5.4 `POST /api/auth/sign-out`
+
+Purpose:
+- Remove the current auth session and clear session cookie.
+
+## 5.5 `GET /api/projects`
 
 Purpose:
 - List tracked ScenarioForge projects.
@@ -136,6 +169,7 @@ Response `200`:
   "data": [
     {
       "id": "proj_...",
+      "ownerId": "usr_...",
       "name": "ScenarioForge",
       "repoUrl": "https://github.com/org/repo",
       "defaultBranch": "main",
@@ -147,7 +181,7 @@ Response `200`:
 }
 ```
 
-## 5.3 `POST /api/projects`
+## 5.6 `POST /api/projects`
 
 Purpose:
 - Create a project shell.
@@ -166,6 +200,7 @@ Response `201`:
 {
   "project": {
     "id": "proj_...",
+    "ownerId": "usr_...",
     "name": "ScenarioForge",
     "repoUrl": "https://github.com/org/repo",
     "defaultBranch": "main",
@@ -179,8 +214,9 @@ Response `201`:
 Validation:
 - `name` required.
 - `defaultBranch` defaults to `main`.
+- caller must be authenticated.
 
-## 5.4 `GET /api/codex/sessions`
+## 5.7 `GET /api/codex/sessions`
 
 Purpose:
 - List created Codex session records.
@@ -191,6 +227,7 @@ Response `200`:
   "data": [
     {
       "id": "cxs_...",
+      "ownerId": "usr_...",
       "projectId": "proj_...",
       "status": "initialized",
       "transport": "skeleton",
@@ -212,7 +249,7 @@ Response `200`:
 }
 ```
 
-## 5.5 `POST /api/codex/sessions`
+## 5.8 `POST /api/codex/sessions`
 
 Purpose:
 - Create a Codex session skeleton for a project.
@@ -229,6 +266,7 @@ Response `201`:
 {
   "session": {
     "id": "cxs_...",
+    "ownerId": "usr_...",
     "projectId": "proj_...",
     "status": "initialized",
     "transport": "skeleton",
@@ -264,6 +302,27 @@ Response `201`:
 
 Validation:
 - `projectId` required and must exist.
+- caller must own project.
+
+## 5.9 `GET /api/github/connect/start`
+
+Purpose:
+- Create a state token and return GitHub App installation URL.
+
+## 5.10 `POST /api/github/connect`
+
+Purpose:
+- Connect a GitHub App installation by `installationId` and persist repository list for the signed-in principal.
+
+## 5.11 `GET /api/github/repos`
+
+Purpose:
+- Return repositories available from the connected installation.
+
+## 5.12 `GET /api/github/connection`
+
+Purpose:
+- Return metadata about the current principal's GitHub connection.
 
 ## 6. Data Contracts
 

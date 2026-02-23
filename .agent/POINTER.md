@@ -26,15 +26,19 @@ Ship a full-flow scenario-first quality product for the Codex challenge.
 ## Phase Status
 
 - Phase 0 foundation: implemented.
+- Phase 1 auth + repo connect: implemented.
 - Available now:
+  - ChatGPT sign-in/sign-out + session status API
+  - GitHub App installation connect + repo list API
+  - Project/session ownership enforcement by signed-in principal
   - Project create/list API
-  - Codex session skeleton API
-  - Phase 0 UI shell for project/session bootstrap
+  - Codex session skeleton API (owner-scoped)
+  - Phase 1 UI shell for auth/repo/project/session bootstrap
   - Architecture and execution docs
 
 ## Immediate Next Step
 
-Implement Phase 1:
-1. ChatGPT auth integration.
-2. GitHub App auth and repo connection.
-3. Ownership checks for project/session operations.
+Implement Phase 2:
+1. Source inventory scanner (`SF-2001`).
+2. Relevance scoring (`SF-2002`).
+3. Source selection UX with explicit confirmation (`SF-2003`).
