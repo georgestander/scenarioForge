@@ -48,6 +48,10 @@ interface GitHubInstallPayload {
   manageUrl?: string;
 }
 
+interface GitHubConnectPayload {
+  repositories: GitHubRepository[];
+}
+
 interface ManifestCreatePayload {
   manifest: SourceManifest;
   selectedSources: SourceRecord[];
@@ -132,6 +136,8 @@ export const Welcome = () => {
     useState<GitHubConnectionView | null>(null);
   const [githubRepos, setGithubRepos] = useState<GitHubRepository[]>([]);
   const [selectedRepoId, setSelectedRepoId] = useState("");
+  const [manualInstallationId, setManualInstallationId] = useState("");
+  const [pendingInstallationId, setPendingInstallationId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectForm, setProjectForm] = useState(initialProjectForm);
   const [signInForm, setSignInForm] = useState(initialSignInForm);
@@ -386,6 +392,7 @@ export const Welcome = () => {
     const url = new URL(window.location.href);
     const githubStatus = url.searchParams.get("github");
     const githubError = url.searchParams.get("githubError");
+    const installationIdFromQuery = url.searchParams.get("installation_id");
 
     if (githubStatus === "connected") {
       setStatusMessage("GitHub App connected successfully.");
@@ -395,9 +402,18 @@ export const Welcome = () => {
       setStatusMessage(`GitHub App connection failed (${readable}).`);
     }
 
-    if (githubStatus || githubError) {
+    if (installationIdFromQuery) {
+      setManualInstallationId(installationIdFromQuery);
+      setPendingInstallationId(installationIdFromQuery);
+      setStatusMessage(
+        `Detected installation ID ${installationIdFromQuery}. Attempting in-app connection.`,
+      );
+    }
+
+    if (githubStatus || githubError || installationIdFromQuery) {
       url.searchParams.delete("github");
       url.searchParams.delete("githubError");
+      url.searchParams.delete("installation_id");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
 
@@ -500,6 +516,55 @@ export const Welcome = () => {
     return true;
   };
 
+  const handleManualGitHubConnect = async (
+    installationIdOverride?: string,
+  ): Promise<boolean> => {
+    if (!authPrincipal) {
+      setStatusMessage("Sign in first to connect GitHub.");
+      return false;
+    }
+
+    const rawInstallationId =
+      installationIdOverride?.trim() ?? manualInstallationId.trim();
+    const installationId = Number(rawInstallationId);
+
+    if (!Number.isInteger(installationId) || installationId <= 0) {
+      setStatusMessage(
+        "Installation ID is required. Use the number from GitHub installation settings URL.",
+      );
+      return false;
+    }
+
+    const response = await fetch("/api/github/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ installationId }),
+    });
+
+    if (!response.ok) {
+      setStatusMessage(
+        await readError(response, "Failed to connect using installation ID."),
+      );
+      return false;
+    }
+
+    const payload = (await response.json()) as GitHubConnectPayload;
+    await loadBaseData();
+    setPendingInstallationId("");
+
+    if (payload.repositories.length === 0) {
+      setStatusMessage(
+        "Connected installation, but no repositories are granted yet. Update repository access in GitHub installation settings, then click Sync Repositories.",
+      );
+      return true;
+    }
+
+    setStatusMessage(
+      `Connected installation ${installationId}. ${payload.repositories.length} repository(ies) available.`,
+    );
+    return true;
+  };
+
   const pollForGitHubConnection = () => {
     let attempts = 0;
     const maxAttempts = 30;
@@ -571,6 +636,14 @@ export const Welcome = () => {
     );
     pollForGitHubConnection();
   };
+
+  useEffect(() => {
+    if (!authPrincipal || !pendingInstallationId) {
+      return;
+    }
+
+    void handleManualGitHubConnect(pendingInstallationId);
+  }, [authPrincipal, pendingInstallationId]);
 
   const handleDisconnectGitHub = async () => {
     const response = await fetch("/api/github/disconnect", { method: "POST" });
@@ -983,6 +1056,41 @@ export const Welcome = () => {
                   disabled={!isGitHubConnected}
                 >
                   Disconnect GitHub
+                </button>
+              </div>
+
+              <p className={styles.hint}>
+                If GitHub says the app is installed but no repos appear here, connect directly by
+                installation ID.
+              </p>
+              <label className={styles.inlineLabel}>
+                Installation ID (fallback)
+                <input
+                  value={manualInstallationId}
+                  onChange={(event) => setManualInstallationId(event.target.value)}
+                  placeholder="e.g. 12345678"
+                />
+              </label>
+              <div className={styles.inlineActions}>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => void handleManualGitHubConnect()}
+                  disabled={!isSignedIn}
+                >
+                  Connect Installed App by ID
+                </button>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() =>
+                    openInNewTab(
+                      `https://github.com/settings/installations/${manualInstallationId.trim()}`,
+                    )
+                  }
+                  disabled={!manualInstallationId.trim()}
+                >
+                  Open Installation by ID
                 </button>
               </div>
 

@@ -457,20 +457,16 @@ export default defineApp([
       const installationId = Number(url.searchParams.get("installation_id"));
       const state = url.searchParams.get("state") ?? "";
 
-      if (!state) {
-        return githubCallbackRedirect(request, "error", "state_required");
-      }
-
-      if (!consumeGitHubConnectState(state, principal.id)) {
-        return githubCallbackRedirect(request, "error", "state_invalid_or_expired");
-      }
-
       if (!Number.isInteger(installationId) || installationId <= 0) {
         return githubCallbackRedirect(
           request,
           "error",
           "installation_id_invalid",
         );
+      }
+
+      if (state && !consumeGitHubConnectState(state, principal.id)) {
+        return githubCallbackRedirect(request, "error", "state_invalid_or_expired");
       }
 
       try {
