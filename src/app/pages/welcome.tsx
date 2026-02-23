@@ -98,6 +98,15 @@ interface ScenarioActionExecutePayload {
   };
 }
 
+interface CodexStreamEventLog {
+  id: string;
+  action: "generate" | "execute";
+  event: string;
+  phase: string;
+  message: string;
+  timestamp: string;
+}
+
 interface ReviewBoardPayload {
   board: ReviewBoard;
 }
@@ -132,6 +141,36 @@ const readError = async (
   } catch {
     return fallbackMessage;
   }
+};
+
+const parseSsePayload = (raw: string): unknown => {
+  if (!raw.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+};
+
+const readStreamError = (payload: unknown, fallback: string): string => {
+  if (typeof payload === "string" && payload.trim()) {
+    return payload;
+  }
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.error === "string" && record.error.trim()) {
+      return record.error;
+    }
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message;
+    }
+  }
+
+  return fallback;
 };
 
 const stageTitle = (stage: Stage): string => {
@@ -184,6 +223,7 @@ export const Welcome = () => {
   const [isExecutingScenarios, setIsExecutingScenarios] = useState(false);
   const [scenarioRuns, setScenarioRuns] = useState<ScenarioRun[]>([]);
   const [liveEvents, setLiveEvents] = useState<ScenarioRun["events"]>([]);
+  const [codexStreamEvents, setCodexStreamEvents] = useState<CodexStreamEventLog[]>([]);
   const [fixAttempts, setFixAttempts] = useState<FixAttempt[]>([]);
   const [pullRequests, setPullRequests] = useState<PullRequestRecord[]>([]);
   const [reviewBoard, setReviewBoard] = useState<ReviewBoard | null>(null);
@@ -211,6 +251,16 @@ export const Welcome = () => {
     scenarioPacks.find((pack) => pack.id === selectedScenarioPackId) ??
     latestPack ??
     null;
+
+  const generateStreamEvents = useMemo(
+    () => codexStreamEvents.filter((event) => event.action === "generate"),
+    [codexStreamEvents],
+  );
+
+  const executeStreamEvents = useMemo(
+    () => codexStreamEvents.filter((event) => event.action === "execute"),
+    [codexStreamEvents],
+  );
 
   const riskySelectedCount = useMemo(
     () =>
@@ -1023,6 +1073,139 @@ export const Welcome = () => {
     );
   };
 
+  const appendStreamEvent = (
+    action: "generate" | "execute",
+    event: string,
+    payload: unknown,
+  ) => {
+    const record = payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : null;
+    const nested = record?.payload && typeof record.payload === "object"
+      ? (record.payload as Record<string, unknown>)
+      : null;
+
+    const phase =
+      (typeof record?.phase === "string" && record.phase.trim()) ||
+      (typeof nested?.phase === "string" && nested.phase.trim()) ||
+      event;
+    const message =
+      (typeof record?.message === "string" && record.message.trim()) ||
+      (typeof nested?.message === "string" && nested.message.trim()) ||
+      (typeof record?.error === "string" && record.error.trim()) ||
+      (typeof nested?.error === "string" && nested.error.trim()) ||
+      event;
+    const timestamp =
+      (typeof record?.timestamp === "string" && record.timestamp.trim()) ||
+      (typeof nested?.timestamp === "string" && nested.timestamp.trim()) ||
+      new Date().toISOString();
+
+    setCodexStreamEvents((current) => [
+      ...current.slice(-119),
+      {
+        id: `${action}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        action,
+        event,
+        phase,
+        message,
+        timestamp,
+      },
+    ]);
+  };
+
+  const streamAction = async <TPayload,>(
+    action: "generate" | "execute",
+    url: string,
+    body: Record<string, unknown>,
+    fallbackErrorMessage: string,
+  ): Promise<TPayload> => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(await readError(response, fallbackErrorMessage));
+    }
+
+    if (!response.body) {
+      throw new Error("Streaming response body unavailable.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "message";
+    let dataLines: string[] = [];
+    let completedPayload: TPayload | null = null;
+
+    const dispatchEvent = () => {
+      if (dataLines.length === 0) {
+        currentEvent = "message";
+        return;
+      }
+
+      const payload = parseSsePayload(dataLines.join("\n"));
+      appendStreamEvent(action, currentEvent, payload);
+
+      if (currentEvent === "error") {
+        throw new Error(readStreamError(payload, fallbackErrorMessage));
+      }
+
+      if (currentEvent === "completed") {
+        completedPayload = payload as TPayload;
+      }
+
+      currentEvent = "message";
+      dataLines = [];
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          break;
+        }
+
+        const rawLine = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+
+        if (line.startsWith("event:")) {
+          currentEvent = line.slice(6).trim() || "message";
+          continue;
+        }
+
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trim());
+          continue;
+        }
+
+        if (line === "") {
+          dispatchEvent();
+        }
+      }
+    }
+
+    if (dataLines.length > 0) {
+      dispatchEvent();
+    }
+
+    if (!completedPayload) {
+      throw new Error(`${action} stream ended before completion payload.`);
+    }
+
+    return completedPayload;
+  };
+
   const handleGenerateScenarios = async (mode: "initial" | "update") => {
     if (isGeneratingScenarios) {
       return;
@@ -1034,29 +1217,24 @@ export const Welcome = () => {
     }
 
     setIsGeneratingScenarios(true);
+    setCodexStreamEvents([]);
     setStatusMessage(
       mode === "update"
         ? "Updating scenario pack via Codex app-server..."
         : "Generating scenario pack via Codex app-server...",
     );
     try {
-      const response = await fetch(`/api/projects/${selectedProjectId}/actions/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const payload = await streamAction<ScenarioActionGeneratePayload>(
+        "generate",
+        `/api/projects/${selectedProjectId}/actions/generate/stream`,
+        {
           sourceManifestId: latestManifest.id,
           mode,
           userInstruction: scenarioUpdateInstruction.trim(),
           scenarioPackId: selectedPack?.id ?? "",
-        }),
-      });
-
-      if (!response.ok) {
-        setStatusMessage(await readError(response, "Failed to generate scenarios."));
-        return;
-      }
-
-      const payload = (await response.json()) as ScenarioActionGeneratePayload;
+        },
+        "Failed to generate scenarios.",
+      );
       setScenarioPacks((current) => [payload.pack, ...current]);
       setSelectedScenarioPackId(payload.pack.id);
       setStatusMessage(
@@ -1090,24 +1268,19 @@ export const Welcome = () => {
     }
 
     setIsExecutingScenarios(true);
+    setCodexStreamEvents([]);
     setStatusMessage("Executing scenario loop through Codex app-server...");
     try {
-      const response = await fetch(`/api/projects/${selectedProjectId}/actions/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const payload = await streamAction<ScenarioActionExecutePayload>(
+        "execute",
+        `/api/projects/${selectedProjectId}/actions/execute/stream`,
+        {
           scenarioPackId: selectedPack.id,
           executionMode: "full",
           userInstruction: executeInstruction.trim(),
-        }),
-      });
-
-      if (!response.ok) {
-        setStatusMessage(await readError(response, "Failed to execute scenario loop."));
-        return;
-      }
-
-      const payload = (await response.json()) as ScenarioActionExecutePayload;
+        },
+        "Failed to execute scenario loop.",
+      );
       setScenarioRuns((current) => [payload.run, ...current]);
       if (payload.fixAttempt) {
         setFixAttempts((current) => [payload.fixAttempt as FixAttempt, ...current]);
@@ -1551,6 +1724,19 @@ export const Welcome = () => {
                 />
               </label>
 
+              {generateStreamEvents.length > 0 ? (
+                <>
+                  <h3>Codex Stream</h3>
+                  <ul className={styles.flatList}>
+                    {generateStreamEvents.map((event) => (
+                      <li key={event.id}>
+                        {event.timestamp} | {event.phase} | {event.message}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+
               <label className={styles.inlineLabel}>
                 Active scenario pack
                 <select
@@ -1649,6 +1835,19 @@ export const Welcome = () => {
                   placeholder="Example: prioritize auth and source-selection regressions."
                 />
               </label>
+
+              {executeStreamEvents.length > 0 ? (
+                <>
+                  <h3>Codex Stream</h3>
+                  <ul className={styles.flatList}>
+                    {executeStreamEvents.map((event) => (
+                      <li key={event.id}>
+                        {event.timestamp} | {event.phase} | {event.message}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
 
               {latestRun ? (
                 <>

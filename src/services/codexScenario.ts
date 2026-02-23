@@ -61,6 +61,11 @@ interface GenerateScenariosViaCodexInput {
   useSkill?: boolean;
 }
 
+export interface CodexBridgeStreamEvent {
+  event: string;
+  payload: unknown;
+}
+
 const MAX_PROMPT_SOURCES = 12;
 const MAX_SOURCE_CHARS = 2400;
 
@@ -104,6 +109,142 @@ const bridgeFetchJson = async <T>(
   }
 
   return (await response.json()) as T;
+};
+
+const parseSsePayload = (raw: string): unknown => {
+  if (!raw.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+};
+
+const readStreamError = (payload: unknown): string => {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.error === "string" && record.error.trim()) {
+      return record.error;
+    }
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message;
+    }
+  }
+
+  return "Codex bridge stream failed.";
+};
+
+const bridgeFetchStreamJson = async <T>(
+  path: string,
+  init: RequestInit,
+  onEvent?: (event: CodexBridgeStreamEvent) => void,
+): Promise<T> => {
+  const response = await fetch(`${getBridgeUrl()}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await readBridgeError(response));
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("text/event-stream")) {
+    return (await response.json()) as T;
+  }
+
+  if (!response.body) {
+    throw new Error("Codex bridge returned no stream body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "message";
+  let dataLines: string[] = [];
+  let completedPayload: T | null = null;
+
+  const dispatchEvent = () => {
+    if (dataLines.length === 0) {
+      currentEvent = "message";
+      return;
+    }
+
+    const payload = parseSsePayload(dataLines.join("\n"));
+    onEvent?.({
+      event: currentEvent,
+      payload,
+    });
+
+    if (currentEvent === "error") {
+      throw new Error(readStreamError(payload));
+    }
+
+    if (currentEvent === "completed") {
+      if (payload && typeof payload === "object" && "result" in payload) {
+        completedPayload = (payload as { result: T }).result;
+      } else {
+        completedPayload = payload as T;
+      }
+    }
+
+    currentEvent = "message";
+    dataLines = [];
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
+
+      const rawLine = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim() || "message";
+        continue;
+      }
+
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+        continue;
+      }
+
+      if (line === "") {
+        dispatchEvent();
+      }
+    }
+  }
+
+  if (dataLines.length > 0) {
+    dispatchEvent();
+  }
+
+  if (completedPayload === null) {
+    throw new Error("Codex bridge stream ended before completion payload.");
+  }
+
+  return completedPayload;
 };
 
 const encodePathForGitHub = (path: string): string =>
@@ -383,6 +524,20 @@ const buildScenarioPrompt = (
 export const generateScenariosViaCodex = async (
   input: GenerateScenariosViaCodexInput,
 ): Promise<CodexScenarioGenerationResult> => {
+  return generateScenariosViaCodexInternal(input);
+};
+
+export const generateScenariosViaCodexStream = async (
+  input: GenerateScenariosViaCodexInput,
+  onEvent?: (event: CodexBridgeStreamEvent) => void,
+): Promise<CodexScenarioGenerationResult> => {
+  return generateScenariosViaCodexInternal(input, onEvent);
+};
+
+const generateScenariosViaCodexInternal = async (
+  input: GenerateScenariosViaCodexInput,
+  onEvent?: (event: CodexBridgeStreamEvent) => void,
+): Promise<CodexScenarioGenerationResult> => {
   const useSkill = input.useSkill ?? true;
   const envWithWorkspace = env as unknown as Record<string, string | undefined>;
   const configuredWorkspaceCwd = envWithWorkspace.SCENARIOFORGE_WORKSPACE_CWD?.trim();
@@ -397,25 +552,32 @@ export const generateScenariosViaCodex = async (
     token,
   );
   const prompt = buildScenarioPrompt(input, loadedSources);
-
-  const payload = await bridgeFetchJson<BridgeScenarioGenerateResponse>(
-    "/actions/generate",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        model: "codex spark",
-        skillName: useSkill ? "scenario" : "",
-        cwd: configuredWorkspaceCwd || undefined,
-        sandbox: "read-only",
-        approvalPolicy: "never",
-        sandboxPolicy: {
-          type: "readOnly",
-        },
-        outputSchema: SCENARIO_OUTPUT_SCHEMA,
-        prompt,
-      }),
+  const requestBody = {
+    model: "codex spark",
+    skillName: useSkill ? "scenario" : "",
+    cwd: configuredWorkspaceCwd || undefined,
+    sandbox: "read-only",
+    approvalPolicy: "never",
+    sandboxPolicy: {
+      type: "readOnly",
     },
-  );
+    outputSchema: SCENARIO_OUTPUT_SCHEMA,
+    prompt,
+  };
+
+  const payload = onEvent
+    ? await bridgeFetchStreamJson<BridgeScenarioGenerateResponse>(
+        "/actions/generate/stream",
+        {
+          method: "POST",
+          body: JSON.stringify(requestBody),
+        },
+        onEvent,
+      )
+    : await bridgeFetchJson<BridgeScenarioGenerateResponse>("/actions/generate", {
+        method: "POST",
+        body: JSON.stringify(requestBody),
+      });
 
   const responseText =
     payload.responseText?.trim() ||

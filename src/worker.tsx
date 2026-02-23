@@ -27,9 +27,15 @@ import {
   readChatGptLoginCompletion,
   startChatGptLogin,
 } from "@/services/chatgptAuth";
-import { executeScenariosViaCodex } from "@/services/codexExecute";
+import {
+  executeScenariosViaCodex,
+  executeScenariosViaCodexStream,
+} from "@/services/codexExecute";
 import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
-import { generateScenariosViaCodex } from "@/services/codexScenario";
+import {
+  generateScenariosViaCodex,
+  generateScenariosViaCodexStream,
+} from "@/services/codexScenario";
 import {
   connectGitHubInstallation,
   consumeGitHubConnectState,
@@ -93,6 +99,49 @@ const json = (body: unknown, status = 200): Response =>
       "Content-Type": "application/json; charset=utf-8",
     },
   });
+
+const createSseResponse = (
+  run: (emit: (event: string, payload: unknown) => void) => Promise<void>,
+): Response => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const emit = (event: string, payload: unknown) => {
+        controller.enqueue(
+          encoder.encode(
+            `event: ${event}\n` + `data: ${JSON.stringify(payload)}\n\n`,
+          ),
+        );
+      };
+
+      void run(emit)
+        .catch((error) => {
+          emit("error", {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Unknown streaming error.",
+            timestamp: new Date().toISOString(),
+          });
+        })
+        .finally(() => {
+          try {
+            controller.close();
+          } catch {
+            // ignore double-close
+          }
+        });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+};
 
 const githubCallbackRedirect = (
   request: Request,
@@ -1292,6 +1341,297 @@ export default defineApp([
       }
 
       return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/actions/generate/stream", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const payload = await parseJsonBody(request);
+      const manifestId =
+        String(payload?.sourceManifestId ?? payload?.manifestId ?? "").trim();
+      const manifest =
+        (manifestId
+          ? getSourceManifestById(principal.id, manifestId)
+          : getLatestSourceManifestForProject(principal.id, project.id)) ?? null;
+
+      if (!manifest || manifest.projectId !== project.id) {
+        return json({ error: "Source manifest not found." }, 404);
+      }
+
+      const selectedSources = listSourcesForProject(principal.id, project.id).filter(
+        (source) => manifest.sourceIds.includes(source.id),
+      );
+      if (selectedSources.length === 0) {
+        return json({ error: "Manifest contains no selected sources." }, 400);
+      }
+
+      const modeValue = String(payload?.mode ?? "initial")
+        .trim()
+        .toLowerCase();
+      const mode = modeValue === "update" ? "update" : "initial";
+      const userInstruction = String(payload?.userInstruction ?? "").trim();
+      const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const existingPack =
+        mode === "update"
+          ? scenarioPackId
+            ? getScenarioPackById(principal.id, scenarioPackId)
+            : listScenarioPacksForProject(principal.id, project.id)[0] ?? null
+          : null;
+
+      const githubConnection = await ensureGitHubConnectionForPrincipal(principal.id);
+      if (!githubConnection) {
+        return json({ error: "Connect GitHub before generating scenarios." }, 400);
+      }
+
+      return createSseResponse(async (emit) => {
+        emit("started", {
+          action: "generate",
+          mode,
+          timestamp: new Date().toISOString(),
+        });
+
+        const attemptErrors: string[] = [];
+        let scenarioPackInput: ReturnType<typeof generateScenarioPack> | null = null;
+
+        for (const useSkill of [true, false]) {
+          const attempt = useSkill ? "skill-first" : "fallback";
+          emit("status", {
+            action: "generate",
+            phase: "attempt.start",
+            attempt,
+            timestamp: new Date().toISOString(),
+          });
+
+          try {
+            const codexGeneration = await generateScenariosViaCodexStream(
+              {
+                project,
+                manifest,
+                selectedSources,
+                githubToken: githubConnection.accessToken,
+                mode,
+                userInstruction,
+                existingPack,
+                useSkill,
+              },
+              (event) => {
+                emit("codex", {
+                  action: "generate",
+                  attempt,
+                  event: event.event,
+                  payload: event.payload,
+                  timestamp: new Date().toISOString(),
+                });
+              },
+            );
+
+            scenarioPackInput = generateScenarioPack({
+              project,
+              ownerId: principal.id,
+              manifest,
+              selectedSources,
+              model: codexGeneration.model,
+              rawOutput: codexGeneration.responseText,
+              metadata: {
+                transport: "codex-app-server",
+                requestedSkill: codexGeneration.skillRequested,
+                usedSkill: codexGeneration.skillUsed,
+                skillAvailable: codexGeneration.skillAvailable,
+                skillPath: codexGeneration.skillPath,
+                threadId: codexGeneration.threadId,
+                turnId: codexGeneration.turnId,
+                turnStatus: codexGeneration.turnStatus,
+                cwd: codexGeneration.cwd,
+                generatedAt: codexGeneration.completedAt,
+              },
+            });
+
+            emit("status", {
+              action: "generate",
+              phase: "attempt.success",
+              attempt,
+              timestamp: new Date().toISOString(),
+            });
+            break;
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "generation failed";
+            attemptErrors.push(`[${attempt}] ${message}`);
+            emit("status", {
+              action: "generate",
+              phase: "attempt.error",
+              attempt,
+              error: message,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+
+        if (!scenarioPackInput) {
+          emit("error", {
+            action: "generate",
+            error: [
+              "Failed to generate scenarios through Codex app-server.",
+              ...attemptErrors,
+            ].join(" "),
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        const pack = createScenarioPack(scenarioPackInput);
+        emit("persisted", {
+          action: "generate",
+          packId: pack.id,
+          scenarioCount: pack.scenarios.length,
+          timestamp: new Date().toISOString(),
+        });
+        emit("completed", {
+          pack,
+          mode,
+          userInstruction: userInstruction || null,
+          timestamp: new Date().toISOString(),
+        });
+      });
+    },
+  ]),
+  route("/api/projects/:projectId/actions/execute/stream", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const payload = await parseJsonBody(request);
+      const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const pack =
+        (scenarioPackId
+          ? getScenarioPackById(principal.id, scenarioPackId)
+          : listScenarioPacksForProject(principal.id, project.id)[0]) ?? null;
+
+      if (!pack || pack.projectId !== project.id) {
+        return json({ error: "Scenario pack not found." }, 404);
+      }
+
+      const executionMode = normalizeExecutionMode(payload?.executionMode);
+      const userInstruction = String(payload?.userInstruction ?? "").trim();
+      const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+
+      return createSseResponse(async (emit) => {
+        emit("started", {
+          action: "execute",
+          executionMode,
+          timestamp: new Date().toISOString(),
+        });
+
+        const codexExecution = await executeScenariosViaCodexStream(
+          {
+            project,
+            pack,
+            executionMode,
+            userInstruction,
+            constraints,
+          },
+          (event) => {
+            emit("codex", {
+              action: "execute",
+              event: event.event,
+              payload: event.payload,
+              timestamp: new Date().toISOString(),
+            });
+          },
+        );
+
+        const runInput = buildScenarioRunInputFromCodexOutput(
+          principal.id,
+          project.id,
+          pack,
+          codexExecution.parsedOutput,
+        );
+        const run = createScenarioRun(runInput);
+        emit("persisted", {
+          action: "execute",
+          kind: "run",
+          runId: run.id,
+          summary: run.summary,
+          timestamp: new Date().toISOString(),
+        });
+
+        let fixAttempt = null;
+        if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
+          const fixInput = buildFixAttemptInputFromCodexOutput(
+            principal.id,
+            project.id,
+            run,
+            codexExecution.parsedOutput,
+          );
+          fixAttempt = createFixAttempt(fixInput);
+          emit("persisted", {
+            action: "execute",
+            kind: "fixAttempt",
+            fixAttemptId: fixAttempt.id,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];
+        if ((executionMode === "pr" || executionMode === "full") && fixAttempt) {
+          const pullRequestInputs = buildPullRequestInputsFromCodexOutput(
+            principal.id,
+            project.id,
+            fixAttempt,
+            codexExecution.parsedOutput,
+          );
+          pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
+          emit("persisted", {
+            action: "execute",
+            kind: "pullRequests",
+            count: pullRequests.length,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        emit("completed", {
+          run,
+          fixAttempt,
+          pullRequests,
+          executionMode,
+          executionAudit: {
+            model: codexExecution.model,
+            threadId: codexExecution.threadId,
+            turnId: codexExecution.turnId,
+            turnStatus: codexExecution.turnStatus,
+            completedAt: codexExecution.completedAt,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      });
     },
   ]),
   route("/api/projects/:projectId/actions/generate", [

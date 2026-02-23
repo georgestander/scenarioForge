@@ -36,6 +36,11 @@ interface ExecuteScenariosViaCodexInput {
   constraints?: Record<string, unknown>;
 }
 
+export interface CodexExecuteBridgeStreamEvent {
+  event: string;
+  payload: unknown;
+}
+
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/g, "");
 
 const getBridgeUrl = (): string => {
@@ -78,6 +83,142 @@ const bridgeFetchJson = async <T>(
   return (await response.json()) as T;
 };
 
+const parseSsePayload = (raw: string): unknown => {
+  if (!raw.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+};
+
+const readStreamError = (payload: unknown): string => {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.error === "string" && record.error.trim()) {
+      return record.error;
+    }
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message;
+    }
+  }
+
+  return "Codex bridge stream failed.";
+};
+
+const bridgeFetchStreamJson = async <T>(
+  path: string,
+  init: RequestInit,
+  onEvent?: (event: CodexExecuteBridgeStreamEvent) => void,
+): Promise<T> => {
+  const response = await fetch(`${getBridgeUrl()}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await readBridgeError(response));
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("text/event-stream")) {
+    return (await response.json()) as T;
+  }
+
+  if (!response.body) {
+    throw new Error("Codex bridge returned no stream body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "message";
+  let dataLines: string[] = [];
+  let completedPayload: T | null = null;
+
+  const dispatchEvent = () => {
+    if (dataLines.length === 0) {
+      currentEvent = "message";
+      return;
+    }
+
+    const payload = parseSsePayload(dataLines.join("\n"));
+    onEvent?.({
+      event: currentEvent,
+      payload,
+    });
+
+    if (currentEvent === "error") {
+      throw new Error(readStreamError(payload));
+    }
+
+    if (currentEvent === "completed") {
+      if (payload && typeof payload === "object" && "result" in payload) {
+        completedPayload = (payload as { result: T }).result;
+      } else {
+        completedPayload = payload as T;
+      }
+    }
+
+    currentEvent = "message";
+    dataLines = [];
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
+
+      const rawLine = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim() || "message";
+        continue;
+      }
+
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+        continue;
+      }
+
+      if (line === "") {
+        dispatchEvent();
+      }
+    }
+  }
+
+  if (dataLines.length > 0) {
+    dispatchEvent();
+  }
+
+  if (completedPayload === null) {
+    throw new Error("Codex bridge stream ended before completion payload.");
+  }
+
+  return completedPayload;
+};
+
 const formatScenarioSummary = (pack: ScenarioPack): string =>
   pack.scenarios
     .slice(0, 24)
@@ -95,12 +236,12 @@ const formatScenarioSummary = (pack: ScenarioPack): string =>
 export const EXECUTE_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["run"],
+  required: ["run", "fixAttempt", "pullRequests"],
   properties: {
     run: {
       type: "object",
       additionalProperties: false,
-      required: ["items", "summary"],
+      required: ["status", "items", "summary"],
       properties: {
         status: { type: "string" },
         items: {
@@ -109,7 +250,14 @@ export const EXECUTE_OUTPUT_SCHEMA = {
           items: {
             type: "object",
             additionalProperties: false,
-            required: ["scenarioId", "status", "observed", "expected"],
+            required: [
+              "scenarioId",
+              "status",
+              "observed",
+              "expected",
+              "failureHypothesis",
+              "artifacts",
+            ],
             properties: {
               scenarioId: { type: "string" },
               status: {
@@ -150,6 +298,14 @@ export const EXECUTE_OUTPUT_SCHEMA = {
     fixAttempt: {
       type: ["object", "null"],
       additionalProperties: false,
+      required: [
+        "failedScenarioIds",
+        "probableRootCause",
+        "patchSummary",
+        "impactedFiles",
+        "status",
+        "rerunSummary",
+      ],
       properties: {
         failedScenarioIds: {
           type: "array",
@@ -165,6 +321,7 @@ export const EXECUTE_OUTPUT_SCHEMA = {
         rerunSummary: {
           type: ["object", "null"],
           additionalProperties: false,
+          required: ["passed", "failed", "blocked"],
           properties: {
             passed: { type: "number" },
             failed: { type: "number" },
@@ -178,6 +335,15 @@ export const EXECUTE_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
+        required: [
+          "title",
+          "url",
+          "status",
+          "scenarioIds",
+          "riskNotes",
+          "branchName",
+          "rootCauseSummary",
+        ],
         properties: {
           title: { type: "string" },
           url: { type: "string" },
@@ -249,25 +415,49 @@ const parseRawOutput = (rawOutput: string): unknown => {
 export const executeScenariosViaCodex = async (
   input: ExecuteScenariosViaCodexInput,
 ): Promise<CodexExecutionResult> => {
+  return executeScenariosViaCodexInternal(input);
+};
+
+export const executeScenariosViaCodexStream = async (
+  input: ExecuteScenariosViaCodexInput,
+  onEvent?: (event: CodexExecuteBridgeStreamEvent) => void,
+): Promise<CodexExecutionResult> => {
+  return executeScenariosViaCodexInternal(input, onEvent);
+};
+
+const executeScenariosViaCodexInternal = async (
+  input: ExecuteScenariosViaCodexInput,
+  onEvent?: (event: CodexExecuteBridgeStreamEvent) => void,
+): Promise<CodexExecutionResult> => {
   const envWithWorkspace = env as unknown as Record<string, string | undefined>;
   const configuredWorkspaceCwd = envWithWorkspace.SCENARIOFORGE_WORKSPACE_CWD?.trim();
+  const requestBody = {
+    model: "gpt-5.3-xhigh",
+    skillName: "",
+    cwd: configuredWorkspaceCwd || undefined,
+    sandbox: "workspace-write",
+    approvalPolicy: "never",
+    sandboxPolicy: {
+      type: "workspaceWrite",
+      networkAccess: true,
+    },
+    outputSchema: EXECUTE_OUTPUT_SCHEMA,
+    prompt: buildExecutePrompt(input),
+  };
 
-  const payload = await bridgeFetchJson<BridgeExecuteResponse>("/actions/execute", {
-    method: "POST",
-    body: JSON.stringify({
-      model: "gpt-5.3-xhigh",
-      skillName: "",
-      cwd: configuredWorkspaceCwd || undefined,
-      sandbox: "workspace-write",
-      approvalPolicy: "never",
-      sandboxPolicy: {
-        type: "workspaceWrite",
-        networkAccess: true,
-      },
-      outputSchema: EXECUTE_OUTPUT_SCHEMA,
-      prompt: buildExecutePrompt(input),
-    }),
-  });
+  const payload = onEvent
+    ? await bridgeFetchStreamJson<BridgeExecuteResponse>(
+        "/actions/execute/stream",
+        {
+          method: "POST",
+          body: JSON.stringify(requestBody),
+        },
+        onEvent,
+      )
+    : await bridgeFetchJson<BridgeExecuteResponse>("/actions/execute", {
+        method: "POST",
+        body: JSON.stringify(requestBody),
+      });
 
   const responseText =
     payload.responseText?.trim() ||
