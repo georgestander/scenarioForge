@@ -657,7 +657,7 @@ export default defineApp([
   ]),
   route("/api/projects/:projectId/sources/scan", [
     requireAuth,
-    ({ request, ctx, params }) => {
+    async ({ request, ctx, params }) => {
       if (request.method !== "POST") {
         return json({ error: "Method not allowed." }, 405);
       }
@@ -675,9 +675,37 @@ export default defineApp([
         return json({ error: "Project not found." }, 404);
       }
 
-      const repositories =
-        getGitHubConnectionForPrincipal(principal.id)?.repositories ?? [];
-      const scanned = scanSourcesForProject(project, principal.id, repositories);
+      const githubConnection = getGitHubConnectionForPrincipal(principal.id);
+      if (!githubConnection) {
+        return json(
+          { error: "Connect GitHub before scanning repository sources." },
+          400,
+        );
+      }
+
+      let scanned;
+      try {
+        scanned = await scanSourcesForProject(
+          project,
+          principal.id,
+          githubConnection.repositories,
+          {
+            githubToken: githubConnection.accessToken,
+            strict: true,
+          },
+        );
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to scan repository sources.",
+          },
+          400,
+        );
+      }
+
       const data = upsertProjectSources({
         ownerId: principal.id,
         projectId: project.id,
@@ -776,6 +804,7 @@ export default defineApp([
           manifest,
           selectedSources: finalSelectedSources,
           includesStale: validation.includesStale,
+          includesConflicts: validation.includesConflicts,
         });
       }
 

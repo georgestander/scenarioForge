@@ -50,6 +50,9 @@ Productionize Phase 7 hardening:
 
 ## Session Audit Trail
 
+- 2026-02-23: Implemented real Phase 2 source relevance gate against the connected GitHub repository and selected branch, replacing hard-coded source candidates.
+- Decision: Source scan now discovers only planning/spec/task docs (`.md/.txt/.json`) from repository tree, computes recency + doc/code alignment signals, flags stale/conflicting selections, and requires explicit confirmation before manifest creation.
+- Next action: Wire Phase 3 scenario generation to consume manifest-traceable source docs and produce `scenarios.md` using the scenario skill contract.
 - 2026-02-23: Restricted Source Relevance Gate selection inventory to planning artifacts only (`.md/.json/.txt` with planning signals), removing application logic/code files from selectable scan results.
 - Decision: Code remains baseline execution context and is no longer user-selectable/deselectable in Stage 2; only planning/task/PRD/spec-oriented documents participate in source manifests.
 - Next action: Add a focused UI regression check to ensure source scan lists never include `src/*` or other application logic paths.

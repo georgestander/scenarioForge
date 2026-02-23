@@ -76,6 +76,7 @@ interface ManifestCreatePayload {
   manifest: SourceManifest;
   selectedSources: SourceRecord[];
   includesStale: boolean;
+  includesConflicts: boolean;
 }
 
 interface ScenarioPackCreatePayload {
@@ -204,10 +205,12 @@ export const Welcome = () => {
     latestPack ??
     null;
 
-  const staleSelectedCount = useMemo(
+  const riskySelectedCount = useMemo(
     () =>
       sources.filter(
-        (source) => selectedSourceIds.includes(source.id) && source.status === "stale",
+        (source) =>
+          selectedSourceIds.includes(source.id) &&
+          (source.status === "stale" || source.isConflicting),
       ).length,
     [sources, selectedSourceIds],
   );
@@ -996,9 +999,9 @@ export const Welcome = () => {
       return;
     }
 
-    if (staleSelectedCount > 0 && !includeStaleConfirmed) {
+    if (riskySelectedCount > 0 && !includeStaleConfirmed) {
       setStatusMessage(
-        "Selected sources include stale entries. Check the explicit confirmation toggle before continuing.",
+        "Selected sources include stale or conflicting entries. Check the explicit confirmation toggle before continuing.",
       );
       return;
     }
@@ -1517,7 +1520,7 @@ export const Welcome = () => {
                   checked={includeStaleConfirmed}
                   onChange={(event) => setIncludeStaleConfirmed(event.target.checked)}
                 />
-                I understand stale sources may degrade scenario quality.
+                I understand stale or conflicting sources may degrade scenario quality.
               </label>
 
               {latestManifest ? (

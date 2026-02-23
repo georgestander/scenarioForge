@@ -5,7 +5,7 @@ import type {
   SourceRecord,
 } from "@/domain/models";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
-import { buildSourceManifest, scanSourcesForProject } from "@/services/sourceGate";
+import { buildSourceManifest } from "@/services/sourceGate";
 
 export const buildProject = (overrides: Partial<Project> = {}): Project => {
   const timestamp = new Date().toISOString();
@@ -26,18 +26,92 @@ export const buildSelectedSources = (
   project: Project,
   ownerId: string,
 ): SourceRecord[] => {
-  const scanned = scanSourcesForProject(project, ownerId, []);
+  const timestamp = new Date().toISOString();
+  const repositoryFullName = "example/scenarioforge";
+  const branch = project.defaultBranch || "main";
+  const headCommitSha = "1111111111111111111111111111111111111111";
 
-  return scanned
-    .slice(0, 6)
-    .map((source, index) => ({
-      ...source,
-      id: `src_${index + 1}`,
-      selected: true,
-      status: source.status === "excluded" ? "suspect" : source.status,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }));
+  const docs = [
+    {
+      path: "README.md",
+      title: "Readme",
+      type: "plan" as const,
+      status: "trusted" as const,
+      relevanceScore: 82,
+      alignmentScore: 64,
+      isConflicting: false,
+    },
+    {
+      path: "docs/IMPLEMENTATION_PLAN.md",
+      title: "Implementation Plan",
+      type: "plan" as const,
+      status: "trusted" as const,
+      relevanceScore: 79,
+      alignmentScore: 58,
+      isConflicting: false,
+    },
+    {
+      path: "docs/ARCHITECTURE.md",
+      title: "Architecture",
+      type: "architecture" as const,
+      status: "suspect" as const,
+      relevanceScore: 55,
+      alignmentScore: 18,
+      isConflicting: true,
+    },
+    {
+      path: "docs/EXECUTION_BACKLOG.md",
+      title: "Execution Backlog",
+      type: "plan" as const,
+      status: "trusted" as const,
+      relevanceScore: 76,
+      alignmentScore: 46,
+      isConflicting: false,
+    },
+    {
+      path: "docs/PRD.md",
+      title: "Prd",
+      type: "prd" as const,
+      status: "stale" as const,
+      relevanceScore: 39,
+      alignmentScore: 10,
+      isConflicting: true,
+    },
+    {
+      path: "docs/SPEC.md",
+      title: "Spec",
+      type: "spec" as const,
+      status: "trusted" as const,
+      relevanceScore: 75,
+      alignmentScore: 42,
+      isConflicting: false,
+    },
+  ];
+
+  return docs.map((doc, index) => ({
+    id: `src_${index + 1}`,
+    ownerId,
+    projectId: project.id,
+    repositoryFullName,
+    branch,
+    headCommitSha,
+    lastCommitSha: `commit_${index + 1}`,
+    path: doc.path,
+    title: doc.title,
+    type: doc.type,
+    lastModifiedAt: timestamp,
+    alignmentScore: doc.alignmentScore,
+    isConflicting: doc.isConflicting,
+    relevanceScore: doc.relevanceScore,
+    status: doc.status,
+    selected: doc.status !== "stale",
+    warnings: doc.isConflicting
+      ? ["Potential conflict with current code symbols/routes."]
+      : [],
+    hash: `h${index + 1}`,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }));
 };
 
 export const buildManifest = (

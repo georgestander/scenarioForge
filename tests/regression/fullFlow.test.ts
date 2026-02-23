@@ -4,6 +4,7 @@ import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fi
 import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
 import { createScenarioRunRecord } from "@/services/runEngine";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
+import type { RepositorySnapshot } from "@/services/sourceGate";
 import { buildSourceManifest, scanSourcesForProject } from "@/services/sourceGate";
 import {
   createFixAttempt,
@@ -21,7 +22,41 @@ import {
   upsertProjectSources,
 } from "@/services/store";
 
-test("phase2-6 flow persists source -> generation -> run -> fix -> review artifacts", () => {
+const buildSnapshot = (): RepositorySnapshot => ({
+  repositoryFullName: "example/scenarioforge",
+  branch: "main",
+  headCommitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  codePaths: [
+    "src/worker.tsx",
+    "src/services/sourceGate.ts",
+    "src/app/pages/welcome.tsx",
+  ],
+  docs: [
+    {
+      path: "docs/IMPLEMENTATION_PLAN.md",
+      lastModifiedAt: new Date().toISOString(),
+      lastCommitSha: "commit_plan",
+      blobSha: "blob_plan",
+      content: "Source trust gate and scenario generation map to current service routes.",
+    },
+    {
+      path: "docs/ARCHITECTURE.md",
+      lastModifiedAt: new Date().toISOString(),
+      lastCommitSha: "commit_arch",
+      blobSha: "blob_arch",
+      content: "Worker API routes and service boundaries for source scanning and manifest validation.",
+    },
+    {
+      path: "docs/PRD.md",
+      lastModifiedAt: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
+      lastCommitSha: "commit_prd_old",
+      blobSha: "blob_prd",
+      content: "Legacy workflow using abandoned modules.",
+    },
+  ],
+});
+
+test("phase2-6 flow persists source -> generation -> run -> fix -> review artifacts", async () => {
   const ownerId = `usr_${crypto.randomUUID()}`;
   const project = createProject({
     ownerId,
@@ -30,7 +65,23 @@ test("phase2-6 flow persists source -> generation -> run -> fix -> review artifa
     defaultBranch: "main",
   });
 
-  const scannedSources = scanSourcesForProject(project, ownerId, []);
+  const scannedSources = await scanSourcesForProject(
+    project,
+    ownerId,
+    [
+      {
+        id: 1,
+        name: "scenarioforge",
+        fullName: "example/scenarioforge",
+        defaultBranch: "main",
+        private: false,
+        url: "https://github.com/example/scenarioforge",
+      },
+    ],
+    {
+      snapshot: buildSnapshot(),
+    },
+  );
   const storedSources = upsertProjectSources({
     ownerId,
     projectId: project.id,

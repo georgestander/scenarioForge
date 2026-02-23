@@ -295,9 +295,15 @@ export const upsertProjectSources = (
     const match = existing.find((source) => source.path === candidate.path);
 
     if (match) {
+      match.repositoryFullName = candidate.repositoryFullName;
+      match.branch = candidate.branch;
+      match.headCommitSha = candidate.headCommitSha;
+      match.lastCommitSha = candidate.lastCommitSha;
       match.title = candidate.title;
       match.type = candidate.type;
       match.lastModifiedAt = candidate.lastModifiedAt;
+      match.alignmentScore = candidate.alignmentScore;
+      match.isConflicting = candidate.isConflicting;
       match.relevanceScore = candidate.relevanceScore;
       match.status = candidate.status;
       match.selected = candidate.selected;
@@ -378,10 +384,15 @@ export const updateSourceSelections = (
 interface CreateSourceManifestInput {
   ownerId: string;
   projectId: string;
+  repositoryFullName: string;
+  branch: string;
+  headCommitSha: string;
   sourceIds: string[];
+  sourcePaths: string[];
   sourceHashes: string[];
   statusCounts: SourceManifest["statusCounts"];
   includesStale: boolean;
+  includesConflicts: boolean;
   userConfirmed: boolean;
   confirmationNote: string;
   confirmedAt: string | null;
@@ -398,10 +409,15 @@ export const createSourceManifest = (
     id: newId("smf"),
     ownerId: input.ownerId,
     projectId: input.projectId,
+    repositoryFullName: input.repositoryFullName,
+    branch: input.branch,
+    headCommitSha: input.headCommitSha,
     sourceIds: input.sourceIds,
+    sourcePaths: input.sourcePaths,
     sourceHashes: input.sourceHashes,
     statusCounts: input.statusCounts,
     includesStale: input.includesStale,
+    includesConflicts: input.includesConflicts,
     userConfirmed: input.userConfirmed,
     confirmationNote: input.confirmationNote,
     confirmedAt: input.confirmedAt,

@@ -35,7 +35,7 @@ const hasPlanningSignal = (path: string): boolean => {
     return true;
   }
 
-  if (path.startsWith("docs/") || path.startsWith(".agent/")) {
+  if (path.startsWith("docs/")) {
     return true;
   }
 
