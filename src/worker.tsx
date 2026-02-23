@@ -391,6 +391,60 @@ export default defineApp([
       }
     },
   ]),
+  route("/api/github/connect/sync", [
+    requireAuth,
+    async ({ request, ctx }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const existing = getGitHubConnectionForPrincipal(principal.id);
+      if (!existing) {
+        return json({ error: "No GitHub installation connected yet." }, 400);
+      }
+
+      const payload = await parseJsonBody(request);
+      const requestedInstallationId = Number(payload?.installationId);
+      const installationId =
+        Number.isInteger(requestedInstallationId) && requestedInstallationId > 0
+          ? requestedInstallationId
+          : existing.installationId;
+
+      try {
+        const connectionResult = await connectGitHubInstallation(installationId);
+
+        const connection = upsertGitHubConnection({
+          principalId: principal.id,
+          accountLogin: connectionResult.accountLogin,
+          installationId,
+          accessToken: connectionResult.accessToken,
+          accessTokenExpiresAt: connectionResult.accessTokenExpiresAt,
+          repositories: connectionResult.repositories,
+        });
+
+        return json({
+          connection: githubConnectionView(connection),
+          repositories: connection.repositories,
+        });
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to sync GitHub installation repositories.",
+          },
+          400,
+        );
+      }
+    },
+  ]),
   route("/api/github/connect/callback", [
     async ({ request, ctx }) => {
       const principal = getPrincipalFromContext(ctx);

@@ -78,6 +78,10 @@ interface ReviewReportPayload {
   markdown: string;
 }
 
+interface GitHubSyncPayload {
+  repositories: GitHubRepository[];
+}
+
 type Stage = 1 | 2 | 3 | 4 | 5 | 6;
 
 const initialProjectForm = {
@@ -452,14 +456,76 @@ export const Welcome = () => {
     setStatusMessage("Signed out.");
   };
 
-  const openInNewTab = (url: string): void => {
+  const openInNewTab = (url: string): boolean => {
     const newWindow = window.open(url, "_blank", "noopener,noreferrer");
 
     if (!newWindow) {
       setStatusMessage(
         "Pop-up blocked. Allow pop-ups for this site and retry opening GitHub in a new tab.",
       );
+      return false;
     }
+
+    return true;
+  };
+
+  const handleSyncGitHubConnection = async (): Promise<boolean> => {
+    if (!authPrincipal) {
+      setStatusMessage("Sign in first to sync GitHub repositories.");
+      return false;
+    }
+
+    const response = await fetch("/api/github/connect/sync", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to sync GitHub repositories."));
+      return false;
+    }
+
+    const payload = (await response.json()) as GitHubSyncPayload;
+    await loadBaseData();
+
+    if (payload.repositories.length === 0) {
+      setStatusMessage(
+        "GitHub connected, but no repositories are granted. Open installation settings and grant repo access, then click Sync Repositories.",
+      );
+      return true;
+    }
+
+    setStatusMessage(
+      `GitHub synced. ${payload.repositories.length} repository(ies) available for selection.`,
+    );
+    return true;
+  };
+
+  const pollForGitHubConnection = () => {
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    const run = async () => {
+      attempts += 1;
+      const response = await fetch("/api/github/connection");
+
+      if (response.ok) {
+        const payload = (await response.json()) as GitHubConnectionPayload;
+        if (payload.connection) {
+          await handleSyncGitHubConnection();
+          return;
+        }
+      }
+
+      if (attempts < maxAttempts) {
+        window.setTimeout(run, 2000);
+      } else {
+        setStatusMessage(
+          "If install finished, click Sync Repositories to pull repo access into the app.",
+        );
+      }
+    };
+
+    window.setTimeout(run, 2500);
   };
 
   const handleInstallGitHubApp = async (forceReconnect = false) => {
@@ -477,9 +543,16 @@ export const Welcome = () => {
 
     const payload = (await response.json()) as GitHubInstallPayload;
 
-    if (payload.alreadyConnected && payload.manageUrl) {
-      setStatusMessage("GitHub already connected. Opening installation settings in a new tab.");
-      openInNewTab(payload.manageUrl);
+    if (payload.alreadyConnected) {
+      const synced = await handleSyncGitHubConnection();
+      if (synced) {
+        return;
+      }
+
+      if (payload.manageUrl) {
+        setStatusMessage("GitHub already connected. Opening installation settings in a new tab.");
+        openInNewTab(payload.manageUrl);
+      }
       return;
     }
 
@@ -488,8 +561,15 @@ export const Welcome = () => {
       return;
     }
 
-    setStatusMessage("Opening GitHub App installation in a new tab...");
-    openInNewTab(payload.installUrl);
+    const opened = openInNewTab(payload.installUrl);
+    if (!opened) {
+      return;
+    }
+
+    setStatusMessage(
+      "Opened GitHub install in a new tab. Finish install there; this tab will auto-sync when done.",
+    );
+    pollForGitHubConnection();
   };
 
   const handleDisconnectGitHub = async () => {
@@ -894,7 +974,7 @@ export const Welcome = () => {
                   onClick={() => handleInstallGitHubApp(false)}
                   disabled={!isSignedIn}
                 >
-                  {isGitHubConnected ? "Open GitHub Installation" : "Connect GitHub"}
+                  {isGitHubConnected ? "Sync Repositories" : "Connect GitHub"}
                 </button>
                 <button
                   type="button"
@@ -907,13 +987,27 @@ export const Welcome = () => {
               </div>
 
               {isGitHubConnected ? (
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={() => handleInstallGitHubApp(true)}
-                >
-                  Reconnect GitHub App (Auth)
-                </button>
+                <div className={styles.inlineActions}>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => handleInstallGitHubApp(true)}
+                  >
+                    Reconnect GitHub App (Auth)
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() =>
+                      openInNewTab(
+                        `https://github.com/settings/installations/${githubConnection?.installationId ?? ""}`,
+                      )
+                    }
+                    disabled={!githubConnection?.installationId}
+                  >
+                    Open Installation Settings
+                  </button>
+                </div>
               ) : null}
 
               <label className={styles.inlineLabel}>
