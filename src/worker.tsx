@@ -45,6 +45,21 @@ const json = (body: unknown, status = 200): Response =>
     },
   });
 
+const githubCallbackRedirect = (
+  request: Request,
+  status: "connected" | "error",
+  errorCode?: string,
+): Response => {
+  const redirectUrl = new URL("/", request.url);
+  redirectUrl.searchParams.set("github", status);
+
+  if (errorCode) {
+    redirectUrl.searchParams.set("githubError", errorCode);
+  }
+
+  return Response.redirect(redirectUrl.toString(), 302);
+};
+
 const parseJsonBody = async (
   request: Request,
 ): Promise<Record<string, unknown> | null> => {
@@ -324,12 +339,11 @@ export default defineApp([
     },
   ]),
   route("/api/github/connect/callback", [
-    requireAuth,
     async ({ request, ctx }) => {
       const principal = getPrincipalFromContext(ctx);
 
       if (!principal) {
-        return json({ error: "Authentication required." }, 401);
+        return githubCallbackRedirect(request, "error", "auth_required");
       }
 
       const url = new URL(request.url);
@@ -337,15 +351,19 @@ export default defineApp([
       const state = url.searchParams.get("state") ?? "";
 
       if (!state) {
-        return json({ error: "state is required." }, 400);
+        return githubCallbackRedirect(request, "error", "state_required");
       }
 
       if (!consumeGitHubConnectState(state, principal.id)) {
-        return json({ error: "Invalid or expired state." }, 400);
+        return githubCallbackRedirect(request, "error", "state_invalid_or_expired");
       }
 
       if (!Number.isInteger(installationId) || installationId <= 0) {
-        return json({ error: "installation_id must be a positive integer." }, 400);
+        return githubCallbackRedirect(
+          request,
+          "error",
+          "installation_id_invalid",
+        );
       }
 
       try {
@@ -360,19 +378,12 @@ export default defineApp([
           repositories: connectionResult.repositories,
         });
 
-        const redirectUrl = new URL("/", request.url);
-        redirectUrl.searchParams.set("github", "connected");
-
-        return Response.redirect(redirectUrl.toString(), 302);
+        return githubCallbackRedirect(request, "connected");
       } catch (error) {
-        return json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to connect GitHub installation.",
-          },
-          400,
+        return githubCallbackRedirect(
+          request,
+          "error",
+          error instanceof Error ? "connect_failed" : "unknown_error",
         );
       }
     },
