@@ -41,6 +41,12 @@ export interface CodexExecuteBridgeStreamEvent {
   payload: unknown;
 }
 
+interface ExecuteRunItemQuality {
+  scenarioId: string;
+  status: "passed" | "failed" | "blocked";
+  observed: string;
+}
+
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/g, "");
 
 const getBridgeUrl = (): string => {
@@ -426,6 +432,130 @@ const parseRawOutput = (rawOutput: string): unknown => {
   }
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const getExecutionOutputContainer = (
+  parsedOutput: unknown,
+): Record<string, unknown> => {
+  if (!isRecord(parsedOutput)) {
+    return {};
+  }
+
+  if (isRecord(parsedOutput.run) || Array.isArray(parsedOutput.pullRequests)) {
+    return parsedOutput;
+  }
+
+  if (isRecord(parsedOutput.result)) {
+    return parsedOutput.result;
+  }
+
+  if (isRecord(parsedOutput.output)) {
+    return parsedOutput.output;
+  }
+
+  return parsedOutput;
+};
+
+const readRunItemsForQuality = (parsedOutput: unknown): ExecuteRunItemQuality[] => {
+  const outputContainer = getExecutionOutputContainer(parsedOutput);
+  const runRecord = isRecord(outputContainer.run) ? outputContainer.run : null;
+  if (!runRecord) {
+    throw new Error("Codex execute output is missing run details.");
+  }
+
+  const rawItems = Array.isArray(runRecord.items) ? runRecord.items : null;
+  if (!rawItems || rawItems.length === 0) {
+    throw new Error("Codex execute output did not include run.items.");
+  }
+
+  return rawItems.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new Error(`Codex execute output has invalid run item at index ${index}.`);
+    }
+
+    const scenarioId = String(item.scenarioId ?? "").trim();
+    const statusRaw = String(item.status ?? "").trim().toLowerCase();
+    const observed = String(item.observed ?? "").trim();
+    if (!scenarioId) {
+      throw new Error(`Codex execute output has missing scenarioId at index ${index}.`);
+    }
+    if (statusRaw !== "passed" && statusRaw !== "failed" && statusRaw !== "blocked") {
+      throw new Error(
+        `Codex execute output has invalid status '${statusRaw || "<empty>"}' at index ${index}.`,
+      );
+    }
+
+    return {
+      scenarioId,
+      status: statusRaw as "passed" | "failed" | "blocked",
+      observed,
+    };
+  });
+};
+
+const evaluateExecuteOutputQuality = (
+  parsedOutput: unknown,
+  scenarioIds: string[],
+): string | null => {
+  const items = readRunItemsForQuality(parsedOutput);
+  const uniqueScenarioIds = new Set(scenarioIds);
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    if (!uniqueScenarioIds.has(item.scenarioId)) {
+      return `Run item referenced unknown scenarioId '${item.scenarioId}'.`;
+    }
+    if (seen.has(item.scenarioId)) {
+      return `Run items contain duplicate scenarioId '${item.scenarioId}'.`;
+    }
+    seen.add(item.scenarioId);
+  }
+
+  if (seen.size !== uniqueScenarioIds.size) {
+    return `Run items covered ${seen.size} scenarios but expected ${uniqueScenarioIds.size}.`;
+  }
+
+  const placeholderBlockedPattern =
+    /^(queued after|queued behind|waiting for previous|pending previous|not attempted|skipped due to previous|deferred after)\b/i;
+  const blockedItems = items.filter((item) => item.status === "blocked");
+  const placeholderBlockedCount = blockedItems.filter((item) =>
+    placeholderBlockedPattern.test(item.observed),
+  ).length;
+
+  if (
+    placeholderBlockedCount >= 2 &&
+    placeholderBlockedCount >= Math.max(uniqueScenarioIds.size - 1, 2)
+  ) {
+    return "Run output used placeholder blocked chaining instead of attempting each scenario.";
+  }
+
+  if (blockedItems.length === items.length) {
+    const limitationPattern =
+      /(cannot|can't|missing|unavailable|permission|auth|network|timeout|sandbox|not configured|not reachable|failed|error|unsupported)/i;
+    const actionableBlockedCount = blockedItems.filter((item) =>
+      limitationPattern.test(item.observed),
+    ).length;
+    if (actionableBlockedCount === 0) {
+      return "All scenarios were blocked without actionable limitation details.";
+    }
+  }
+
+  return null;
+};
+
+const buildRetryPrompt = (basePrompt: string, qualityIssue: string): string =>
+  [
+    basePrompt,
+    "",
+    "Bridge compliance feedback from previous attempt:",
+    `- ${qualityIssue}`,
+    "- Retry now and actually execute every scenario in order.",
+    "- Do not emit placeholder chain text like 'Queued after ...'.",
+    "- If blocked, include concrete actionable limitation details for that specific scenario.",
+    "- Return strict JSON only.",
+  ].join("\n");
+
 export const executeScenariosViaCodex = async (
   input: ExecuteScenariosViaCodexInput,
 ): Promise<CodexExecutionResult> => {
@@ -460,40 +590,71 @@ const executeScenariosViaCodexInternal = async (
     prompt: buildExecutePrompt(input),
   };
 
-  const payload = onEvent
-    ? await bridgeFetchStreamJson<BridgeExecuteResponse>(
-        "/actions/execute/stream",
-        {
+  const invoke = async (body: Record<string, unknown>) => {
+    const payload = onEvent
+      ? await bridgeFetchStreamJson<BridgeExecuteResponse>(
+          "/actions/execute/stream",
+          {
+            method: "POST",
+            body: JSON.stringify(body),
+          },
+          onEvent,
+        )
+      : await bridgeFetchJson<BridgeExecuteResponse>("/actions/execute", {
           method: "POST",
-          body: JSON.stringify(requestBody),
-        },
-        onEvent,
-      )
-    : await bridgeFetchJson<BridgeExecuteResponse>("/actions/execute", {
-        method: "POST",
-        body: JSON.stringify(requestBody),
-      });
+          body: JSON.stringify(body),
+        });
 
-  const responseText =
-    payload.responseText?.trim() ||
-    (typeof payload.output === "string"
-      ? payload.output.trim()
-      : payload.output
-        ? JSON.stringify(payload.output)
-        : "");
+    const responseText =
+      payload.responseText?.trim() ||
+      (typeof payload.output === "string"
+        ? payload.output.trim()
+        : payload.output
+          ? JSON.stringify(payload.output)
+          : "");
 
-  if (!responseText) {
-    throw new Error("Codex execute action returned an empty response payload.");
+    if (!responseText) {
+      throw new Error("Codex execute action returned an empty response payload.");
+    }
+
+    const parsedOutput = parseRawOutput(responseText);
+    return { payload, responseText, parsedOutput };
+  };
+
+  const firstAttempt = await invoke(requestBody);
+  const firstIssue = evaluateExecuteOutputQuality(firstAttempt.parsedOutput, scenarioIds);
+  if (!firstIssue) {
+    return {
+      model: firstAttempt.payload.model,
+      cwd: firstAttempt.payload.cwd,
+      threadId: firstAttempt.payload.threadId,
+      turnId: firstAttempt.payload.turnId,
+      turnStatus: firstAttempt.payload.turnStatus,
+      responseText: firstAttempt.responseText,
+      parsedOutput: firstAttempt.parsedOutput,
+      completedAt: firstAttempt.payload.completedAt,
+    };
+  }
+
+  const retryAttempt = await invoke({
+    ...requestBody,
+    prompt: buildRetryPrompt(requestBody.prompt, firstIssue),
+  });
+  const retryIssue = evaluateExecuteOutputQuality(retryAttempt.parsedOutput, scenarioIds);
+  if (retryIssue) {
+    throw new Error(
+      `Codex execute output failed loop compliance checks after retry. ${retryIssue}`,
+    );
   }
 
   return {
-    model: payload.model,
-    cwd: payload.cwd,
-    threadId: payload.threadId,
-    turnId: payload.turnId,
-    turnStatus: payload.turnStatus,
-    responseText,
-    parsedOutput: parseRawOutput(responseText),
-    completedAt: payload.completedAt,
+    model: retryAttempt.payload.model,
+    cwd: retryAttempt.payload.cwd,
+    threadId: retryAttempt.payload.threadId,
+    turnId: retryAttempt.payload.turnId,
+    turnStatus: retryAttempt.payload.turnStatus,
+    responseText: retryAttempt.responseText,
+    parsedOutput: retryAttempt.parsedOutput,
+    completedAt: retryAttempt.payload.completedAt,
   };
 };
