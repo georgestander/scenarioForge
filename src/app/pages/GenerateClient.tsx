@@ -65,168 +65,105 @@ export const GenerateClient = ({
     }
   };
 
-  const handleDownloadArtifact = (format: "markdown" | "json") => {
-    if (!selectedPack) {
-      setStatusMessage("Select a scenario pack first.");
-      return;
-    }
-    window.open(`/api/scenario-packs/${selectedPack.id}/artifacts/${format}`, "_blank", "noopener");
-  };
+  const hasGenerated = !isGenerating && generateEvents.length > 0;
 
   return (
-    <section style={{ display: "grid", gap: "0.55rem" }}>
-      <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-        Generate Scenarios
-      </h2>
-      <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-        Project: <strong>{project.name}</strong> — Build or update grouped scenarios from confirmed sources.
-      </p>
+    <section style={{ maxWidth: "520px", margin: "0 auto", padding: "2rem 1rem", display: "grid", gap: "1.2rem" }}>
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
 
-      <p style={{
-        margin: 0,
-        border: "1px solid #6a452f",
-        borderRadius: "10px",
-        background: "linear-gradient(180deg, rgb(163 87 46 / 0.22) 0%, rgb(97 53 29 / 0.18) 100%)",
-        padding: "0.6rem 0.75rem",
-        color: "var(--forge-ink)",
-        fontSize: "0.9rem",
-      }}>
-        {statusMessage}
-      </p>
+      {/* IDLE: show generate button */}
+      {!isGenerating && generateEvents.length === 0 && (
+        <div style={{ textAlign: "center", display: "grid", gap: "1rem" }}>
+          <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
+            Generate Scenarios
+          </h2>
 
-      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-        <button type="button" onClick={() => void handleGenerate("initial")} disabled={isGenerating}>
-          {isGenerating ? "Generating Scenarios..." : "Generate Scenarios"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleGenerate("update")}
-          disabled={isGenerating}
-          style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-        >
-          {isGenerating ? "Updating..." : "Update Scenarios"}
-        </button>
-      </div>
+          {scenarioPacks.length > 0 && (
+            <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.84rem", color: "var(--forge-muted)", textAlign: "left" }}>
+              Update instruction (optional)
+              <input
+                value={updateInstruction}
+                onChange={(e) => setUpdateInstruction(e.target.value)}
+                placeholder="e.g. add checkout edge cases"
+              />
+            </label>
+          )}
 
-      <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)" }}>
-        Update instruction (optional)
-        <input
-          value={updateInstruction}
-          onChange={(e) => setUpdateInstruction(e.target.value)}
-          placeholder="Example: add checkout edge cases and stale-doc conflict paths."
-        />
-      </label>
-
-      {generateEvents.length > 0 ? (
-        <>
-          <h3 style={{ margin: "0.55rem 0 0.3rem", fontFamily: "'VT323', monospace", fontSize: "1.28rem", color: "var(--forge-hot)" }}>
-            Codex Stream
-          </h3>
-          <ul style={{ margin: 0, paddingLeft: "1.1rem", display: "grid", gap: "0.24rem", fontSize: "0.84rem", color: "var(--forge-muted)" }}>
-            {generateEvents.map((event) => (
-              <li key={event.id} style={{ lineHeight: 1.3 }}>
-                {event.timestamp} | {event.phase} | {event.message}
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-
-      <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)" }}>
-        Active scenario pack
-        <select
-          value={selectedPack?.id ?? ""}
-          onChange={(e) => setSelectedPackId(e.target.value)}
-        >
-          <option value="">Select pack</option>
-          {scenarioPacks.map((pack) => (
-            <option key={pack.id} value={pack.id}>
-              {pack.id} ({pack.scenarios.length} scenarios)
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {selectedPack ? (
-        <>
-          <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-            Generated with <strong>{selectedPack.model}</strong> and manifest{" "}
-            <strong>{selectedPack.manifestId}</strong>.
-          </p>
-          <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-            Repo <strong>{selectedPack.repositoryFullName}</strong> on{" "}
-            <strong>{selectedPack.branch}</strong> @{" "}
-            <strong>{selectedPack.headCommitSha.slice(0, 12)}</strong>.
-          </p>
-          <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-            Codex turn <strong>{selectedPack.generationAudit.threadId}</strong> /{" "}
-            <strong>{selectedPack.generationAudit.turnId}</strong> ({selectedPack.generationAudit.turnStatus}).
-          </p>
-
-          <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-            <button
-              type="button"
-              onClick={() => handleDownloadArtifact("markdown")}
-              style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-            >
-              Download scenarios.md
+          <div style={{ display: "grid", gap: "0.5rem", gridTemplateColumns: scenarioPacks.length > 0 ? "1fr 1fr" : "1fr" }}>
+            <button type="button" onClick={() => void handleGenerate("initial")}>
+              Generate Scenarios
             </button>
-            <button
-              type="button"
-              onClick={() => handleDownloadArtifact("json")}
-              style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-            >
-              Download scenarios.json
-            </button>
+            {scenarioPacks.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void handleGenerate("update")}
+                style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
+              >
+                Update Scenarios
+              </button>
+            )}
           </div>
-
-          <h3 style={{ margin: "0.55rem 0 0.3rem", fontFamily: "'VT323', monospace", fontSize: "1.28rem", color: "var(--forge-hot)" }}>
-            Feature Groups
-          </h3>
-          <ul style={{ margin: 0, paddingLeft: "1.1rem", display: "grid", gap: "0.24rem", fontSize: "0.84rem", color: "var(--forge-muted)" }}>
-            {Object.entries(selectedPack.groupedByFeature).map(([feature, ids]) => (
-              <li key={feature} style={{ lineHeight: 1.3 }}>
-                <strong>{feature}</strong>: {ids.length} scenarios
-              </li>
-            ))}
-          </ul>
-
-          <h3 style={{ margin: "0.55rem 0 0.3rem", fontFamily: "'VT323', monospace", fontSize: "1.28rem", color: "var(--forge-hot)" }}>
-            Outcome Groups
-          </h3>
-          <ul style={{ margin: 0, paddingLeft: "1.1rem", display: "grid", gap: "0.24rem", fontSize: "0.84rem", color: "var(--forge-muted)" }}>
-            {Object.entries(selectedPack.groupedByOutcome).map(([outcome, ids]) => (
-              <li key={outcome} style={{ lineHeight: 1.3 }}>
-                <strong>{outcome}</strong>: {ids.length} scenarios
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : (
-        <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-          No scenario pack generated yet.
-        </p>
+        </div>
       )}
 
-      <a
-        href={`/projects/${projectId}/review`}
-        style={{
-          display: "inline-block",
-          padding: "0.52rem 0.62rem",
-          borderRadius: "7px",
-          border: "1px solid #7f482b",
-          background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
-          color: "var(--forge-ink)",
-          textDecoration: "none",
-          fontWeight: 600,
-          fontSize: "0.89rem",
-          textAlign: "center",
-          opacity: selectedPack ? 1 : 0.55,
-          pointerEvents: selectedPack ? "auto" : "none",
-        }}
-      >
-        Review →
-      </a>
+      {/* GENERATING: spinner + streaming events */}
+      {isGenerating && (
+        <div style={{ textAlign: "center", display: "grid", gap: "1rem" }}>
+          <div style={{ fontSize: "2rem", color: "var(--forge-fire)", animation: "spin 1.2s linear infinite" }}>
+            *
+          </div>
+          <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
+            Generating Scenarios
+          </h2>
+          {generateEvents.length > 0 && (
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.3rem", textAlign: "left", fontSize: "0.82rem", color: "var(--forge-muted)" }}>
+              {generateEvents.map((event) => (
+                <li key={event.id} style={{ lineHeight: 1.4 }}>
+                  <span style={{ color: "var(--forge-fire)", marginRight: "0.4rem" }}>*</span>
+                  {event.message}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* DONE: events + Review link */}
+      {hasGenerated && (
+        <div style={{ textAlign: "center", display: "grid", gap: "1rem" }}>
+          <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
+            Scenarios Generated
+          </h2>
+          <p style={{ margin: 0, fontSize: "0.84rem", color: "var(--forge-muted)" }}>
+            {statusMessage}
+          </p>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.3rem", textAlign: "left", fontSize: "0.82rem", color: "var(--forge-muted)" }}>
+            {generateEvents.map((event) => (
+              <li key={event.id} style={{ lineHeight: 1.4 }}>
+                <span style={{ color: "var(--forge-fire)", marginRight: "0.4rem" }}>*</span>
+                {event.message}
+              </li>
+            ))}
+          </ul>
+          <a
+            href={`/projects/${projectId}/review`}
+            style={{
+              display: "inline-block",
+              margin: "0.5rem auto 0",
+              padding: "0.55rem 1.5rem",
+              borderRadius: "7px",
+              border: "1px solid var(--forge-line)",
+              background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
+              color: "var(--forge-ink)",
+              textDecoration: "none",
+              fontWeight: 600,
+              fontSize: "0.9rem",
+            }}
+          >
+            Review
+          </a>
+        </div>
+      )}
     </section>
   );
 };
