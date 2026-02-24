@@ -49,6 +49,17 @@ export const ExecuteClient = ({
     [codexStreamEvents],
   );
 
+  // Filter out raw protocol noise (e.g. "codex/event/agent_message_content_delta")
+  const displayEvents = useMemo(
+    () => executeEvents.filter((e) => {
+      const msg = e.message;
+      if (msg === e.event) return false;
+      if (msg.includes("/") && !msg.includes(" ")) return false;
+      return true;
+    }),
+    [executeEvents],
+  );
+
   // Build per-scenario status map from stream events (last event per scenario wins)
   const scenarioStatuses = useMemo(() => {
     const map = new Map<string, ScenarioStatus>();
@@ -120,8 +131,10 @@ export const ExecuteClient = ({
 
   const done = !isExecuting && latestRun !== null;
 
+  const panelHeight = "calc(100vh - 300px)";
+
   return (
-    <section style={{ maxWidth: "560px", margin: "0 auto", padding: "2rem 1rem", display: "grid", gap: "1rem" }}>
+    <section style={{ margin: "0 auto", padding: "1.5rem 1rem", display: "grid", gap: "1rem" }}>
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -182,117 +195,123 @@ export const ExecuteClient = ({
         )}
       </div>
 
-      {/* Scenario checklist */}
-      <div style={{
-        maxHeight: "calc(100vh - 420px)",
-        minHeight: "100px",
-        overflowY: "auto",
-        display: "grid",
-        gap: "0.25rem",
-      }}>
-        {initialPack.scenarios.map((scenario) => {
-          const info = finalStatuses.get(scenario.id);
-          const st = info?.status ?? "queued";
-          const icon = STATUS_ICON[st];
-          const isRunning = st === "running";
+      {/* Side-by-side: checklist (left) + stream log (right) */}
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "0.75rem", alignItems: "start" }}>
 
-          return (
-            <div
-              key={scenario.id}
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: "0.5rem",
-                padding: "0.4rem 0.55rem",
-                borderRadius: "6px",
-                border: "1px solid var(--forge-line)",
-                background: isRunning ? "rgba(173, 90, 51, 0.08)" : "transparent",
-              }}
-            >
-              {/* Status icon */}
-              <span style={{
-                flexShrink: 0,
-                width: "1.1rem",
-                textAlign: "center",
-                fontSize: "0.88rem",
-                lineHeight: "1.3",
-                color: icon?.color ?? "var(--forge-muted)",
-                animation: isRunning ? "pulse 1.4s ease-in-out infinite" : undefined,
-              }}>
-                {icon?.char ?? "\u25CB"}
-              </span>
+        {/* Scenario checklist */}
+        <div style={{
+          maxHeight: panelHeight,
+          minHeight: "120px",
+          overflowY: "auto",
+          display: "grid",
+          gap: "0.25rem",
+          alignContent: "start",
+        }}>
+          {initialPack.scenarios.map((scenario) => {
+            const info = finalStatuses.get(scenario.id);
+            const st = info?.status ?? "queued";
+            const icon = STATUS_ICON[st];
+            const isRunning = st === "running";
 
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {/* Title + stage */}
-                <div style={{ display: "flex", alignItems: "baseline", gap: "0.4rem" }}>
-                  <span style={{
-                    fontSize: "0.82rem",
-                    fontWeight: 600,
-                    color: "var(--forge-ink)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}>
-                    {scenario.title}
-                  </span>
-                  {info?.stage && st === "running" && (
-                    <span style={{ fontSize: "0.68rem", color: "var(--forge-fire)", flexShrink: 0 }}>
-                      {STAGE_LABEL[info.stage] ?? info.stage}
+            return (
+              <div
+                key={scenario.id}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "0.5rem",
+                  padding: "0.4rem 0.55rem",
+                  borderRadius: "6px",
+                  border: "1px solid var(--forge-line)",
+                  background: isRunning ? "rgba(173, 90, 51, 0.08)" : "transparent",
+                }}
+              >
+                <span style={{
+                  flexShrink: 0,
+                  width: "1.1rem",
+                  textAlign: "center",
+                  fontSize: "0.88rem",
+                  lineHeight: "1.3",
+                  color: icon?.color ?? "var(--forge-muted)",
+                  animation: isRunning ? "pulse 1.4s ease-in-out infinite" : undefined,
+                }}>
+                  {icon?.char ?? "\u25CB"}
+                </span>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "0.4rem" }}>
+                    <span style={{
+                      fontSize: "0.82rem",
+                      fontWeight: 600,
+                      color: "var(--forge-ink)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}>
+                      {scenario.title}
                     </span>
-                  )}
-                  {st !== "queued" && st !== "running" && (
-                    <span style={{ fontSize: "0.68rem", color: icon?.color ?? "var(--forge-muted)", flexShrink: 0 }}>
-                      {st}
-                    </span>
+                    {info?.stage && st === "running" && (
+                      <span style={{ fontSize: "0.68rem", color: "var(--forge-fire)", flexShrink: 0 }}>
+                        {STAGE_LABEL[info.stage] ?? info.stage}
+                      </span>
+                    )}
+                    {st !== "queued" && st !== "running" && (
+                      <span style={{ fontSize: "0.68rem", color: icon?.color ?? "var(--forge-muted)", flexShrink: 0 }}>
+                        {st}
+                      </span>
+                    )}
+                  </div>
+                  {info?.message && (
+                    <p style={{
+                      margin: 0,
+                      fontSize: "0.72rem",
+                      color: "var(--forge-muted)",
+                      lineHeight: 1.35,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}>
+                      {info.message}
+                    </p>
                   )}
                 </div>
-
-                {/* Latest message subtitle */}
-                {info?.message && (
-                  <p style={{
-                    margin: 0,
-                    fontSize: "0.72rem",
-                    color: "var(--forge-muted)",
-                    lineHeight: 1.35,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}>
-                    {info.message}
-                  </p>
-                )}
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
 
-      {/* Stream log — scrollable, auto-scrolls */}
-      {executeEvents.length > 0 && (
+        {/* Stream log — right column */}
         <ul
           ref={logRef}
           style={{
             margin: 0,
-            padding: 0,
+            padding: "0.5rem",
             listStyle: "none",
-            maxHeight: "160px",
+            maxHeight: panelHeight,
+            minHeight: "120px",
             overflowY: "auto",
             display: "grid",
-            gap: "0.2rem",
-            fontSize: "0.75rem",
+            gap: "0.15rem",
+            alignContent: "start",
+            fontSize: "0.72rem",
             color: "var(--forge-muted)",
-            borderTop: "1px solid var(--forge-line)",
-            paddingTop: "0.5rem",
+            borderLeft: "1px solid var(--forge-line)",
           }}
         >
-          {executeEvents.map((event) => (
-            <li key={event.id} style={{ lineHeight: 1.35 }}>
-              <span style={{ color: "var(--forge-fire)" }}>*</span>{" "}
-              {event.message}
+          {displayEvents.length > 0 ? (
+            displayEvents.map((event) => (
+              <li key={event.id} style={{ lineHeight: 1.3 }}>
+                <span style={{ color: "var(--forge-fire)" }}>*</span>{" "}
+                {event.message}
+              </li>
+            ))
+          ) : (
+            <li style={{ color: "var(--forge-muted)", fontStyle: "italic" }}>
+              {isExecuting ? "Waiting for stream events..." : "Stream log"}
             </li>
-          ))}
+          )}
         </ul>
-      )}
+      </div>
     </section>
   );
 };
