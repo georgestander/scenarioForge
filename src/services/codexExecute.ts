@@ -237,7 +237,6 @@ const bridgeFetchStreamJson = async <T>(
 
 const formatScenarioSummary = (pack: ScenarioPack): string =>
   pack.scenarios
-    .slice(0, 24)
     .map((scenario) => {
       const checkpoints = scenario.expectedCheckpoints.slice(0, 3).join(" | ");
       return [
@@ -567,12 +566,19 @@ const evaluateExecuteOutputQuality = (
     return `Run items covered ${seen.size} scenarios but expected ${uniqueScenarioIds.size}.`;
   }
 
-  const placeholderBlockedPattern =
-    /^(queued after|queued behind|waiting for previous|pending previous|not attempted|skipped due to previous|deferred after)\b/i;
+  const placeholderPattern =
+    /\b(queued after|queued behind|waiting for previous|pending previous|pending|not attempted|skipped due to previous|deferred after|placeholder|not in user subset|n\/a|not applicable)\b/i;
   const blockedItems = items.filter((item) => item.status === "blocked");
   const placeholderBlockedCount = blockedItems.filter((item) =>
-    placeholderBlockedPattern.test(item.observed),
+    placeholderPattern.test(item.observed),
   ).length;
+  const placeholderAnyCount = items.filter((item) =>
+    placeholderPattern.test(item.observed) || placeholderPattern.test(item.scenarioId),
+  ).length;
+
+  if (placeholderAnyCount > 0) {
+    return "Run output contains placeholder/pending/not-in-subset content instead of real scenario execution results.";
+  }
 
   if (
     placeholderBlockedCount >= 2 &&
@@ -581,9 +587,18 @@ const evaluateExecuteOutputQuality = (
     return "Run output used placeholder blocked chaining instead of attempting each scenario.";
   }
 
+  const limitationPattern =
+    /(cannot|can't|missing|unavailable|permission|auth|network|timeout|sandbox|not configured|not reachable|failed|error|unsupported)/i;
+  const nonActionableBlocked = blockedItems.filter(
+    (item) => !limitationPattern.test(item.observed),
+  );
+  if (nonActionableBlocked.length > 0) {
+    return `Blocked scenarios must include concrete limitation details. Missing details for: ${nonActionableBlocked
+      .map((item) => item.scenarioId)
+      .join(", ")}.`;
+  }
+
   if (blockedItems.length === items.length) {
-    const limitationPattern =
-      /(cannot|can't|missing|unavailable|permission|auth|network|timeout|sandbox|not configured|not reachable|failed|error|unsupported)/i;
     const actionableBlockedCount = blockedItems.filter((item) =>
       limitationPattern.test(item.observed),
     ).length;
@@ -646,6 +661,7 @@ const buildRetryPrompt = (basePrompt: string, qualityIssue: string): string =>
     `- ${qualityIssue}`,
     "- Retry now and actually execute every scenario in order.",
     "- Do not emit placeholder chain text like 'Queued after ...'.",
+    "- Never return 'pending', 'placeholder', 'not in user subset', or 'N/A' as a scenario result.",
     "- If blocked, include concrete actionable limitation details for that specific scenario.",
     "- For full mode failures, emit PR fallback handoff entries with branchName and actionable risk notes.",
     "- Return strict JSON only.",
