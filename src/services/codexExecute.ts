@@ -47,6 +47,16 @@ interface ExecuteRunItemQuality {
   observed: string;
 }
 
+interface ExecutePullRequestQuality {
+  title: string;
+  url: string;
+  status: string;
+  scenarioIds: string[];
+  riskNotes: string[];
+  branchName: string;
+  rootCauseSummary: string;
+}
+
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/g, "");
 
 const getBridgeUrl = (): string => {
@@ -400,11 +410,13 @@ const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
     "- Execute every scenario ID listed under Scenario subset and return one terminal run.items entry per scenario (`passed`/`failed`/`blocked`).",
     "- Do not stop early; if a scenario cannot be completed in this environment, mark it `blocked` with explicit observed reason.",
     "- If a step cannot be executed in this environment, return that limitation in observed output and keep statuses accurate.",
+    "- For executionMode=full, provide PR fallback for every failed scenario: either real PR URL or blocked handoff details with branchName and actionable riskNotes.",
     "",
     "Output contract:",
     "- Return strict JSON object with keys: run, fixAttempt, pullRequests.",
     "- run.items must include scenarioId, status, observed, expected, optional failureHypothesis and artifacts.",
     "- pullRequests entries should include title, url/status if available, scenarioIds, and riskNotes.",
+    "- If PR cannot be opened, set pullRequests.status=blocked, leave url empty, and include branchName + actionable riskNotes commands for manual completion.",
     "",
     "Constraints:",
     constraints,
@@ -494,9 +506,48 @@ const readRunItemsForQuality = (parsedOutput: unknown): ExecuteRunItemQuality[] 
   });
 };
 
+const readPullRequestsForQuality = (
+  parsedOutput: unknown,
+): ExecutePullRequestQuality[] => {
+  const outputContainer = getExecutionOutputContainer(parsedOutput);
+  const pullRequests = Array.isArray(outputContainer.pullRequests)
+    ? outputContainer.pullRequests
+    : [];
+
+  return pullRequests
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const scenarioIds = Array.isArray(item.scenarioIds)
+        ? item.scenarioIds
+            .map((value) => String(value ?? "").trim())
+            .filter((value) => value.length > 0)
+        : [];
+      const riskNotes = Array.isArray(item.riskNotes)
+        ? item.riskNotes
+            .map((value) => String(value ?? "").trim())
+            .filter((value) => value.length > 0)
+        : [];
+
+      return {
+        title: String(item.title ?? "").trim(),
+        url: String(item.url ?? "").trim(),
+        status: String(item.status ?? "").trim().toLowerCase(),
+        scenarioIds,
+        riskNotes,
+        branchName: String(item.branchName ?? "").trim(),
+        rootCauseSummary: String(item.rootCauseSummary ?? "").trim(),
+      };
+    })
+    .filter((item): item is ExecutePullRequestQuality => Boolean(item));
+};
+
 const evaluateExecuteOutputQuality = (
   parsedOutput: unknown,
   scenarioIds: string[],
+  executionMode: "run" | "fix" | "pr" | "full",
 ): string | null => {
   const items = readRunItemsForQuality(parsedOutput);
   const uniqueScenarioIds = new Set(scenarioIds);
@@ -541,6 +592,49 @@ const evaluateExecuteOutputQuality = (
     }
   }
 
+  if (executionMode === "full") {
+    const failedScenarioIds = items
+      .filter((item) => item.status === "failed")
+      .map((item) => item.scenarioId);
+
+    if (failedScenarioIds.length > 0) {
+      const pullRequests = readPullRequestsForQuality(parsedOutput);
+      if (pullRequests.length === 0) {
+        return "Full mode returned failed scenarios without pullRequest fallback details.";
+      }
+
+      const coveredScenarioIds = new Set(
+        pullRequests.flatMap((pullRequest) => pullRequest.scenarioIds),
+      );
+      const missingCoverage = failedScenarioIds.filter(
+        (scenarioId) => !coveredScenarioIds.has(scenarioId),
+      );
+      if (missingCoverage.length > 0) {
+        return `Pull request fallback missing for failed scenarios: ${missingCoverage.join(", ")}.`;
+      }
+
+      for (const pullRequest of pullRequests) {
+        if (!pullRequest.title) {
+          return "Pull request fallback item is missing title.";
+        }
+        if (pullRequest.url.length === 0 && pullRequest.status !== "blocked") {
+          return `Pull request '${pullRequest.title}' has no URL and must be marked blocked.`;
+        }
+        if (pullRequest.url.length === 0) {
+          if (pullRequest.branchName.length === 0) {
+            return `Pull request '${pullRequest.title}' is blocked but missing branchName handoff.`;
+          }
+          if (pullRequest.rootCauseSummary.length === 0) {
+            return `Pull request '${pullRequest.title}' is blocked but missing rootCauseSummary.`;
+          }
+          if (pullRequest.riskNotes.length === 0) {
+            return `Pull request '${pullRequest.title}' is blocked but missing actionable riskNotes handoff.`;
+          }
+        }
+      }
+    }
+  }
+
   return null;
 };
 
@@ -553,6 +647,7 @@ const buildRetryPrompt = (basePrompt: string, qualityIssue: string): string =>
     "- Retry now and actually execute every scenario in order.",
     "- Do not emit placeholder chain text like 'Queued after ...'.",
     "- If blocked, include concrete actionable limitation details for that specific scenario.",
+    "- For full mode failures, emit PR fallback handoff entries with branchName and actionable risk notes.",
     "- Return strict JSON only.",
   ].join("\n");
 
@@ -622,7 +717,11 @@ const executeScenariosViaCodexInternal = async (
   };
 
   const firstAttempt = await invoke(requestBody);
-  const firstIssue = evaluateExecuteOutputQuality(firstAttempt.parsedOutput, scenarioIds);
+  const firstIssue = evaluateExecuteOutputQuality(
+    firstAttempt.parsedOutput,
+    scenarioIds,
+    input.executionMode,
+  );
   if (!firstIssue) {
     return {
       model: firstAttempt.payload.model,
@@ -640,7 +739,11 @@ const executeScenariosViaCodexInternal = async (
     ...requestBody,
     prompt: buildRetryPrompt(requestBody.prompt, firstIssue),
   });
-  const retryIssue = evaluateExecuteOutputQuality(retryAttempt.parsedOutput, scenarioIds);
+  const retryIssue = evaluateExecuteOutputQuality(
+    retryAttempt.parsedOutput,
+    scenarioIds,
+    input.executionMode,
+  );
   if (retryIssue) {
     throw new Error(
       `Codex execute output failed loop compliance checks after retry. ${retryIssue}`,

@@ -569,7 +569,7 @@ const buildPullRequestInputsFromCodexOutput = (
       }
     : null;
 
-  return pullRequests
+  const results = pullRequests
     .map((record) => {
       if (!isRecord(record)) {
         return null;
@@ -580,9 +580,21 @@ const buildPullRequestInputsFromCodexOutput = (
       const title = String(record.title ?? "").trim();
       const url = String(record.url ?? "").trim();
 
-      if (!title || !url) {
+      if (!title) {
         return null;
       }
+
+      const providedStatus = normalizePullRequestStatus(record.status);
+      const status = !url ? "blocked" : providedStatus;
+      const normalizedRiskNotes =
+        riskNotes.length > 0
+          ? riskNotes
+          : !url
+            ? [
+                "Automatic PR creation unavailable.",
+                "Push branch manually and open PR using the generated branch name.",
+              ]
+            : [];
 
       return {
         ownerId,
@@ -595,13 +607,13 @@ const buildPullRequestInputsFromCodexOutput = (
           String(record.branchName ?? "").trim() ||
           `scenariofix/${fixAttempt.id}`,
         url,
-        status: normalizePullRequestStatus(record.status),
+        status,
         rootCauseSummary:
           String(record.rootCauseSummary ?? "").trim() ||
           fixAttempt.probableRootCause,
         rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
         rerunEvidenceSummary,
-        riskNotes,
+        riskNotes: normalizedRiskNotes,
       };
     })
     .filter(
@@ -609,6 +621,30 @@ const buildPullRequestInputsFromCodexOutput = (
         record,
       ): record is PullRequestCreateInput => Boolean(record),
     );
+
+  const coveredScenarioIds = new Set(results.flatMap((record) => record.scenarioIds));
+  const missingScenarioIds = fixAttempt.failedScenarioIds.filter(
+    (scenarioId) => !coveredScenarioIds.has(scenarioId),
+  );
+  const synthesizedFallbacks = missingScenarioIds.map((scenarioId) => ({
+    ownerId,
+    projectId,
+    fixAttemptId: fixAttempt.id,
+    scenarioIds: [scenarioId],
+    title: `Manual PR handoff for ${scenarioId}`,
+    branchName: `scenariofix/${fixAttempt.id}/${scenarioId.toLowerCase()}`,
+    url: "",
+    status: "blocked" as const,
+    rootCauseSummary: fixAttempt.probableRootCause,
+    rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
+    rerunEvidenceSummary,
+    riskNotes: [
+      `Automatic PR creation unavailable for ${scenarioId}.`,
+      `Create branch '${`scenariofix/${fixAttempt.id}/${scenarioId.toLowerCase()}`}' and open PR manually.`,
+    ],
+  }));
+
+  return [...results, ...synthesizedFallbacks];
 };
 
 const getPrincipalFromContext = (ctx: AppContext): AuthPrincipal | null =>
