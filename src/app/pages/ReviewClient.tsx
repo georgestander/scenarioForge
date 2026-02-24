@@ -40,6 +40,8 @@ export const ReviewClient = ({
     knownUnknowns: [],
     uncoveredGaps: [],
   };
+  const hasCriticalQualityNotes =
+    coverage.knownUnknowns.length > 0 || coverage.uncoveredGaps.length > 0;
 
   const handleUpdateScenarios = async () => {
     if (isUpdating || !selectedPack) return;
@@ -113,6 +115,14 @@ export const ReviewClient = ({
         >
           Download Markdown
         </button>
+        <button
+          type="button"
+          onClick={() => handleDownloadArtifact("json")}
+          disabled={!selectedPack}
+          style={{ borderColor: "var(--forge-line)", background: "transparent" }}
+        >
+          Download JSON
+        </button>
         {selectedPack ? (
           <a
             href={`/projects/${projectId}/execute?packId=${encodeURIComponent(selectedPack.id)}`}
@@ -151,15 +161,20 @@ export const ReviewClient = ({
           <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
             personas {coverage.personas.length} | journeys{" "}
             {coverage.journeys.length} | edge buckets{" "}
-            {coverage.edgeBuckets.length} | assumptions{" "}
-            {coverage.assumptions.length}
+            {coverage.edgeBuckets.length} | features{" "}
+            {coverage.features.length} | outcomes {coverage.outcomes.length}
           </p>
-          {coverage.knownUnknowns.length > 0 ? (
+          {coverage.assumptions.length > 0 ? (
+            <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+              Assumptions: {coverage.assumptions.join(" | ")}
+            </p>
+          ) : null}
+          {hasCriticalQualityNotes ? (
             <ul
               style={{
                 margin: 0,
                 paddingLeft: "1rem",
-                color: "var(--forge-muted)",
+                color: "var(--forge-fire)",
                 fontSize: "0.74rem",
                 display: "grid",
                 gap: "0.15rem",
@@ -167,6 +182,9 @@ export const ReviewClient = ({
             >
               {coverage.knownUnknowns.map((note) => (
                 <li key={note}>{note}</li>
+              ))}
+              {coverage.uncoveredGaps.map((gap) => (
+                <li key={gap}>{gap}</li>
               ))}
             </ul>
           ) : (
@@ -241,12 +259,47 @@ export const ReviewClient = ({
                 gap: "0.3rem",
               }}>
                 <p style={{ margin: 0 }}>
+                  <strong style={{ color: "var(--forge-ink)" }}>Feature:</strong> {scenario.feature} |{" "}
+                  <strong style={{ color: "var(--forge-ink)" }}>Outcome:</strong> {scenario.outcome} |{" "}
+                  <strong style={{ color: "var(--forge-ink)" }}>Priority:</strong> {scenario.priority}
+                </p>
+                <p style={{ margin: 0 }}>
                   <strong style={{ color: "var(--forge-ink)" }}>Pass criteria:</strong> {scenario.passCriteria}
                 </p>
                 {scenario.persona && (
                   <p style={{ margin: 0 }}>
                     <strong style={{ color: "var(--forge-ink)" }}>Persona:</strong> {scenario.persona}
                   </p>
+                )}
+                {scenario.journey ? (
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Journey:</strong> {scenario.journey}
+                  </p>
+                ) : null}
+                {scenario.riskIntent ? (
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Risk intent:</strong> {scenario.riskIntent}
+                  </p>
+                ) : null}
+                {scenario.preconditions.length > 0 && (
+                  <div>
+                    <strong style={{ color: "var(--forge-ink)" }}>Preconditions:</strong>
+                    <ul style={{ margin: "0.15rem 0 0", paddingLeft: "1.2rem" }}>
+                      {scenario.preconditions.map((item, i) => (
+                        <li key={`pre_${scenario.id}_${i}`}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {scenario.testData.length > 0 && (
+                  <div>
+                    <strong style={{ color: "var(--forge-ink)" }}>Test data:</strong>
+                    <ul style={{ margin: "0.15rem 0 0", paddingLeft: "1.2rem" }}>
+                      {scenario.testData.map((item, i) => (
+                        <li key={`test_${scenario.id}_${i}`}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
                 {scenario.steps.length > 0 && (
                   <div>
@@ -258,11 +311,33 @@ export const ReviewClient = ({
                     </ol>
                   </div>
                 )}
+                {scenario.expectedCheckpoints.length > 0 && (
+                  <div>
+                    <strong style={{ color: "var(--forge-ink)" }}>Expected checkpoints:</strong>
+                    <ul style={{ margin: "0.15rem 0 0", paddingLeft: "1.2rem" }}>
+                      {scenario.expectedCheckpoints.map((item, i) => (
+                        <li key={`exp_${scenario.id}_${i}`}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {scenario.edgeVariants.length > 0 && (
                   <p style={{ margin: 0 }}>
                     <strong style={{ color: "var(--forge-ink)" }}>Edge variants:</strong> {scenario.edgeVariants.join("; ")}
                   </p>
                 )}
+                {scenario.codeEvidenceAnchors && scenario.codeEvidenceAnchors.length > 0 ? (
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Code evidence:</strong>{" "}
+                    {scenario.codeEvidenceAnchors.join("; ")}
+                  </p>
+                ) : null}
+                {scenario.sourceRefs && scenario.sourceRefs.length > 0 ? (
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Source refs:</strong>{" "}
+                    {scenario.sourceRefs.join("; ")}
+                  </p>
+                ) : null}
               </div>
             </details>
           ))}
