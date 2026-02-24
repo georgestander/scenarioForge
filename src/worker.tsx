@@ -1016,6 +1016,13 @@ export default defineApp([
       const repoUrl = payload?.repoUrl != null ? String(payload.repoUrl).trim() || null : undefined;
       const defaultBranch = payload?.defaultBranch != null ? String(payload.defaultBranch).trim() : undefined;
 
+      if (name !== undefined && name.length === 0) {
+        return json({ error: "name cannot be empty." }, 400);
+      }
+      if (defaultBranch !== undefined && defaultBranch.length === 0) {
+        return json({ error: "defaultBranch cannot be empty." }, 400);
+      }
+
       if (name !== undefined) project.name = name;
       if (repoUrl !== undefined) project.repoUrl = repoUrl;
       if (defaultBranch !== undefined) project.defaultBranch = defaultBranch;
