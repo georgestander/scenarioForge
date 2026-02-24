@@ -44,6 +44,7 @@ export const SourcesClient = ({
 
   const latestManifest = manifests[0] ?? null;
   const prReady = prReadiness?.status === "ready";
+  const canCreateManifest = Boolean(codeBaseline);
 
   const riskySelectedCount = useMemo(
     () =>
@@ -295,7 +296,7 @@ export const SourcesClient = ({
 
       {/* Buttons — always at top */}
       <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
-        {sources.length === 0 ? (
+        {sources.length === 0 && !canCreateManifest ? (
           <button
             type="button"
             onClick={() => void handleScanSources()}
@@ -316,6 +317,7 @@ export const SourcesClient = ({
             <button
               type="button"
               onClick={() => void handleCreateScenarios()}
+              disabled={!canCreateManifest}
             >
               create scenarios
             </button>
@@ -369,7 +371,13 @@ export const SourcesClient = ({
       {/* Source list — scrollable */}
       {sources.length === 0 ? (
         <p style={{ color: "var(--forge-muted)", fontSize: "0.88rem", margin: 0 }}>
-          No sources yet. Scan <strong style={{ color: "var(--forge-ink)" }}>{project.name}</strong> to discover planning docs.
+          {canCreateManifest
+            ? "No optional planning docs discovered. Continue in code-only mode."
+            : (
+              <>
+                No sources yet. Scan <strong style={{ color: "var(--forge-ink)" }}>{project.name}</strong> to discover planning docs.
+              </>
+            )}
         </p>
       ) : (
         <div style={{
