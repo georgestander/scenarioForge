@@ -12,6 +12,14 @@ interface ScenarioStatus {
   message: string;
 }
 
+interface ScenarioRow {
+  scenarioId: string;
+  title: string;
+  status: string;
+  stage: string;
+  message: string;
+}
+
 const STATUS_ICON: Record<string, { char: string; color: string }> = {
   running: { char: "\u21BB", color: "var(--forge-fire)" },
   passed: { char: "\u2713", color: "var(--forge-ok)" },
@@ -107,6 +115,40 @@ export const ExecuteClient = ({
     }
     return map;
   }, [scenarioStatuses, latestRun]);
+
+  const scenarioRows = useMemo<ScenarioRow[]>(() => {
+    return initialPack.scenarios.map((scenario, index) => {
+      const info = finalStatuses.get(scenario.id);
+      const fallbackRunning = isExecuting && executeEvents.length === 0 && index === 0;
+      const status = info?.status ?? (fallbackRunning ? "running" : "queued");
+      const stage = info?.stage ?? "run";
+      const message = info?.message ?? (status === "running" ? "Starting execution..." : "Queued");
+
+      return {
+        scenarioId: scenario.id,
+        title: scenario.title,
+        status,
+        stage,
+        message,
+      };
+    });
+  }, [initialPack.scenarios, finalStatuses, isExecuting, executeEvents.length]);
+
+  const activeScenarioId = useMemo(() => {
+    const running = scenarioRows.find((row) => row.status === "running");
+    if (running) {
+      return running.scenarioId;
+    }
+    if (isExecuting) {
+      return scenarioRows.find((row) => row.status === "queued")?.scenarioId ?? scenarioRows[0]?.scenarioId ?? null;
+    }
+    return null;
+  }, [scenarioRows, isExecuting]);
+
+  const activeScenario = useMemo(
+    () => scenarioRows.find((row) => row.scenarioId === activeScenarioId) ?? null,
+    [scenarioRows, activeScenarioId],
+  );
 
   // Auto-scroll stream log
   useEffect(() => {
@@ -257,6 +299,37 @@ export const ExecuteClient = ({
         )}
       </div>
 
+      {/* Active scenario focus panel */}
+      <section style={{
+        border: "1px solid var(--forge-line)",
+        borderRadius: "8px",
+        padding: "0.55rem 0.7rem",
+        background: "rgba(20, 26, 46, 0.6)",
+        display: "grid",
+        gap: "0.2rem",
+      }}>
+        <p style={{ margin: 0, fontSize: "0.72rem", color: "var(--forge-muted)" }}>
+          Active scenario
+        </p>
+        {activeScenario ? (
+          <>
+            <p style={{ margin: 0, fontSize: "0.86rem", color: "var(--forge-ink)", fontWeight: 600 }}>
+              {activeScenario.title}
+            </p>
+            <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+              {activeScenario.scenarioId} | {STAGE_LABEL[activeScenario.stage] ?? activeScenario.stage} | {activeScenario.status}
+            </p>
+            <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-muted)" }}>
+              {activeScenario.message}
+            </p>
+          </>
+        ) : (
+          <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-muted)" }}>
+            {done ? "No active scenario. Execution completed." : "Waiting for scenario updates..."}
+          </p>
+        )}
+      </section>
+
       {/* Side-by-side: checklist (left) + stream log (right) */}
       <div className="execute-panels">
 
@@ -269,23 +342,22 @@ export const ExecuteClient = ({
           gap: "0.25rem",
           alignContent: "start",
         }}>
-          {initialPack.scenarios.map((scenario) => {
-            const info = finalStatuses.get(scenario.id);
-            const st = info?.status ?? "queued";
+          {scenarioRows.map((row) => {
+            const st = row.status;
             const icon = STATUS_ICON[st];
-            const isRunning = st === "running";
+            const isRunning = activeScenarioId === row.scenarioId;
 
             return (
               <div
-                key={scenario.id}
+                key={row.scenarioId}
                 style={{
                   display: "flex",
                   alignItems: "flex-start",
                   gap: "0.5rem",
                   padding: "0.4rem 0.55rem",
                   borderRadius: "6px",
-                  border: "1px solid var(--forge-line)",
-                  background: isRunning ? "rgba(173, 90, 51, 0.08)" : "transparent",
+                  border: isRunning ? "1px solid var(--forge-fire)" : "1px solid var(--forge-line)",
+                  background: isRunning ? "rgba(173, 90, 51, 0.13)" : "transparent",
                 }}
               >
                 <span style={{
@@ -309,11 +381,11 @@ export const ExecuteClient = ({
                       whiteSpace: "normal",
                       overflowWrap: "anywhere",
                     }}>
-                      {scenario.title}
+                      {row.title}
                     </span>
-                    {info?.stage && st === "running" && (
+                    {row.stage && st === "running" && (
                       <span style={{ fontSize: "0.68rem", color: "var(--forge-fire)", flexShrink: 0 }}>
-                        {STAGE_LABEL[info.stage] ?? info.stage}
+                        {STAGE_LABEL[row.stage] ?? row.stage}
                       </span>
                     )}
                     {st !== "queued" && st !== "running" && (
@@ -322,7 +394,7 @@ export const ExecuteClient = ({
                       </span>
                     )}
                   </div>
-                  {info?.message && (
+                  {row.message && (
                     <p style={{
                       margin: 0,
                       fontSize: "0.72rem",
@@ -331,7 +403,7 @@ export const ExecuteClient = ({
                       whiteSpace: "normal",
                       overflowWrap: "anywhere",
                     }}>
-                      {info.message}
+                      {row.message}
                     </p>
                   )}
                 </div>
