@@ -46,7 +46,6 @@ No complex server-side orchestration beyond routing, auth, and persistence.
 - `docs/IMPLEMENTATION_PLAN.md`
 - `docs/EXECUTION_BACKLOG.md`
 - `AGENTS.md`
-- `.agent/POINTER.md`
 
 ## Local Development
 

@@ -23,7 +23,6 @@ Complex orchestration logic belongs in Codex turns, not in bridge code.
 On each session, read in this order:
 1. `README.md`
 2. `docs/IMPLEMENTATION_PLAN.md`
-3. `.agent/POINTER.md`
 
 ## Implementation Authority
 
@@ -31,8 +30,6 @@ If there is any conflict, authority order is:
 1. `docs/IMPLEMENTATION_PLAN.md`
 2. `docs/ARCHITECTURE.md`
 3. `docs/EXECUTION_BACKLOG.md`
-
-`.agent/POINTER.md` is an audit and handoff record, not source-of-truth spec.
 
 ## Non-Negotiables
 
@@ -81,7 +78,7 @@ Use `gpt-5.3-xhigh` for:
 
 ## Update Contract
 
-At the end of each meaningful build session, update `.agent/POINTER.md` with:
+At the end of each meaningful build session, update implementation docs as needed with:
 - decisions made,
 - current implementation status,
 - next actions.
