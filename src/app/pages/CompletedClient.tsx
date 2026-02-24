@@ -154,6 +154,45 @@ export const CompletedClient = ({
         </div>
       ) : null}
 
+      {reviewBoard ? (
+        <div style={{ display: "grid", gap: "0.45rem" }}>
+          <h3 style={{
+            margin: "0 0 0.1rem",
+            fontFamily: "'VT323', monospace",
+            fontSize: "1.2rem",
+            color: "var(--forge-ink)",
+            textAlign: "center",
+          }}>
+            Review Board
+          </h3>
+          <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.83rem" }}>
+            Coverage pass rate: <strong style={{ color: "var(--forge-ink)" }}>{reviewBoard.coverage.passRate}%</strong>
+          </p>
+          {reviewBoard.risks.length > 0 ? (
+            <ul style={{ margin: 0, paddingLeft: "1.1rem", display: "grid", gap: "0.2rem", color: "var(--forge-muted)", fontSize: "0.8rem" }}>
+              {reviewBoard.risks.map((risk) => (
+                <li key={`${risk.scenarioId}_${risk.reason}`}>
+                  <strong style={{ color: "var(--forge-ink)" }}>[{risk.severity}]</strong> {risk.scenarioId}: {risk.reason}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.8rem" }}>
+              No unresolved risks.
+            </p>
+          )}
+          {reviewBoard.recommendations.length > 0 ? (
+            <ul style={{ margin: 0, paddingLeft: "1.1rem", display: "grid", gap: "0.2rem", color: "var(--forge-muted)", fontSize: "0.8rem" }}>
+              {reviewBoard.recommendations.map((rec) => (
+                <li key={rec.id}>
+                  <strong style={{ color: "var(--forge-ink)" }}>[{rec.priority}]</strong> {rec.title}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Exported report */}
       {reviewReport ? (
         <pre style={{
