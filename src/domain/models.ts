@@ -6,6 +6,9 @@ export interface Project {
   name: string;
   repoUrl: string | null;
   defaultBranch: string;
+  activeManifestId: string | null;
+  activeScenarioPackId: string | null;
+  activeScenarioRunId: string | null;
   status: ProjectStatus;
   createdAt: string;
   updatedAt: string;

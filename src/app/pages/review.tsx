@@ -23,7 +23,17 @@ export const ReviewPage = ({ ctx, params }: AppRequestInfo) => {
     return redirect("/dashboard");
   }
 
-  const packs = listScenarioPacksForProject(principal.id, projectId);
+  const latestPacks = listScenarioPacksForProject(principal.id, projectId);
+  const packs =
+    project.activeScenarioPackId
+      ? (() => {
+          const activePack = latestPacks.find((pack) => pack.id === project.activeScenarioPackId);
+          if (!activePack) {
+            return latestPacks;
+          }
+          return [activePack, ...latestPacks.filter((pack) => pack.id !== activePack.id)];
+        })()
+      : latestPacks;
   if (packs.length === 0) {
     return redirect(`/projects/${projectId}/generate`);
   }

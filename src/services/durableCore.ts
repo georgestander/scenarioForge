@@ -62,6 +62,13 @@ const safeParseJson = <T>(raw: string, fallback: T): T => {
 
 const ensureTables = async (db: D1Database): Promise<void> => {
   const state = getState();
+  const ensureColumn = async (tableName: string, columnSql: string): Promise<void> => {
+    try {
+      await db.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnSql}`).run();
+    } catch {
+      // Ignore when column already exists.
+    }
+  };
 
   if (state.tablesReady) {
     return;
@@ -91,6 +98,9 @@ const ensureTables = async (db: D1Database): Promise<void> => {
         name TEXT NOT NULL,
         repo_url TEXT,
         default_branch TEXT NOT NULL,
+        active_manifest_id TEXT,
+        active_scenario_pack_id TEXT,
+        active_scenario_run_id TEXT,
         status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -98,6 +108,9 @@ const ensureTables = async (db: D1Database): Promise<void> => {
     `,
     )
     .run();
+  await ensureColumn("sf_projects", "active_manifest_id TEXT");
+  await ensureColumn("sf_projects", "active_scenario_pack_id TEXT");
+  await ensureColumn("sf_projects", "active_scenario_run_id TEXT");
 
   await db
     .prepare(
@@ -383,7 +396,18 @@ export const hydrateCoreStateFromD1 = async (
   const projectRows = await db
     .prepare(
       `
-      SELECT id, owner_id, name, repo_url, default_branch, status, created_at, updated_at
+      SELECT
+        id,
+        owner_id,
+        name,
+        repo_url,
+        default_branch,
+        active_manifest_id,
+        active_scenario_pack_id,
+        active_scenario_run_id,
+        status,
+        created_at,
+        updated_at
       FROM sf_projects
     `,
     )
@@ -637,6 +661,15 @@ export const hydrateCoreStateFromD1 = async (
       name: String(row.name),
       repoUrl: row.repo_url ? String(row.repo_url) : null,
       defaultBranch: String(row.default_branch),
+      activeManifestId: row.active_manifest_id
+        ? String(row.active_manifest_id)
+        : null,
+      activeScenarioPackId: row.active_scenario_pack_id
+        ? String(row.active_scenario_pack_id)
+        : null,
+      activeScenarioRunId: row.active_scenario_run_id
+        ? String(row.active_scenario_run_id)
+        : null,
       status: String(row.status) as Project["status"],
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
@@ -1324,13 +1357,26 @@ export const persistProjectToD1 = async (project: Project): Promise<void> => {
     .prepare(
       `
       INSERT INTO sf_projects (
-        id, owner_id, name, repo_url, default_branch, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id,
+        owner_id,
+        name,
+        repo_url,
+        default_branch,
+        active_manifest_id,
+        active_scenario_pack_id,
+        active_scenario_run_id,
+        status,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         owner_id = excluded.owner_id,
         name = excluded.name,
         repo_url = excluded.repo_url,
         default_branch = excluded.default_branch,
+        active_manifest_id = excluded.active_manifest_id,
+        active_scenario_pack_id = excluded.active_scenario_pack_id,
+        active_scenario_run_id = excluded.active_scenario_run_id,
         status = excluded.status,
         updated_at = excluded.updated_at
     `,
@@ -1341,6 +1387,9 @@ export const persistProjectToD1 = async (project: Project): Promise<void> => {
       project.name,
       project.repoUrl,
       project.defaultBranch,
+      project.activeManifestId,
+      project.activeScenarioPackId,
+      project.activeScenarioRunId,
       project.status,
       project.createdAt,
       project.updatedAt || nowIso(),

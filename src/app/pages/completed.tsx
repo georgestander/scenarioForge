@@ -33,17 +33,24 @@ export const CompletedPage = ({ ctx, params }: AppRequestInfo) => {
   if (runs.length === 0) {
     return redirect(`/projects/${projectId}/execute`);
   }
+  const activeRunIndex = project.activeScenarioRunId
+    ? runs.findIndex((run) => run.id === project.activeScenarioRunId)
+    : -1;
+  const orderedRuns =
+    activeRunIndex > 0
+      ? [runs[activeRunIndex], ...runs.filter((run) => run.id !== runs[activeRunIndex].id)]
+      : runs;
 
   const fixAttempts = listFixAttemptsForProject(principal.id, projectId);
   const pullRequests = listPullRequestsForProject(principal.id, projectId);
   const packs = listScenarioPacksForProject(principal.id, projectId);
-  const reviewBoard = buildReviewBoard(project, packs, runs, pullRequests);
+  const reviewBoard = buildReviewBoard(project, packs, orderedRuns, pullRequests);
 
   return (
     <CompletedClient
       projectId={projectId}
       project={project}
-      initialRuns={runs}
+      initialRuns={orderedRuns}
       initialFixAttempts={fixAttempts}
       initialPullRequests={pullRequests}
       initialReviewBoard={reviewBoard}

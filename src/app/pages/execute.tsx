@@ -32,9 +32,12 @@ export const ExecutePage = ({ ctx, params, request }: AppRequestInfo) => {
   if (requestedPackId && !packs.some((pack) => pack.id === requestedPackId)) {
     return redirect(`/projects/${projectId}/review`);
   }
+  const activePack = project.activeScenarioPackId
+    ? packs.find((pack) => pack.id === project.activeScenarioPackId) ?? null
+    : null;
   const initialPack = requestedPackId
     ? packs.find((pack) => pack.id === requestedPackId) ?? packs[0]
-    : packs[0];
+    : activePack ?? packs[0];
   if ((initialPack.coverage.uncoveredGaps?.length ?? 0) > 0) {
     return redirect(`/projects/${projectId}/review`);
   }

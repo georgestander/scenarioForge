@@ -3,6 +3,7 @@ import type { AppContext } from "@/worker";
 import { redirect } from "@/app/shared/api";
 import {
   getProjectByIdForOwner,
+  getSourceManifestById,
   getLatestSourceManifestForProject,
   listScenarioPacksForProject,
 } from "@/services/store";
@@ -24,12 +25,25 @@ export const GeneratePage = ({ ctx, params }: AppRequestInfo) => {
     return redirect("/dashboard");
   }
 
-  const manifest = getLatestSourceManifestForProject(principal.id, projectId);
+  const manifest =
+    (project.activeManifestId
+      ? getSourceManifestById(principal.id, project.activeManifestId)
+      : null) ?? getLatestSourceManifestForProject(principal.id, projectId);
   if (!manifest) {
     return redirect(`/projects/${projectId}/sources`);
   }
 
-  const packs = listScenarioPacksForProject(principal.id, projectId);
+  const latestPacks = listScenarioPacksForProject(principal.id, projectId);
+  const packs =
+    project.activeScenarioPackId
+      ? (() => {
+          const activePack = latestPacks.find((pack) => pack.id === project.activeScenarioPackId);
+          if (!activePack) {
+            return latestPacks;
+          }
+          return [activePack, ...latestPacks.filter((pack) => pack.id !== activePack.id)];
+        })()
+      : latestPacks;
 
   return (
     <GenerateClient

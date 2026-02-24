@@ -1172,9 +1172,18 @@ export default defineApp([
         return json({ error: "defaultBranch cannot be empty." }, 400);
       }
 
+      const repoChanged = repoUrl !== undefined && repoUrl !== project.repoUrl;
+      const branchChanged =
+        defaultBranch !== undefined && defaultBranch !== project.defaultBranch;
+
       if (name !== undefined) project.name = name;
       if (repoUrl !== undefined) project.repoUrl = repoUrl;
       if (defaultBranch !== undefined) project.defaultBranch = defaultBranch;
+      if (repoChanged || branchChanged) {
+        project.activeManifestId = null;
+        project.activeScenarioPackId = null;
+        project.activeScenarioRunId = null;
+      }
       project.updatedAt = new Date().toISOString();
 
       upsertProjectRecord(project);
@@ -1630,6 +1639,12 @@ export default defineApp([
 
         const manifest = createSourceManifest(manifestInput);
         await persistSourceManifestToD1(manifest);
+        project.activeManifestId = manifest.id;
+        project.activeScenarioPackId = null;
+        project.activeScenarioRunId = null;
+        project.updatedAt = new Date().toISOString();
+        upsertProjectRecord(project);
+        await persistProjectToD1(project);
 
         return json({
           manifest,
@@ -1662,8 +1677,9 @@ export default defineApp([
       }
 
       const payload = await parseJsonBody(request);
-      const manifestId =
+      const requestedManifestId =
         String(payload?.sourceManifestId ?? payload?.manifestId ?? "").trim();
+      const manifestId = requestedManifestId || project.activeManifestId || "";
       const manifest =
         (manifestId
           ? getSourceManifestById(principal.id, manifestId)
@@ -1695,11 +1711,15 @@ export default defineApp([
       const mode = modeValue === "update" ? "update" : "initial";
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const defaultPack =
+        (project.activeScenarioPackId
+          ? getScenarioPackById(principal.id, project.activeScenarioPackId)
+          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
       const existingPack =
         mode === "update"
           ? scenarioPackId
             ? getScenarioPackById(principal.id, scenarioPackId)
-            : listScenarioPacksForProject(principal.id, project.id)[0] ?? null
+            : defaultPack
           : null;
 
       const githubConnection = await ensureGitHubConnectionForPrincipal(principal.id);
@@ -1836,6 +1856,12 @@ export default defineApp([
 
         const pack = createScenarioPack(scenarioPackInput);
         await persistScenarioPackToD1(pack);
+        project.activeManifestId = manifest.id;
+        project.activeScenarioPackId = pack.id;
+        project.activeScenarioRunId = null;
+        project.updatedAt = new Date().toISOString();
+        upsertProjectRecord(project);
+        await persistProjectToD1(project);
         emit("persisted", {
           action: "generate",
           packId: pack.id,
@@ -1871,10 +1897,14 @@ export default defineApp([
 
       const payload = await parseJsonBody(request);
       const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const defaultPack =
+        (project.activeScenarioPackId
+          ? getScenarioPackById(principal.id, project.activeScenarioPackId)
+          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
       const pack =
         (scenarioPackId
           ? getScenarioPackById(principal.id, scenarioPackId)
-          : listScenarioPacksForProject(principal.id, project.id)[0]) ?? null;
+          : defaultPack) ?? null;
 
       if (!pack || pack.projectId !== project.id) {
         return json({ error: "Scenario pack not found." }, 404);
@@ -1939,6 +1969,11 @@ export default defineApp([
         );
         const run = createScenarioRun(runInput);
         await persistScenarioRunToD1(run);
+        project.activeScenarioPackId = pack.id;
+        project.activeScenarioRunId = run.id;
+        project.updatedAt = new Date().toISOString();
+        upsertProjectRecord(project);
+        await persistProjectToD1(project);
         for (const item of run.items) {
           emit("status", {
             action: "execute",
@@ -2070,8 +2105,9 @@ export default defineApp([
       }
 
       const payload = await parseJsonBody(request);
-      const manifestId =
+      const requestedManifestId =
         String(payload?.sourceManifestId ?? payload?.manifestId ?? "").trim();
+      const manifestId = requestedManifestId || project.activeManifestId || "";
       const manifest =
         (manifestId
           ? getSourceManifestById(principal.id, manifestId)
@@ -2103,11 +2139,15 @@ export default defineApp([
       const mode = modeValue === "update" ? "update" : "initial";
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const defaultPack =
+        (project.activeScenarioPackId
+          ? getScenarioPackById(principal.id, project.activeScenarioPackId)
+          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
       const existingPack =
         mode === "update"
           ? scenarioPackId
             ? getScenarioPackById(principal.id, scenarioPackId)
-            : listScenarioPacksForProject(principal.id, project.id)[0] ?? null
+            : defaultPack
           : null;
 
       const githubConnection = await ensureGitHubConnectionForPrincipal(principal.id);
@@ -2179,6 +2219,12 @@ export default defineApp([
 
       const pack = createScenarioPack(scenarioPackInput);
       await persistScenarioPackToD1(pack);
+      project.activeManifestId = manifest.id;
+      project.activeScenarioPackId = pack.id;
+      project.activeScenarioRunId = null;
+      project.updatedAt = new Date().toISOString();
+      upsertProjectRecord(project);
+      await persistProjectToD1(project);
       return json(
         {
           pack,
@@ -2209,10 +2255,14 @@ export default defineApp([
 
       const payload = await parseJsonBody(request);
       const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const defaultPack =
+        (project.activeScenarioPackId
+          ? getScenarioPackById(principal.id, project.activeScenarioPackId)
+          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
       const pack =
         (scenarioPackId
           ? getScenarioPackById(principal.id, scenarioPackId)
-          : listScenarioPacksForProject(principal.id, project.id)[0]) ?? null;
+          : defaultPack) ?? null;
 
       if (!pack || pack.projectId !== project.id) {
         return json({ error: "Scenario pack not found." }, 404);
@@ -2262,6 +2312,11 @@ export default defineApp([
       );
       const run = createScenarioRun(runInput);
       await persistScenarioRunToD1(run);
+      project.activeScenarioPackId = pack.id;
+      project.activeScenarioRunId = run.id;
+      project.updatedAt = new Date().toISOString();
+      upsertProjectRecord(project);
+      await persistProjectToD1(project);
 
       let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
       if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
@@ -2329,7 +2384,8 @@ export default defineApp([
 
       if (request.method === "POST") {
         const payload = await parseJsonBody(request);
-        const manifestId = String(payload?.manifestId ?? "").trim();
+        const requestedManifestId = String(payload?.manifestId ?? "").trim();
+        const manifestId = requestedManifestId || project.activeManifestId || "";
         const manifest =
           (manifestId
             ? getSourceManifestById(principal.id, manifestId)
@@ -2427,6 +2483,12 @@ export default defineApp([
 
         const pack = createScenarioPack(scenarioPackInput);
         await persistScenarioPackToD1(pack);
+        project.activeManifestId = manifest.id;
+        project.activeScenarioPackId = pack.id;
+        project.activeScenarioRunId = null;
+        project.updatedAt = new Date().toISOString();
+        upsertProjectRecord(project);
+        await persistProjectToD1(project);
         return json({ pack }, 201);
       }
 
@@ -2515,7 +2577,12 @@ export default defineApp([
         const payload = await parseJsonBody(request);
         const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
         const scenarioIds = readStringArray(payload?.scenarioIds);
-        const pack = getScenarioPackById(principal.id, scenarioPackId);
+        const pack =
+          (scenarioPackId
+            ? getScenarioPackById(principal.id, scenarioPackId)
+            : project.activeScenarioPackId
+              ? getScenarioPackById(principal.id, project.activeScenarioPackId)
+              : null) ?? null;
 
         if (!pack || pack.projectId !== project.id) {
           return json({ error: "Scenario pack not found." }, 404);
@@ -2529,6 +2596,11 @@ export default defineApp([
         });
         const run = createScenarioRun(runInput);
         await persistScenarioRunToD1(run);
+        project.activeScenarioPackId = pack.id;
+        project.activeScenarioRunId = run.id;
+        project.updatedAt = new Date().toISOString();
+        upsertProjectRecord(project);
+        await persistProjectToD1(project);
 
         return json({ run }, 201);
       }
