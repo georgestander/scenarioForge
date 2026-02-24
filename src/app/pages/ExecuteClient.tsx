@@ -86,6 +86,16 @@ const mergeEvents = (
     .slice(-480);
 };
 
+const normalizeScenarioIds = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const ids = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry) => entry.length > 0);
+  return [...new Set(ids)];
+};
+
 export const ExecuteClient = ({
   projectId,
   project: _project,
@@ -115,6 +125,41 @@ export const ExecuteClient = ({
   const [traceMode, setTraceMode] = useState(false);
   const pollInFlightRef = useRef(false);
   const eventsCursorRef = useRef(0);
+  const appliedSelectionFromJobRef = useRef<string | null>(null);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
+  const allScenarioIds = useMemo(
+    () => initialPack.scenarios.map((scenario) => scenario.id),
+    [initialPack.scenarios],
+  );
+  const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>(
+    allScenarioIds,
+  );
+
+  useEffect(() => {
+    setSelectedScenarioIds(allScenarioIds);
+  }, [allScenarioIds]);
+
+  useEffect(() => {
+    if (!currentJob) {
+      appliedSelectionFromJobRef.current = null;
+      return;
+    }
+    if (appliedSelectionFromJobRef.current === currentJob.id) {
+      return;
+    }
+    appliedSelectionFromJobRef.current = currentJob.id;
+    const rawScenarioIds = normalizeScenarioIds(
+      (currentJob.constraints as Record<string, unknown> | null)?.scenarioIds,
+    );
+    if (rawScenarioIds.length === 0) {
+      return;
+    }
+    const allowed = new Set(allScenarioIds);
+    const bounded = rawScenarioIds.filter((scenarioId) => allowed.has(scenarioId));
+    if (bounded.length > 0) {
+      setSelectedScenarioIds(bounded);
+    }
+  }, [allScenarioIds, currentJob?.constraints, currentJob?.id]);
 
   useEffect(() => {
     eventsCursorRef.current = eventsCursor;
@@ -156,9 +201,8 @@ export const ExecuteClient = ({
           `/api/jobs/${jobId}/events?cursor=${cursor}&limit=120`,
         );
         if (!eventsResponse.ok) {
-          throw new Error(
-            await readError(eventsResponse, "Failed to load execution job events."),
-          );
+          // Keep scenario board and job summary visible even if event polling is flaky.
+          return detail.job;
         }
 
         const eventsPayload =
@@ -277,6 +321,15 @@ export const ExecuteClient = ({
       return;
     }
 
+    const selectedSet = new Set(selectedScenarioIds);
+    const scenarioIdsToRun = allScenarioIds.filter((scenarioId) =>
+      selectedSet.has(scenarioId),
+    );
+    if (scenarioIdsToRun.length === 0) {
+      setStatusMessage("Select at least one scenario before running execution.");
+      return;
+    }
+
     const mode = options?.mode ?? executionMode;
     const retryStrategy = options?.retryStrategy ?? "full";
     const retryFromRunId = options?.retryFromRunId ?? "";
@@ -293,13 +346,14 @@ export const ExecuteClient = ({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            scenarioPackId: initialPack.id,
-            executionMode: mode,
-            userInstruction: executeInstruction.trim(),
-            retryStrategy,
-            retryFromRunId: retryFromRunId || undefined,
-          }),
+              body: JSON.stringify({
+                scenarioPackId: initialPack.id,
+                executionMode: mode,
+                userInstruction: executeInstruction.trim(),
+                scenarioIds: scenarioIdsToRun,
+                retryStrategy,
+                retryFromRunId: retryFromRunId || undefined,
+              }),
         },
       );
 
@@ -351,6 +405,16 @@ export const ExecuteClient = ({
     }
     return `${trimmed.slice(0, 237)}...`;
   }, [statusMessage]);
+  const jobErrorMessage = useMemo(() => {
+    const raw = currentJob?.error?.trim() ?? "";
+    if (!raw) {
+      return "";
+    }
+    if (raw.length <= 280) {
+      return raw;
+    }
+    return `${raw.slice(0, 277)}...`;
+  }, [currentJob?.error]);
 
   const filteredEvents = useMemo(
     () =>
@@ -530,6 +594,37 @@ export const ExecuteClient = ({
   }, [activeScenarioId, isExecuting, latestScenarioEvent, scenarioRows]);
 
   const panelHeight = "calc(100vh - 300px)";
+  const selectedScenarioCount = useMemo(() => {
+    const selected = new Set(selectedScenarioIds);
+    return allScenarioIds.filter((scenarioId) => selected.has(scenarioId)).length;
+  }, [allScenarioIds, selectedScenarioIds]);
+  const allSelected =
+    allScenarioIds.length > 0 && selectedScenarioCount === allScenarioIds.length;
+  const hasPartialSelection =
+    selectedScenarioCount > 0 && selectedScenarioCount < allScenarioIds.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = hasPartialSelection;
+    }
+  }, [hasPartialSelection]);
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedScenarioIds([]);
+      return;
+    }
+    setSelectedScenarioIds(allScenarioIds);
+  };
+
+  const toggleScenarioSelection = (scenarioId: string) => {
+    setSelectedScenarioIds((current) => {
+      if (current.includes(scenarioId)) {
+        return current.filter((entry) => entry !== scenarioId);
+      }
+      return [...current, scenarioId];
+    });
+  };
 
   return (
     <section
@@ -573,6 +668,23 @@ export const ExecuteClient = ({
           }}
         >
           {visibleStatusMessage}
+        </p>
+      ) : null}
+
+      {jobErrorMessage ? (
+        <p
+          style={{
+            textAlign: "center",
+            margin: 0,
+            fontSize: "0.82rem",
+            color: "#ffb2ad",
+            border: "1px solid rgba(161, 71, 69, 0.45)",
+            borderRadius: "7px",
+            padding: "0.45rem 0.6rem",
+            background: "rgba(161, 71, 69, 0.15)",
+          }}
+        >
+          {jobErrorMessage}
         </p>
       ) : null}
 
@@ -668,6 +780,39 @@ export const ExecuteClient = ({
           padding: "0.55rem 0.65rem",
         }}
       >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "0.7rem",
+            flexWrap: "wrap",
+            fontSize: "0.78rem",
+            color: "var(--forge-muted)",
+          }}
+        >
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              cursor: isLaunching || isExecuting ? "not-allowed" : "pointer",
+            }}
+          >
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleSelectAll}
+              disabled={isLaunching || isExecuting}
+            />
+            <span>Select all scenarios</span>
+          </label>
+          <span>
+            {selectedScenarioCount}/{allScenarioIds.length} selected
+          </span>
+        </div>
+
         <input
           value={executeInstruction}
           onChange={(event) => setExecuteInstruction(event.target.value)}
@@ -687,7 +832,7 @@ export const ExecuteClient = ({
           <button
             type="button"
             onClick={() => void handleExecute({ mode: "full", retryStrategy: "full" })}
-            disabled={isLaunching || isExecuting}
+            disabled={isLaunching || isExecuting || selectedScenarioCount === 0}
             style={{ whiteSpace: "nowrap" }}
           >
             {isLaunching ? "Queueing..." : "Run Full Loop"}
@@ -701,7 +846,12 @@ export const ExecuteClient = ({
                 retryFromRunId: latestRun?.id ?? "",
               })
             }
-            disabled={isLaunching || isExecuting || !hasFailedScenarios}
+            disabled={
+              isLaunching ||
+              isExecuting ||
+              !hasFailedScenarios ||
+              selectedScenarioCount === 0
+            }
             style={{
               whiteSpace: "nowrap",
               borderColor: "#3f557f",
@@ -770,6 +920,7 @@ export const ExecuteClient = ({
         {scenarioRows.map((row) => {
           const state = row.status;
           const isRunning = activeScenarioId === row.scenarioId;
+          const isSelected = selectedScenarioIds.includes(row.scenarioId);
           const displayStatus = isRunning && state === "queued" ? "running" : state;
           const icon = STATUS_ICON[displayStatus];
           const detailMessage =
@@ -794,6 +945,9 @@ export const ExecuteClient = ({
                   ? "1px solid var(--forge-fire)"
                   : "1px solid var(--forge-line)",
                 background:
+                  !isSelected && !isRunning
+                    ? "rgba(32, 40, 62, 0.25)"
+                    :
                   row.status === "passed"
                     ? "rgba(38, 91, 58, 0.2)"
                     : row.status === "failed"
@@ -805,6 +959,15 @@ export const ExecuteClient = ({
                           : "transparent",
               }}
             >
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={() => toggleScenarioSelection(row.scenarioId)}
+                disabled={isLaunching || isExecuting}
+                style={{ marginTop: "0.15rem", flexShrink: 0 }}
+                aria-label={`Select ${row.scenarioId}`}
+              />
+
               <span
                 style={{
                   flexShrink: 0,

@@ -187,9 +187,29 @@ export const DashboardClient = ({
 
     setDeletingProjectId(projectId);
     try {
-      const response = await fetch(`/api/projects/${projectId}/scenario-runs/clear`, {
-        method: "POST",
-      });
+      const runClear = async (force = false) =>
+        fetch(
+          `/api/projects/${projectId}/scenario-runs/clear${force ? "?force=1" : ""}`,
+          { method: "POST" },
+        );
+      let response = await runClear(false);
+      if (response.status === 409) {
+        const payload = (await response.json()) as {
+          error?: string;
+          activeJobs?: Array<{ id: string }>;
+        };
+        const activeCount = payload.activeJobs?.length ?? 0;
+        const forceDelete = window.confirm(
+          activeCount > 0
+            ? `${activeCount} active run(s) are still in progress for "${projectName}". Stop them and delete all run history now?`
+            : `Run history for "${projectName}" is currently locked. Force stop and delete now?`,
+        );
+        if (!forceDelete) {
+          setStatusMessage(payload.error ?? "Delete canceled.");
+          return;
+        }
+        response = await runClear(true);
+      }
       if (!response.ok) {
         setStatusMessage(await readError(response, "Failed to delete project run history."));
         return;
@@ -508,7 +528,7 @@ export const DashboardClient = ({
                       </div>
                       <div style={{ display: "grid", gap: "0.35rem" }}>
                         <a
-                          href={`/projects/${project.id}/connect`}
+                          href={project.openHref}
                           style={{
                             display: "inline-block",
                             padding: "0.38rem 0.65rem",
@@ -527,7 +547,7 @@ export const DashboardClient = ({
                         <button
                           type="button"
                           onClick={() => void handleDeleteProjectRuns(project.id, project.name)}
-                          disabled={Boolean(deletingProjectId) || hasActiveRun}
+                          disabled={Boolean(deletingProjectId)}
                           style={{
                             padding: "0.3rem 0.52rem",
                             borderRadius: "7px",
@@ -540,14 +560,14 @@ export const DashboardClient = ({
                           }}
                           title={
                             hasActiveRun
-                              ? "Wait for active run to finish before clearing history."
+                              ? "Stop active runs for this project and delete its run history."
                               : "Delete previous runs for this project."
                           }
                         >
                           {deletingProjectId === project.id
                             ? "Deleting..."
                             : hasActiveRun
-                              ? "Run active"
+                              ? "Stop + Delete"
                               : "Delete runs"}
                         </button>
                       </div>

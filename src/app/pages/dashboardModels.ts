@@ -11,6 +11,7 @@ export interface DashboardProjectSummary {
   name: string;
   repoUrl: string | null;
   defaultBranch: string;
+  openHref: string;
   runCount: number;
   latestRunOutcome: DashboardLatestRunOutcome;
   lastActivityAt: string;

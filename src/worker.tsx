@@ -63,7 +63,6 @@ import {
   getGitHubInstallUrl,
   issueGitHubConnectState,
 } from "@/services/githubApp";
-import { isCodeFirstGenerationEnabled } from "@/services/featureFlags";
 import { evaluateProjectPrReadiness } from "@/services/prReadiness";
 import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
@@ -302,6 +301,11 @@ const summarizeScenarioRunOutcome = (
   return `Blocked: ${observed || "execution could not continue in this environment."}`;
 };
 
+const hasPlaceholderObservedText = (value: string): boolean =>
+  /\b(queued after|queued behind|waiting for previous|pending previous|pending|not attempted|skipped due to previous|deferred after|placeholder|not in user subset|n\/a|not applicable)\b/i.test(
+    value,
+  );
+
 const normalizeRunItemStatus = (value: unknown): "passed" | "failed" => {
   const status = String(value ?? "")
     .trim()
@@ -496,18 +500,21 @@ const buildScenarioRunInputFromCodexOutput = (
     const status = normalizeRunItemStatus(item.status);
     const observed = String(item.observed ?? "").trim() || "No observed output captured.";
     const expected = String(item.expected ?? "").trim() || scenario.passCriteria;
+    const normalizedStatus = hasPlaceholderObservedText(observed) ? "failed" : status;
+    const normalizedFailureHypothesis = hasPlaceholderObservedText(observed)
+      ? "Codex output indicates this scenario was not fully executed; marked failed for explicit rerun."
+      : item.failureHypothesis === null
+        ? null
+        : String(item.failureHypothesis ?? "").trim() || null;
 
     parsedItemMap.set(scenarioId, {
       scenarioId,
-      status,
+      status: normalizedStatus,
       startedAt: timestamp,
       completedAt: timestamp,
       observed,
       expected,
-      failureHypothesis:
-        item.failureHypothesis === null
-          ? null
-          : String(item.failureHypothesis ?? "").trim() || null,
+      failureHypothesis: normalizedFailureHypothesis,
       artifacts: normalizeArtifacts(item.artifacts),
     });
   });
@@ -746,10 +753,15 @@ interface PersistExecutionJobEventInput {
 const persistExecutionJobEvent = async (
   input: PersistExecutionJobEventInput,
 ) => {
+  const liveJob = getExecutionJobById(input.job.ownerId, input.job.id);
+  if (!liveJob) {
+    return null;
+  }
+
   const record = createExecutionJobEvent({
-    jobId: input.job.id,
-    ownerId: input.job.ownerId,
-    projectId: input.job.projectId,
+    jobId: liveJob.id,
+    ownerId: liveJob.ownerId,
+    projectId: liveJob.projectId,
     event: input.event,
     phase: input.phase,
     status: normalizeExecutionJobEventStatus(input.status),
@@ -1157,6 +1169,11 @@ const runExecuteJobInBackground = async (
     );
 
     await codexEventWrite;
+    const liveJobAfterCodex = getExecutionJobById(input.ownerId, input.jobId);
+    if (!liveJobAfterCodex || liveJobAfterCodex.status !== "running") {
+      // Job was canceled/cleared while Codex was executing; stop without repopulating history.
+      return;
+    }
 
     const runInput = buildScenarioRunInputFromCodexOutput(
       input.ownerId,
@@ -2414,7 +2431,7 @@ export default defineApp([
 
         const allSources = listSourcesForProject(principal.id, project.id);
         const codeBaseline = getLatestCodeBaselineForProject(principal.id, project.id);
-        if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+        if (!codeBaseline) {
           return json(
             { error: "Code baseline is required. Scan sources to build the baseline first." },
             400,
@@ -2525,7 +2542,7 @@ export default defineApp([
       const codeBaseline =
         getCodeBaselineById(principal.id, manifest.codeBaselineId) ??
         getLatestCodeBaselineForProject(principal.id, project.id);
-      if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+      if (!codeBaseline) {
         return json(
           { error: "Code baseline is required for generation. Re-scan sources first." },
           400,
@@ -2816,11 +2833,7 @@ export default defineApp([
         ownerId: principal.id,
         jobId: job.id,
       });
-      if (cf && typeof cf.waitUntil === "function") {
-        cf.waitUntil(runPromise);
-      } else {
-        void runPromise;
-      }
+      cf.waitUntil(runPromise);
 
       return json(
         {
@@ -2884,7 +2897,7 @@ export default defineApp([
       const codeBaseline =
         getCodeBaselineById(principal.id, manifest.codeBaselineId) ??
         getLatestCodeBaselineForProject(principal.id, project.id);
-      if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+      if (!codeBaseline) {
         return json(
           { error: "Code baseline is required for generation. Re-scan sources first." },
           400,
@@ -3158,7 +3171,11 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
-      await expireStaleExecutionJobs(principal.id);
+      try {
+        await expireStaleExecutionJobs(principal.id);
+      } catch {
+        // Non-fatal: stale-job cleanup should not break active polling paths.
+      }
       const projects = listProjectsForOwner(principal.id);
       const projectsById = new Map(projects.map((project) => [project.id, project]));
 
@@ -3199,7 +3216,11 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
-      await expireStaleExecutionJobs(principal.id);
+      try {
+        await expireStaleExecutionJobs(principal.id);
+      } catch {
+        // Non-fatal: stale-job cleanup should not break event polling.
+      }
       const jobId = String(params?.jobId ?? "").trim();
       const job = getExecutionJobById(principal.id, jobId);
       if (!job) {
@@ -3237,7 +3258,11 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
-      await expireStaleExecutionJobs(principal.id);
+      try {
+        await expireStaleExecutionJobs(principal.id);
+      } catch {
+        // Non-fatal: stale-job cleanup should not break detail reads.
+      }
       const jobId = String(params?.jobId ?? "").trim();
       const job = getExecutionJobById(principal.id, jobId);
       if (!job) {
@@ -3296,7 +3321,7 @@ export default defineApp([
         const codeBaseline =
           getCodeBaselineById(principal.id, manifest.codeBaselineId) ??
           getLatestCodeBaselineForProject(principal.id, project.id);
-        if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+        if (!codeBaseline) {
           return json(
             { error: "Code baseline is required for generation. Re-scan sources first." },
             400,
@@ -3488,15 +3513,52 @@ export default defineApp([
         return json({ error: "Project not found." }, 404);
       }
 
+      const forceParam = new URL(request.url).searchParams.get("force");
+      const force =
+        forceParam === "1" ||
+        forceParam?.toLowerCase() === "true" ||
+        forceParam?.toLowerCase() === "yes";
       const activeJobs = listActiveExecutionJobsForProject(principal.id, project.id);
-      if (activeJobs.length > 0) {
+      if (activeJobs.length > 0 && !force) {
         return json(
           {
             error:
               "Cannot delete run history while execution is active. Wait for active runs to finish first.",
+            activeJobs: activeJobs.map((job) => ({
+              id: job.id,
+              status: job.status,
+              updatedAt: job.updatedAt,
+            })),
           },
           409,
         );
+      }
+      if (activeJobs.length > 0 && force) {
+        const canceledAt = new Date().toISOString();
+        for (const activeJob of activeJobs) {
+          const next = await updateExecutionJobAndPersist(
+            principal.id,
+            activeJob.id,
+            (draft) => {
+              draft.status = "failed";
+              draft.completedAt = canceledAt;
+              draft.error = "Execution canceled by user while clearing project run history.";
+            },
+          );
+          if (next) {
+            await persistExecutionJobEvent({
+              job: next,
+              event: "error",
+              phase: "execute.cancelled",
+              status: "failed",
+              message: "Execution canceled by user while clearing project run history.",
+              payload: {
+                error: "Execution canceled by user while clearing project run history.",
+              },
+              timestamp: canceledAt,
+            });
+          }
+        }
       }
 
       const deletedInMemory = deleteProjectExecutionHistory(principal.id, project.id);

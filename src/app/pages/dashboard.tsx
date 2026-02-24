@@ -1,6 +1,6 @@
 import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
-import type { ScenarioRun } from "@/domain/models";
+import type { ExecutionJob, ScenarioRun } from "@/domain/models";
 import { redirect } from "@/app/shared/api";
 import {
   listActiveExecutionJobsForOwner,
@@ -87,12 +87,51 @@ const deriveLatestRunOutcome = (run: ScenarioRun): DashboardLatestRunOutcome => 
   return "passed";
 };
 
-const buildDashboardGroups = (ownerId: string): DashboardRepoGroup[] => {
+const buildProjectOpenHref = (
+  project: {
+    id: string;
+    repoUrl: string | null;
+    activeManifestId: string | null;
+    activeScenarioPackId: string | null;
+    activeScenarioRunId: string | null;
+  },
+  activeJob: ExecutionJob | null,
+): string => {
+  if (activeJob) {
+    return `/projects/${project.id}/execute?jobId=${encodeURIComponent(activeJob.id)}`;
+  }
+  if (project.activeScenarioRunId) {
+    return `/projects/${project.id}/completed`;
+  }
+  if (project.activeScenarioPackId) {
+    return `/projects/${project.id}/review?packId=${encodeURIComponent(project.activeScenarioPackId)}`;
+  }
+  if (project.activeManifestId) {
+    return `/projects/${project.id}/generate`;
+  }
+  if (project.repoUrl) {
+    return `/projects/${project.id}/sources`;
+  }
+  return `/projects/${project.id}/connect`;
+};
+
+const buildDashboardGroups = (
+  ownerId: string,
+  activeJobs: ExecutionJob[],
+): DashboardRepoGroup[] => {
   const projects = listProjectsForOwner(ownerId);
+  const activeJobsByProject = new Map(
+    activeJobs
+      .slice()
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((job) => [job.projectId, job]),
+  );
   const projectSummaries: DashboardProjectSummary[] = projects.map((project) => {
     const runs = listScenarioRunsForProject(ownerId, project.id);
     const latestRun = runs[0] ?? null;
+    const activeJob = activeJobsByProject.get(project.id) ?? null;
     const lastActivityAt =
+      activeJob?.updatedAt ??
       latestRun?.completedAt ??
       latestRun?.updatedAt ??
       latestRun?.startedAt ??
@@ -103,8 +142,15 @@ const buildDashboardGroups = (ownerId: string): DashboardRepoGroup[] => {
       name: project.name,
       repoUrl: project.repoUrl,
       defaultBranch: project.defaultBranch,
+      openHref: buildProjectOpenHref(project, activeJob),
       runCount: runs.length,
-      latestRunOutcome: latestRun ? deriveLatestRunOutcome(latestRun) : "idle",
+      latestRunOutcome: activeJob
+        ? activeJob.status === "completed"
+          ? "passed"
+          : activeJob.status
+        : latestRun
+          ? deriveLatestRunOutcome(latestRun)
+          : "idle",
       lastActivityAt,
       lastActivityLabel:
         runs.length > 0 ? formatUtcTimestamp(lastActivityAt) : "Not run yet",
@@ -160,11 +206,14 @@ const buildDashboardGroups = (ownerId: string): DashboardRepoGroup[] => {
   return groups;
 };
 
-const buildActiveRunSummaries = (ownerId: string): DashboardActiveRunSummary[] => {
+const buildActiveRunSummaries = (
+  ownerId: string,
+  activeJobs: ExecutionJob[],
+): DashboardActiveRunSummary[] => {
   const projects = listProjectsForOwner(ownerId);
   const projectsById = new Map(projects.map((project) => [project.id, project]));
 
-  return listActiveExecutionJobsForOwner(ownerId)
+  return activeJobs
     .map((job) => {
       const project = projectsById.get(job.projectId);
       if (!project) {
@@ -194,8 +243,9 @@ export const DashboardPage = ({ ctx }: AppRequestInfo) => {
     return redirect("/");
   }
 
-  const repoGroups = buildDashboardGroups(principal.id);
-  const activeRuns = buildActiveRunSummaries(principal.id);
+  const activeJobs = listActiveExecutionJobsForOwner(principal.id);
+  const repoGroups = buildDashboardGroups(principal.id, activeJobs);
+  const activeRuns = buildActiveRunSummaries(principal.id, activeJobs);
 
   return (
     <DashboardClient

@@ -44,7 +44,6 @@ export interface CodexExecuteBridgeStreamEvent {
 interface ExecuteRunItemQuality {
   scenarioId: string;
   status: "passed" | "failed";
-  observed: string;
 }
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/g, "");
@@ -461,40 +460,35 @@ const readRunItemsForQuality = (parsedOutput: unknown): ExecuteRunItemQuality[] 
   const outputContainer = getExecutionOutputContainer(parsedOutput);
   const runRecord = isRecord(outputContainer.run) ? outputContainer.run : null;
   if (!runRecord) {
-    throw new Error("Codex execute output is missing run details.");
+    return [];
   }
 
   const rawItems = Array.isArray(runRecord.items) ? runRecord.items : null;
   if (!rawItems || rawItems.length === 0) {
-    throw new Error("Codex execute output did not include run.items.");
+    return [];
   }
 
-  return rawItems.map((item, index) => {
+  return rawItems
+    .map((item) => {
     if (!isRecord(item)) {
-      throw new Error(`Codex execute output has invalid run item at index ${index}.`);
+      return null;
     }
 
     const scenarioId = String(item.scenarioId ?? "").trim();
     const statusRaw = String(item.status ?? "").trim().toLowerCase();
-    const observed = String(item.observed ?? "").trim();
     if (!scenarioId) {
-      throw new Error(`Codex execute output has missing scenarioId at index ${index}.`);
+      return null;
     }
     if (statusRaw !== "passed" && statusRaw !== "failed") {
-      throw new Error(
-        `Codex execute output has invalid status '${statusRaw || "<empty>"}' at index ${index}.`,
-      );
-    }
-    if (!observed) {
-      throw new Error(`Codex execute output has empty observed detail for scenario '${scenarioId}'.`);
+      return null;
     }
 
     return {
       scenarioId,
       status: statusRaw as "passed" | "failed",
-      observed,
     };
-  });
+    })
+    .filter((item): item is ExecuteRunItemQuality => Boolean(item));
 };
 
 const evaluateExecuteOutputQuality = (
@@ -514,27 +508,6 @@ const evaluateExecuteOutputQuality = (
       return `Run items contain duplicate scenarioId '${item.scenarioId}'.`;
     }
     seen.add(item.scenarioId);
-  }
-
-  if (seen.size !== uniqueScenarioIds.size) {
-    return `Run items covered ${seen.size} scenarios but expected ${uniqueScenarioIds.size}.`;
-  }
-
-  const placeholderPattern =
-    /\b(queued after|queued behind|waiting for previous|pending previous|pending|not attempted|skipped due to previous|deferred after|placeholder|not in user subset|n\/a|not applicable)\b/i;
-  const placeholderAnyCount = items.filter((item) =>
-    placeholderPattern.test(item.observed) || placeholderPattern.test(item.scenarioId),
-  ).length;
-
-  if (placeholderAnyCount > 0) {
-    return "Run output contains placeholder/pending/not-in-subset content instead of real scenario execution results.";
-  }
-
-  const blockedItems = items.filter(
-    (item) => String(item.status).trim().toLowerCase() === "blocked",
-  );
-  if (blockedItems.length > 0) {
-    return "Run output contained blocked statuses. ScenarioForge execute requires terminal statuses of passed or failed only.";
   }
 
   return null;
