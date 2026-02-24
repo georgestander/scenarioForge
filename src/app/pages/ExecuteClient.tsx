@@ -1,10 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FixAttempt, Project, PullRequestRecord, ScenarioPack, ScenarioRun } from "@/domain/models";
+import type {
+  FixAttempt,
+  Project,
+  ProjectPrReadiness,
+  PullRequestRecord,
+  ScenarioPack,
+  ScenarioRun,
+} from "@/domain/models";
 import { useSession } from "@/app/shared/SessionContext";
 import { useStreamAction } from "@/app/shared/useStreamAction";
-import type { ScenarioActionExecutePayload } from "@/app/shared/types";
+import type {
+  ProjectPrReadinessPayload,
+  ScenarioActionExecutePayload,
+} from "@/app/shared/types";
 
 interface ScenarioStatus {
   status: string;
@@ -52,6 +62,9 @@ export const ExecuteClient = ({
   const [pullRequests, setPullRequests] = useState<PullRequestRecord[]>([]);
   const logRef = useRef<HTMLUListElement>(null);
   const [traceMode, setTraceMode] = useState(false);
+  const [executionMode, setExecutionMode] = useState<"run" | "fix" | "pr" | "full">("full");
+  const [prReadiness, setPrReadiness] = useState<ProjectPrReadiness | null>(null);
+  const [isCheckingPrReadiness, setIsCheckingPrReadiness] = useState(false);
 
   const executeEvents = useMemo(
     () => codexStreamEvents.filter((e) => e.action === "execute"),
@@ -64,6 +77,52 @@ export const ExecuteClient = ({
     }
     setTraceMode(new URLSearchParams(window.location.search).get("trace") === "1");
   }, []);
+
+  const loadPrReadiness = async () => {
+    const response = await fetch(`/api/projects/${projectId}/pr-readiness`);
+    if (!response.ok) {
+      return;
+    }
+    const payload = (await response.json()) as ProjectPrReadinessPayload;
+    setPrReadiness(payload.readiness ?? null);
+  };
+
+  const handleCheckPrReadiness = async () => {
+    if (isCheckingPrReadiness) return;
+    setIsCheckingPrReadiness(true);
+    setStatusMessage("Checking PR automation readiness...");
+    try {
+      const response = await fetch(`/api/projects/${projectId}/pr-readiness`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        setStatusMessage(`Failed to check PR readiness. ${text}`);
+        return;
+      }
+      const payload = (await response.json()) as ProjectPrReadinessPayload;
+      setPrReadiness(payload.readiness ?? null);
+      if (payload.readiness?.status === "ready") {
+        setStatusMessage("PR automation is ready.");
+      } else {
+        setStatusMessage("PR automation needs attention before full execute mode.");
+      }
+    } finally {
+      setIsCheckingPrReadiness(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadPrReadiness();
+  }, [projectId]);
+
+  const fullModeReady = prReadiness?.status === "ready";
+
+  useEffect(() => {
+    if (!fullModeReady && executionMode === "full") {
+      setExecutionMode("fix");
+    }
+  }, [fullModeReady, executionMode]);
 
   // Filter out raw protocol noise (e.g. "codex/event/agent_message_content_delta")
   const filteredEvents = useMemo(
@@ -162,6 +221,10 @@ export const ExecuteClient = ({
 
   const handleExecute = async () => {
     if (isExecuting) return;
+    if (executionMode === "full" && !fullModeReady) {
+      setStatusMessage("Full mode is blocked until PR automation readiness is green.");
+      return;
+    }
     setIsExecuting(true);
     clearStreamEvents();
     setStatusMessage("Executing scenario loop through Codex app-server...");
@@ -171,7 +234,7 @@ export const ExecuteClient = ({
         `/api/projects/${projectId}/actions/execute/stream`,
         {
           scenarioPackId: initialPack.id,
-          executionMode: "full",
+          executionMode,
           userInstruction: executeInstruction.trim(),
         },
         "Failed to execute scenario loop.",
@@ -260,10 +323,73 @@ export const ExecuteClient = ({
         </p>
       )}
 
+      <div
+        style={{
+          border: "1px solid var(--forge-line)",
+          borderRadius: "8px",
+          background: "rgba(18, 24, 43, 0.6)",
+          padding: "0.55rem 0.65rem",
+          display: "grid",
+          gap: "0.35rem",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
+          <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
+            PR automation readiness
+          </strong>
+          <span
+            style={{
+              fontSize: "0.75rem",
+              color: fullModeReady ? "var(--forge-ok)" : "var(--forge-fire)",
+              fontWeight: 600,
+            }}
+          >
+            {prReadiness ? (fullModeReady ? "ready" : "needs attention") : "not checked"}
+          </span>
+        </div>
+        {prReadiness?.reasons.length ? (
+          <ul style={{ margin: 0, paddingLeft: "1rem", color: "var(--forge-muted)", fontSize: "0.75rem", display: "grid", gap: "0.2rem" }}>
+            {prReadiness.reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        ) : null}
+        {prReadiness?.recommendedActions.length ? (
+          <ul style={{ margin: 0, paddingLeft: "1rem", color: "var(--forge-muted)", fontSize: "0.74rem", display: "grid", gap: "0.2rem" }}>
+            {prReadiness.recommendedActions.map((action) => (
+              <li key={action}>{action}</li>
+            ))}
+          </ul>
+        ) : null}
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button type="button" onClick={() => void handleCheckPrReadiness()} disabled={isCheckingPrReadiness || isExecuting}>
+            {isCheckingPrReadiness ? "Checking..." : "Check PR readiness"}
+          </button>
+        </div>
+      </div>
+
       {/* Buttons — always at top */}
       <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center", alignItems: "end", flexWrap: "wrap" }}>
         {!done && (
           <>
+            <label style={{ display: "grid", gap: "0.2rem", fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+              Mode
+              <select
+                value={executionMode}
+                onChange={(event) =>
+                  setExecutionMode(event.target.value as "run" | "fix" | "pr" | "full")
+                }
+                disabled={isExecuting}
+                style={{ minWidth: "120px" }}
+              >
+                <option value="run">run only</option>
+                <option value="fix">run + fix</option>
+                <option value="pr">run + fix + pr</option>
+                <option value="full" disabled={!fullModeReady}>
+                  full loop (requires PR readiness)
+                </option>
+              </select>
+            </label>
             <input
               value={executeInstruction}
               onChange={(e) => setExecuteInstruction(e.target.value)}

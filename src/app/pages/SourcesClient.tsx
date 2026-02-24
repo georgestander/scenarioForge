@@ -1,10 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { Project, SourceManifest, SourceRecord } from "@/domain/models";
+import { useEffect, useMemo, useState } from "react";
+import type { Project, ProjectPrReadiness, SourceManifest, SourceRecord } from "@/domain/models";
 import { readError } from "@/app/shared/api";
 import { useSession } from "@/app/shared/SessionContext";
-import type { CollectionPayload, ManifestCreatePayload } from "@/app/shared/types";
+import type {
+  CollectionPayload,
+  ManifestCreatePayload,
+  ProjectPrReadinessPayload,
+} from "@/app/shared/types";
 
 export const SourcesClient = ({
   projectId,
@@ -26,8 +30,11 @@ export const SourcesClient = ({
   const [confirmationNote, setConfirmationNote] = useState("Confirmed against current product direction.");
   const [includeStaleConfirmed, setIncludeStaleConfirmed] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [prReadiness, setPrReadiness] = useState<ProjectPrReadiness | null>(null);
+  const [isCheckingPrReadiness, setIsCheckingPrReadiness] = useState(false);
 
   const latestManifest = manifests[0] ?? null;
+  const prReady = prReadiness?.status === "ready";
 
   const riskySelectedCount = useMemo(
     () =>
@@ -99,6 +106,43 @@ export const SourcesClient = ({
     setStatusMessage(`Source manifest confirmed. Proceed to generation.`);
   };
 
+  const loadPrReadiness = async () => {
+    const response = await fetch(`/api/projects/${projectId}/pr-readiness`);
+    if (!response.ok) {
+      return;
+    }
+    const payload = (await response.json()) as ProjectPrReadinessPayload;
+    setPrReadiness(payload.readiness ?? null);
+  };
+
+  const handleCheckPrReadiness = async () => {
+    if (isCheckingPrReadiness) return;
+    setIsCheckingPrReadiness(true);
+    setStatusMessage("Checking PR automation readiness...");
+    try {
+      const response = await fetch(`/api/projects/${projectId}/pr-readiness`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        setStatusMessage(await readError(response, "Failed to check PR readiness."));
+        return;
+      }
+      const payload = (await response.json()) as ProjectPrReadinessPayload;
+      setPrReadiness(payload.readiness ?? null);
+      if (payload.readiness?.status === "ready") {
+        setStatusMessage("PR automation is ready.");
+      } else {
+        setStatusMessage("PR automation needs attention before full execute mode.");
+      }
+    } finally {
+      setIsCheckingPrReadiness(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadPrReadiness();
+  }, []);
+
   return (
     <section style={{ display: "grid", gap: "1rem", maxWidth: "480px", margin: "0 auto", textAlign: "center" }}>
       <h2 style={{
@@ -122,6 +166,74 @@ export const SourcesClient = ({
           {statusMessage}
         </p>
       ) : null}
+
+      <div
+        style={{
+          border: "1px solid var(--forge-line)",
+          borderRadius: "8px",
+          background: "rgba(18, 24, 43, 0.6)",
+          padding: "0.55rem 0.65rem",
+          display: "grid",
+          gap: "0.35rem",
+          textAlign: "left",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
+            PR automation readiness
+          </strong>
+          <span
+            style={{
+              fontSize: "0.75rem",
+              color: prReady ? "var(--forge-ok)" : "var(--forge-fire)",
+              fontWeight: 600,
+            }}
+          >
+            {prReadiness ? (prReady ? "ready" : "needs attention") : "not checked"}
+          </span>
+        </div>
+        {prReadiness?.reasons.length ? (
+          <ul
+            style={{
+              margin: 0,
+              paddingLeft: "1rem",
+              color: "var(--forge-muted)",
+              fontSize: "0.76rem",
+              display: "grid",
+              gap: "0.2rem",
+            }}
+          >
+            {prReadiness.reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        ) : (
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
+            Use full execute mode only when readiness is green.
+          </p>
+        )}
+        {prReadiness?.recommendedActions.length ? (
+          <ul
+            style={{
+              margin: 0,
+              paddingLeft: "1rem",
+              color: "var(--forge-muted)",
+              fontSize: "0.74rem",
+              display: "grid",
+              gap: "0.2rem",
+            }}
+          >
+            {prReadiness.recommendedActions.map((action) => (
+              <li key={action}>{action}</li>
+            ))}
+          </ul>
+        ) : null}
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button type="button" onClick={() => void handleCheckPrReadiness()} disabled={isCheckingPrReadiness}>
+            {isCheckingPrReadiness ? "Checking..." : "Check PR readiness"}
+          </button>
+        </div>
+      </div>
 
       {/* Buttons — always at top */}
       <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>

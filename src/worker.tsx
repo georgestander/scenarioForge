@@ -18,6 +18,7 @@ import type {
   AuthPrincipal,
   AuthSession,
   GitHubConnection,
+  Project,
   ScenarioPack,
 } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
@@ -755,6 +756,19 @@ const ensureGitHubConnectionForPrincipal = async (
   }
 };
 
+const refreshProjectPrReadiness = async (
+  principalId: string,
+  project: Project,
+) => {
+  const connection = await ensureGitHubConnectionForPrincipal(principalId);
+  const readinessInput = await evaluateProjectPrReadiness({
+    ownerId: principalId,
+    project,
+    githubConnection: connection,
+  });
+  return upsertProjectPrReadinessCheck(readinessInput);
+};
+
 const withAuthContext: RouteMiddleware<AppRequestInfo> = async ({
   request,
   response,
@@ -1094,13 +1108,7 @@ export default defineApp([
       }
 
       if (request.method === "POST") {
-        const connection = await ensureGitHubConnectionForPrincipal(principal.id);
-        const readinessInput = await evaluateProjectPrReadiness({
-          ownerId: principal.id,
-          project,
-          githubConnection: connection,
-        });
-        const readiness = upsertProjectPrReadinessCheck(readinessInput);
+        const readiness = await refreshProjectPrReadiness(principal.id, project);
         return json({ readiness });
       }
 
@@ -1705,6 +1713,17 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      const readiness = await refreshProjectPrReadiness(principal.id, project);
+
+      if (executionMode === "full" && readiness.status !== "ready") {
+        return json(
+          {
+            error: `PR automation readiness is required for executionMode=full. ${readiness.reasons.join(" ")}`.trim(),
+            readiness,
+          },
+          409,
+        );
+      }
 
       return createSseResponse(async (emit) => {
         emit("started", {
@@ -2017,6 +2036,17 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      const readiness = await refreshProjectPrReadiness(principal.id, project);
+
+      if (executionMode === "full" && readiness.status !== "ready") {
+        return json(
+          {
+            error: `PR automation readiness is required for executionMode=full. ${readiness.reasons.join(" ")}`.trim(),
+            readiness,
+          },
+          409,
+        );
+      }
 
       let codexExecution;
       try {
