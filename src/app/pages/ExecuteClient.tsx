@@ -140,15 +140,18 @@ export const ExecuteClient = ({
       return running.scenarioId;
     }
     if (isExecuting) {
-      return scenarioRows.find((row) => row.status === "queued")?.scenarioId ?? scenarioRows[0]?.scenarioId ?? null;
+      const completedCount = scenarioRows.filter(
+        (row) =>
+          row.status === "passed" || row.status === "failed" || row.status === "blocked",
+      ).length;
+      const activeIndex = Math.min(
+        completedCount,
+        Math.max(scenarioRows.length - 1, 0),
+      );
+      return scenarioRows[activeIndex]?.scenarioId ?? null;
     }
     return null;
   }, [scenarioRows, isExecuting]);
-
-  const activeScenario = useMemo(
-    () => scenarioRows.find((row) => row.scenarioId === activeScenarioId) ?? null,
-    [scenarioRows, activeScenarioId],
-  );
 
   // Auto-scroll stream log
   useEffect(() => {
@@ -299,37 +302,6 @@ export const ExecuteClient = ({
         )}
       </div>
 
-      {/* Active scenario focus panel */}
-      <section style={{
-        border: "1px solid var(--forge-line)",
-        borderRadius: "8px",
-        padding: "0.55rem 0.7rem",
-        background: "rgba(20, 26, 46, 0.6)",
-        display: "grid",
-        gap: "0.2rem",
-      }}>
-        <p style={{ margin: 0, fontSize: "0.72rem", color: "var(--forge-muted)" }}>
-          Active scenario
-        </p>
-        {activeScenario ? (
-          <>
-            <p style={{ margin: 0, fontSize: "0.86rem", color: "var(--forge-ink)", fontWeight: 600 }}>
-              {activeScenario.title}
-            </p>
-            <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--forge-muted)" }}>
-              {activeScenario.scenarioId} | {STAGE_LABEL[activeScenario.stage] ?? activeScenario.stage} | {activeScenario.status}
-            </p>
-            <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-muted)" }}>
-              {activeScenario.message}
-            </p>
-          </>
-        ) : (
-          <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-muted)" }}>
-            {done ? "No active scenario. Execution completed." : "Waiting for scenario updates..."}
-          </p>
-        )}
-      </section>
-
       {/* Side-by-side: checklist (left) + stream log (right) */}
       <div className="execute-panels">
 
@@ -357,7 +329,16 @@ export const ExecuteClient = ({
                   padding: "0.4rem 0.55rem",
                   borderRadius: "6px",
                   border: isRunning ? "1px solid var(--forge-fire)" : "1px solid var(--forge-line)",
-                  background: isRunning ? "rgba(173, 90, 51, 0.13)" : "transparent",
+                  background:
+                    row.status === "passed"
+                      ? "rgba(38, 91, 58, 0.2)"
+                      : row.status === "failed"
+                        ? "rgba(122, 49, 49, 0.18)"
+                        : row.status === "blocked"
+                          ? "rgba(74, 84, 112, 0.16)"
+                          : isRunning
+                            ? "rgba(173, 90, 51, 0.13)"
+                            : "transparent",
                 }}
               >
                 <span style={{
