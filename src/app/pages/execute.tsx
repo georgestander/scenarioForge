@@ -35,6 +35,9 @@ export const ExecutePage = ({ ctx, params, request }: AppRequestInfo) => {
   const initialPack = requestedPackId
     ? packs.find((pack) => pack.id === requestedPackId) ?? packs[0]
     : packs[0];
+  if ((initialPack.coverage.uncoveredGaps?.length ?? 0) > 0) {
+    return redirect(`/projects/${projectId}/review`);
+  }
 
   return (
     <ExecuteClient

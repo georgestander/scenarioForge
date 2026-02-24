@@ -24,6 +24,18 @@ export const ReviewClient = ({
 
   const selectedPack =
     scenarioPacks.find((p) => p.id === selectedPackId) ?? scenarioPacks[0] ?? null;
+  const coverage = selectedPack?.coverage ?? {
+    personas: [],
+    journeys: [],
+    edgeBuckets: [],
+    features: [],
+    outcomes: [],
+    assumptions: [],
+    knownUnknowns: [],
+    uncoveredGaps: [],
+  };
+  const hasBlockingCoverageGaps =
+    coverage.uncoveredGaps.length > 0;
 
   const updateEvents = useMemo(
     () => codexStreamEvents.filter((e) => e.action === "generate"),
@@ -102,30 +114,83 @@ export const ReviewClient = ({
         >
           download
         </button>
-        <a
-          href={
-            selectedPack
-              ? `/projects/${projectId}/execute?packId=${encodeURIComponent(selectedPack.id)}`
-              : `/projects/${projectId}/execute`
-          }
+        {selectedPack && !hasBlockingCoverageGaps ? (
+          <a
+            href={`/projects/${projectId}/execute?packId=${encodeURIComponent(selectedPack.id)}`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "0.52rem 0.75rem",
+              borderRadius: "7px",
+              border: "1px solid #7f482b",
+              background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
+              color: "var(--forge-ink)",
+              textDecoration: "none",
+              fontWeight: 600,
+              fontSize: "0.89rem",
+            }}
+          >
+            Run
+          </a>
+        ) : (
+          <button type="button" disabled style={{ opacity: 0.65 }}>
+            Resolve coverage gaps
+          </button>
+        )}
+      </div>
+
+      {selectedPack ? (
+        <div
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            padding: "0.52rem 0.75rem",
-            borderRadius: "7px",
-            border: "1px solid #7f482b",
-            background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
-            color: "var(--forge-ink)",
-            textDecoration: "none",
-            fontWeight: 600,
-            fontSize: "0.89rem",
-            opacity: selectedPack ? 1 : 0.5,
-            pointerEvents: selectedPack ? "auto" : "none",
+            border: "1px solid var(--forge-line)",
+            borderRadius: "8px",
+            padding: "0.55rem 0.65rem",
+            background: "rgba(18, 24, 43, 0.6)",
+            display: "grid",
+            gap: "0.35rem",
           }}
         >
-          Run
-        </a>
-      </div>
+          <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
+            Coverage quality
+          </strong>
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
+            personas {coverage.personas.length} | journeys{" "}
+            {coverage.journeys.length} | edge buckets{" "}
+            {coverage.edgeBuckets.length} | assumptions{" "}
+            {coverage.assumptions.length}
+          </p>
+          {coverage.knownUnknowns.length > 0 ? (
+            <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.75rem" }}>
+              Known unknowns: {coverage.knownUnknowns.join("; ")}
+            </p>
+          ) : null}
+          {coverage.uncoveredGaps.length > 0 ? (
+            <div style={{ display: "grid", gap: "0.25rem" }}>
+              <p style={{ margin: 0, color: "#f2a96a", fontSize: "0.75rem" }}>
+                Uncovered gaps must be resolved before run.
+              </p>
+              <ul
+                style={{
+                  margin: 0,
+                  paddingLeft: "1rem",
+                  color: "var(--forge-muted)",
+                  fontSize: "0.74rem",
+                  display: "grid",
+                  gap: "0.15rem",
+                }}
+              >
+                {coverage.uncoveredGaps.map((gap) => (
+                  <li key={gap}>{gap}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p style={{ margin: 0, color: "var(--forge-ok)", fontSize: "0.75rem" }}>
+              Coverage gaps resolved for execution.
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {/* Update instruction — at top, below buttons */}
       <div style={{ display: "flex", gap: "0.4rem", alignItems: "end" }}>
