@@ -307,6 +307,55 @@ const hasPlaceholderObservedText = (value: string): boolean =>
     value,
   );
 
+const isInterimScenarioObservedText = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  if (hasPlaceholderObservedText(value)) {
+    return true;
+  }
+
+  const hardFailureSignals = [
+    "assertion",
+    "mismatch",
+    "exception",
+    "error:",
+    "timed out",
+    "timeout",
+    "not found",
+    "permission denied",
+    "unauthorized",
+    "forbidden",
+    "expected",
+    "actual",
+    "traceback",
+  ];
+  if (hardFailureSignals.some((signal) => normalized.includes(signal))) {
+    return false;
+  }
+
+  const interimSignals = [
+    "in progress",
+    "still validating",
+    "still analyzing",
+    "still checking",
+    "still trying",
+    "trying to",
+    "now trying",
+    "now validating",
+    "now analyzing",
+    "currently validating",
+    "currently analyzing",
+    "collecting evidence",
+    "resolving definitions",
+    "queued",
+    "waiting",
+  ];
+  return interimSignals.some((signal) => normalized.includes(signal));
+};
+
 const normalizeRunItemStatus = (value: unknown): "passed" | "failed" => {
   const status = String(value ?? "")
     .trim()
@@ -1057,7 +1106,6 @@ const runExecuteJobInBackground = async (
     });
   }
 
-  const scenarioIds = executionPack.scenarios.map((scenario) => scenario.id);
   let codexProgressCount = 0;
   let codexStoredCount = 0;
   let codexEventWrite = Promise.resolve();
@@ -1102,26 +1150,8 @@ const runExecuteJobInBackground = async (
           });
         }
 
-        if (isTerminalSignal || codexProgressCount === 1 || codexProgressCount % 25 === 0) {
-          const progressMessage = describeCodexExecuteProgress(eventName);
-          await persistExecutionJobEvent({
-            job: runningJob,
-            event: "status",
-            phase: "run.progress",
-            status: "running",
-            scenarioId,
-            stage: "run",
-            message: progressMessage,
-            payload: {
-              action: "execute",
-              phase: "run.progress",
-              scenarioId,
-              stage: "run",
-              status: "running",
-              message: progressMessage,
-            },
-          });
-        }
+        // High-signal scenario progress is emitted by controller attempt events.
+        // Keep low-level codex traces persisted separately without overriding user-facing status lines.
       })
       .catch(() => {
         // Keep execution running even if a single event cannot be persisted.
@@ -1160,6 +1190,16 @@ const runExecuteJobInBackground = async (
       completedAt: null,
     };
 
+    const maxScenarioAttemptsRaw = Number(
+      isRecord(runningJob.constraints)
+        ? (runningJob.constraints as Record<string, unknown>).maxScenarioAttempts
+        : 0,
+    );
+    const maxScenarioAttempts =
+      Number.isFinite(maxScenarioAttemptsRaw) && maxScenarioAttemptsRaw > 0
+        ? Math.min(Math.floor(maxScenarioAttemptsRaw), 5)
+        : 3;
+
     for (const scenario of executionPack.scenarios) {
       const liveJobBeforeScenario = getExecutionJobById(input.ownerId, input.jobId);
       if (!liveJobBeforeScenario || liveJobBeforeScenario.status !== "running") {
@@ -1167,156 +1207,255 @@ const runExecuteJobInBackground = async (
       }
 
       const scenarioStartedAt = new Date().toISOString();
-      await persistExecutionJobEvent({
-        job: runningJob,
-        event: "status",
-        phase: "run.progress",
-        status: "running",
-        scenarioId: scenario.id,
-        stage: "run",
-        message: "Starting scenario execution and collecting evidence...",
-        payload: {
-          action: "execute",
+      let finalScenarioItem:
+        | {
+            scenarioId: string;
+            status: "passed" | "failed";
+            startedAt: string | null;
+            completedAt: string | null;
+            observed: string;
+            expected: string;
+            failureHypothesis: string | null;
+            artifacts: Array<{
+              kind: "log" | "screenshot" | "trace";
+              label: string;
+              value: string;
+            }>;
+          }
+        | null = null;
+      let finalScenarioOutput: {
+        parsedOutput: unknown;
+        turnAudit: {
+          model: string;
+          threadId: string;
+          turnId: string;
+          turnStatus: string;
+          completedAt: string;
+        };
+      } | null = null;
+
+      for (let attempt = 1; attempt <= maxScenarioAttempts; attempt += 1) {
+        await persistExecutionJobEvent({
+          job: runningJob,
+          event: "status",
           phase: "run.progress",
+          status: "running",
           scenarioId: scenario.id,
           stage: "run",
-          status: "running",
-          message: "Starting scenario execution and collecting evidence...",
-        },
-      });
-
-      const scenarioPack = {
-        ...executionPack,
-        scenarios: [scenario],
-      };
-
-      try {
-        const codexExecution = await executeScenariosViaCodexStream(
-          {
-            project,
-            pack: scenarioPack,
-            executionMode: runningJob.executionMode,
-            userInstruction: runningJob.userInstruction ?? "",
-            constraints: runningJob.constraints,
+          message:
+            attempt === 1
+              ? `Attempt ${attempt}/${maxScenarioAttempts}: running scenario checks.`
+              : `Attempt ${attempt}/${maxScenarioAttempts}: retrying scenario after incomplete prior output.`,
+          payload: {
+            action: "execute",
+            phase: "run.progress",
+            scenarioId: scenario.id,
+            stage: "run",
+            status: "running",
+            message:
+              attempt === 1
+                ? `Attempt ${attempt}/${maxScenarioAttempts}: running scenario checks.`
+                : `Attempt ${attempt}/${maxScenarioAttempts}: retrying scenario after incomplete prior output.`,
           },
-          (event) => {
-            enqueueCodexEvent(scenario.id, event.event, event.payload);
-          },
-        );
+        });
 
-        await codexEventWrite;
-        latestTurnAudit = {
-          model: codexExecution.model,
-          threadId: codexExecution.threadId,
-          turnId: codexExecution.turnId,
-          turnStatus: codexExecution.turnStatus,
-          completedAt: codexExecution.completedAt,
+        const scenarioPack = {
+          ...executionPack,
+          scenarios: [scenario],
+        };
+        const attemptInstruction = [
+          runningJob.userInstruction ?? "",
+          `Scenario attempt ${attempt}/${maxScenarioAttempts} for ${scenario.id}.`,
+          "Return a terminal scenario outcome with concrete observed evidence.",
+          "Do not return interim/in-progress placeholder text.",
+        ]
+          .filter((line) => line.trim().length > 0)
+          .join("\n");
+        const attemptConstraints = {
+          ...(isRecord(runningJob.constraints) ? runningJob.constraints : {}),
+          scenarioAttempt: attempt,
+          scenarioAttemptLimit: maxScenarioAttempts,
+          activeScenarioId: scenario.id,
         };
 
-        const scenarioRunInput = buildScenarioRunInputFromCodexOutput(
-          input.ownerId,
-          project.id,
-          scenarioPack,
-          codexExecution.parsedOutput,
-        );
-        const scenarioItem =
-          scenarioRunInput.items.find((item) => item.scenarioId === scenario.id) ?? {
-            scenarioId: scenario.id,
-            status: "failed" as const,
-            startedAt: scenarioStartedAt,
-            completedAt: new Date().toISOString(),
-            observed:
-              "Codex execute output omitted this scenario result. Marked failed for explicit rerun.",
-            expected: scenario.passCriteria,
-            failureHypothesis: "Missing run item for scenario in Codex execute output.",
-            artifacts: [],
-          };
+        try {
+          const codexExecution = await executeScenariosViaCodexStream(
+            {
+              project,
+              pack: scenarioPack,
+              executionMode: runningJob.executionMode,
+              userInstruction: attemptInstruction,
+              constraints: attemptConstraints,
+            },
+            (event) => {
+              enqueueCodexEvent(scenario.id, event.event, event.payload);
+            },
+          );
 
-        collectedItems.push({
-          scenarioId: scenarioItem.scenarioId,
-          status: scenarioItem.status,
-          startedAt: scenarioItem.startedAt ?? scenarioStartedAt,
-          completedAt: scenarioItem.completedAt ?? new Date().toISOString(),
-          observed: scenarioItem.observed,
-          expected: scenarioItem.expected,
-          failureHypothesis: scenarioItem.failureHypothesis,
-          artifacts: scenarioItem.artifacts,
-        });
-        scenarioOutputs.push({
-          scenarioId: scenario.id,
-          parsedOutput: codexExecution.parsedOutput,
-          turnAudit: {
+          await codexEventWrite;
+          latestTurnAudit = {
             model: codexExecution.model,
             threadId: codexExecution.threadId,
             turnId: codexExecution.turnId,
             turnStatus: codexExecution.turnStatus,
             completedAt: codexExecution.completedAt,
-          },
-        });
+          };
 
-        await persistExecutionJobEvent({
-          job: runningJob,
-          event: "status",
-          phase: "run.result",
-          status: scenarioItem.status,
-          scenarioId: scenarioItem.scenarioId,
-          stage: "run",
-          message: summarizeScenarioRunOutcome(
-            scenarioItem.status,
-            scenarioItem.observed,
-          ),
-          timestamp: scenarioItem.completedAt ?? new Date().toISOString(),
-          payload: {
-            action: "execute",
-            phase: "run.result",
-            scenarioId: scenarioItem.scenarioId,
-            stage: "run",
-            status: scenarioItem.status,
-            message: summarizeScenarioRunOutcome(
-              scenarioItem.status,
-              scenarioItem.observed,
-            ),
-          },
-        });
-      } catch (error) {
-        await codexEventWrite.catch(() => undefined);
-        const scenarioErrorMessage =
-          error instanceof Error
-            ? error.message
-            : "Failed to execute scenario through Codex app-server.";
-        const failedCompletedAt = new Date().toISOString();
-        const failedItem = {
-          scenarioId: scenario.id,
-          status: "failed" as const,
-          startedAt: scenarioStartedAt,
-          completedAt: failedCompletedAt,
-          observed: scenarioErrorMessage,
-          expected: scenario.passCriteria,
-          failureHypothesis:
-            "Codex execute turn failed before returning terminal scenario output.",
-          artifacts: [] as Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>,
-        };
-        collectedItems.push(failedItem);
+          const scenarioRunInput = buildScenarioRunInputFromCodexOutput(
+            input.ownerId,
+            project.id,
+            scenarioPack,
+            codexExecution.parsedOutput,
+          );
+          const scenarioItem =
+            scenarioRunInput.items.find((item) => item.scenarioId === scenario.id) ?? {
+              scenarioId: scenario.id,
+              status: "failed" as const,
+              startedAt: scenarioStartedAt,
+              completedAt: new Date().toISOString(),
+              observed:
+                "Codex execute output omitted this scenario result. Marked failed for explicit rerun.",
+              expected: scenario.passCriteria,
+              failureHypothesis:
+                "Missing run item for scenario in Codex execute output.",
+              artifacts: [],
+            };
 
-        await persistExecutionJobEvent({
-          job: runningJob,
-          event: "status",
-          phase: "run.result",
-          status: "failed",
-          scenarioId: scenario.id,
-          stage: "run",
-          message: summarizeScenarioRunOutcome("failed", scenarioErrorMessage),
-          timestamp: failedCompletedAt,
-          payload: {
-            action: "execute",
-            phase: "run.result",
+          const shouldRetryInterimFailure =
+            scenarioItem.status === "failed" &&
+            attempt < maxScenarioAttempts &&
+            isInterimScenarioObservedText(scenarioItem.observed);
+
+          if (shouldRetryInterimFailure) {
+            await persistExecutionJobEvent({
+              job: runningJob,
+              event: "status",
+              phase: "run.progress",
+              status: "running",
+              scenarioId: scenario.id,
+              stage: "run",
+              message: `Attempt ${attempt}/${maxScenarioAttempts} returned interim output; retrying.`,
+              payload: {
+                action: "execute",
+                phase: "run.progress",
+                scenarioId: scenario.id,
+                stage: "run",
+                status: "running",
+                message: `Attempt ${attempt}/${maxScenarioAttempts} returned interim output; retrying.`,
+              },
+            });
+            continue;
+          }
+
+          finalScenarioItem = scenarioItem;
+          finalScenarioOutput = {
+            parsedOutput: codexExecution.parsedOutput,
+            turnAudit: {
+              model: codexExecution.model,
+              threadId: codexExecution.threadId,
+              turnId: codexExecution.turnId,
+              turnStatus: codexExecution.turnStatus,
+              completedAt: codexExecution.completedAt,
+            },
+          };
+          break;
+        } catch (error) {
+          await codexEventWrite.catch(() => undefined);
+          const scenarioErrorMessage =
+            error instanceof Error
+              ? error.message
+              : "Failed to execute scenario through Codex app-server.";
+
+          if (attempt < maxScenarioAttempts) {
+            await persistExecutionJobEvent({
+              job: runningJob,
+              event: "status",
+              phase: "run.progress",
+              status: "running",
+              scenarioId: scenario.id,
+              stage: "run",
+              message: `Attempt ${attempt}/${maxScenarioAttempts} hit an execution error; retrying.`,
+              payload: {
+                action: "execute",
+                phase: "run.progress",
+                scenarioId: scenario.id,
+                stage: "run",
+                status: "running",
+                message: `Attempt ${attempt}/${maxScenarioAttempts} hit an execution error; retrying.`,
+              },
+            });
+            continue;
+          }
+
+          finalScenarioItem = {
             scenarioId: scenario.id,
-            stage: "run",
             status: "failed",
-            message: summarizeScenarioRunOutcome("failed", scenarioErrorMessage),
-          },
+            startedAt: scenarioStartedAt,
+            completedAt: new Date().toISOString(),
+            observed: scenarioErrorMessage,
+            expected: scenario.passCriteria,
+            failureHypothesis:
+              "Codex execute turn failed before returning terminal scenario output.",
+            artifacts: [],
+          };
+        }
+      }
+
+      const terminalItem = finalScenarioItem ?? {
+        scenarioId: scenario.id,
+        status: "failed" as const,
+        startedAt: scenarioStartedAt,
+        completedAt: new Date().toISOString(),
+        observed:
+          "Scenario did not reach a terminal outcome within retry limits.",
+        expected: scenario.passCriteria,
+        failureHypothesis:
+          "Scenario attempts exhausted without terminal evidence-backed completion.",
+        artifacts: [],
+      };
+
+      collectedItems.push({
+        scenarioId: terminalItem.scenarioId,
+        status: terminalItem.status,
+        startedAt: terminalItem.startedAt ?? scenarioStartedAt,
+        completedAt: terminalItem.completedAt ?? new Date().toISOString(),
+        observed: terminalItem.observed,
+        expected: terminalItem.expected,
+        failureHypothesis: terminalItem.failureHypothesis,
+        artifacts: terminalItem.artifacts,
+      });
+      if (finalScenarioOutput) {
+        scenarioOutputs.push({
+          scenarioId: scenario.id,
+          parsedOutput: finalScenarioOutput.parsedOutput,
+          turnAudit: finalScenarioOutput.turnAudit,
         });
       }
+
+      await persistExecutionJobEvent({
+        job: runningJob,
+        event: "status",
+        phase: "run.result",
+        status: terminalItem.status,
+        scenarioId: terminalItem.scenarioId,
+        stage: "run",
+        message: summarizeScenarioRunOutcome(
+          terminalItem.status,
+          terminalItem.observed,
+        ),
+        timestamp: terminalItem.completedAt ?? new Date().toISOString(),
+        payload: {
+          action: "execute",
+          phase: "run.result",
+          scenarioId: terminalItem.scenarioId,
+          stage: "run",
+          status: terminalItem.status,
+          message: summarizeScenarioRunOutcome(
+            terminalItem.status,
+            terminalItem.observed,
+          ),
+        },
+      });
     }
 
     const total = collectedItems.length;
