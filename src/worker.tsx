@@ -299,7 +299,7 @@ const summarizeScenarioRunOutcome = (
   if (status === "failed") {
     return `Failed: ${observed || "behavior did not match expected checkpoints."}`;
   }
-  return `Blocked: ${observed || "execution could not continue in this environment."}`;
+  return `Failed: ${observed || "execution could not continue in this environment."}`;
 };
 
 const hasPlaceholderObservedText = (value: string): boolean =>
@@ -401,12 +401,14 @@ const normalizeExecutionJobEventStatus = (
   const status = String(value ?? "")
     .trim()
     .toLowerCase();
+  if (status === "blocked") {
+    return "failed";
+  }
   if (
     status === "queued" ||
     status === "running" ||
     status === "passed" ||
     status === "failed" ||
-    status === "blocked" ||
     status === "complete"
   ) {
     return status;
@@ -1056,39 +1058,16 @@ const runExecuteJobInBackground = async (
   }
 
   const scenarioIds = executionPack.scenarios.map((scenario) => scenario.id);
-  let activeScenarioId = scenarioIds[0] ?? null;
   let codexProgressCount = 0;
   let codexStoredCount = 0;
-  let lastProgressScenarioId: string | null = null;
-  if (activeScenarioId) {
-    await persistExecutionJobEvent({
-      job: runningJob,
-      event: "status",
-      phase: "run.progress",
-      status: "running",
-      scenarioId: activeScenarioId,
-      stage: "run",
-      message: "Starting scenario execution and collecting evidence...",
-      payload: {
-        action: "execute",
-        phase: "run.progress",
-        scenarioId: activeScenarioId,
-        stage: "run",
-        status: "running",
-        message: "Starting scenario execution and collecting evidence...",
-      },
-    });
-    lastProgressScenarioId = activeScenarioId;
-  }
-
   let codexEventWrite = Promise.resolve();
-  const enqueueCodexEvent = (eventName: string, payload: unknown) => {
+  const enqueueCodexEvent = (
+    scenarioId: string,
+    eventName: string,
+    payload: unknown,
+  ) => {
     codexEventWrite = codexEventWrite
       .then(async () => {
-        const mentionedScenarioId = findMentionedScenarioId(payload, scenarioIds);
-        if (mentionedScenarioId) {
-          activeScenarioId = mentionedScenarioId;
-        }
         codexProgressCount += 1;
         const normalizedEventName = eventName.toLowerCase();
         const isTerminalSignal =
@@ -1099,7 +1078,9 @@ const runExecuteJobInBackground = async (
 
         const shouldPersistCodexTrace =
           codexStoredCount < EXECUTION_JOB_MAX_CODEX_EVENTS &&
-          (codexStoredCount < 25 || codexProgressCount % 25 === 0 || isTerminalSignal);
+          (codexStoredCount < 25 ||
+            codexProgressCount % 25 === 0 ||
+            isTerminalSignal);
 
         if (shouldPersistCodexTrace) {
           codexStoredCount += 1;
@@ -1109,44 +1090,37 @@ const runExecuteJobInBackground = async (
             phase: extractExecutionJobEventPhase(eventName, payload),
             status: extractExecutionJobEventStatus(payload),
             message: extractExecutionJobEventMessage(eventName, payload),
-            scenarioId: extractExecutionJobEventScenarioId(payload),
-            stage: extractExecutionJobEventStage(payload),
+            scenarioId: scenarioId || extractExecutionJobEventScenarioId(payload),
+            stage: extractExecutionJobEventStage(payload) ?? "run",
             payload: {
               action: "execute",
               event: eventName,
               payload,
+              scenarioId,
             },
             timestamp: new Date().toISOString(),
           });
         }
 
-        const shouldEmitProgress =
-          activeScenarioId &&
-          (codexProgressCount === 1 ||
-            codexProgressCount % 25 === 0 ||
-            isTerminalSignal ||
-            activeScenarioId !== lastProgressScenarioId);
-
-        if (activeScenarioId && shouldEmitProgress) {
+        if (isTerminalSignal || codexProgressCount === 1 || codexProgressCount % 25 === 0) {
           const progressMessage = describeCodexExecuteProgress(eventName);
           await persistExecutionJobEvent({
             job: runningJob,
             event: "status",
             phase: "run.progress",
             status: "running",
-            scenarioId: activeScenarioId,
+            scenarioId,
             stage: "run",
             message: progressMessage,
             payload: {
               action: "execute",
               phase: "run.progress",
-              scenarioId: activeScenarioId,
+              scenarioId,
               stage: "run",
               status: "running",
               message: progressMessage,
             },
           });
-          lastProgressScenarioId = activeScenarioId;
         }
       })
       .catch(() => {
@@ -1156,33 +1130,241 @@ const runExecuteJobInBackground = async (
 
   let persistedRun: ReturnType<typeof createScenarioRun> | null = null;
   try {
-    const codexExecution = await executeScenariosViaCodexStream(
-      {
-        project,
-        pack: executionPack,
-        executionMode: runningJob.executionMode,
-        userInstruction: runningJob.userInstruction ?? "",
-        constraints: runningJob.constraints,
-      },
-      (event) => {
-        enqueueCodexEvent(event.event, event.payload);
-      },
-    );
+    const collectedItems: Array<{
+      scenarioId: string;
+      status: "passed" | "failed";
+      startedAt: string;
+      completedAt: string;
+      observed: string;
+      expected: string;
+      failureHypothesis: string | null;
+      artifacts: Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>;
+    }> = [];
+    const scenarioOutputs: Array<{
+      scenarioId: string;
+      parsedOutput: unknown;
+      turnAudit: {
+        model: string;
+        threadId: string;
+        turnId: string;
+        turnStatus: string;
+        completedAt: string;
+      };
+    }> = [];
+    const startedAt = runningJob.startedAt ?? new Date().toISOString();
+    let latestTurnAudit: ExecutionJob["executionAudit"] = {
+      model: null,
+      threadId: null,
+      turnId: null,
+      turnStatus: null,
+      completedAt: null,
+    };
 
-    await codexEventWrite;
-    const liveJobAfterCodex = getExecutionJobById(input.ownerId, input.jobId);
-    if (!liveJobAfterCodex || liveJobAfterCodex.status !== "running") {
-      // Job was canceled/cleared while Codex was executing; stop without repopulating history.
-      return;
+    for (const scenario of executionPack.scenarios) {
+      const liveJobBeforeScenario = getExecutionJobById(input.ownerId, input.jobId);
+      if (!liveJobBeforeScenario || liveJobBeforeScenario.status !== "running") {
+        return;
+      }
+
+      const scenarioStartedAt = new Date().toISOString();
+      await persistExecutionJobEvent({
+        job: runningJob,
+        event: "status",
+        phase: "run.progress",
+        status: "running",
+        scenarioId: scenario.id,
+        stage: "run",
+        message: "Starting scenario execution and collecting evidence...",
+        payload: {
+          action: "execute",
+          phase: "run.progress",
+          scenarioId: scenario.id,
+          stage: "run",
+          status: "running",
+          message: "Starting scenario execution and collecting evidence...",
+        },
+      });
+
+      const scenarioPack = {
+        ...executionPack,
+        scenarios: [scenario],
+      };
+
+      try {
+        const codexExecution = await executeScenariosViaCodexStream(
+          {
+            project,
+            pack: scenarioPack,
+            executionMode: runningJob.executionMode,
+            userInstruction: runningJob.userInstruction ?? "",
+            constraints: runningJob.constraints,
+          },
+          (event) => {
+            enqueueCodexEvent(scenario.id, event.event, event.payload);
+          },
+        );
+
+        await codexEventWrite;
+        latestTurnAudit = {
+          model: codexExecution.model,
+          threadId: codexExecution.threadId,
+          turnId: codexExecution.turnId,
+          turnStatus: codexExecution.turnStatus,
+          completedAt: codexExecution.completedAt,
+        };
+
+        const scenarioRunInput = buildScenarioRunInputFromCodexOutput(
+          input.ownerId,
+          project.id,
+          scenarioPack,
+          codexExecution.parsedOutput,
+        );
+        const scenarioItem =
+          scenarioRunInput.items.find((item) => item.scenarioId === scenario.id) ?? {
+            scenarioId: scenario.id,
+            status: "failed" as const,
+            startedAt: scenarioStartedAt,
+            completedAt: new Date().toISOString(),
+            observed:
+              "Codex execute output omitted this scenario result. Marked failed for explicit rerun.",
+            expected: scenario.passCriteria,
+            failureHypothesis: "Missing run item for scenario in Codex execute output.",
+            artifacts: [],
+          };
+
+        collectedItems.push({
+          scenarioId: scenarioItem.scenarioId,
+          status: scenarioItem.status,
+          startedAt: scenarioItem.startedAt ?? scenarioStartedAt,
+          completedAt: scenarioItem.completedAt ?? new Date().toISOString(),
+          observed: scenarioItem.observed,
+          expected: scenarioItem.expected,
+          failureHypothesis: scenarioItem.failureHypothesis,
+          artifacts: scenarioItem.artifacts,
+        });
+        scenarioOutputs.push({
+          scenarioId: scenario.id,
+          parsedOutput: codexExecution.parsedOutput,
+          turnAudit: {
+            model: codexExecution.model,
+            threadId: codexExecution.threadId,
+            turnId: codexExecution.turnId,
+            turnStatus: codexExecution.turnStatus,
+            completedAt: codexExecution.completedAt,
+          },
+        });
+
+        await persistExecutionJobEvent({
+          job: runningJob,
+          event: "status",
+          phase: "run.result",
+          status: scenarioItem.status,
+          scenarioId: scenarioItem.scenarioId,
+          stage: "run",
+          message: summarizeScenarioRunOutcome(
+            scenarioItem.status,
+            scenarioItem.observed,
+          ),
+          timestamp: scenarioItem.completedAt ?? new Date().toISOString(),
+          payload: {
+            action: "execute",
+            phase: "run.result",
+            scenarioId: scenarioItem.scenarioId,
+            stage: "run",
+            status: scenarioItem.status,
+            message: summarizeScenarioRunOutcome(
+              scenarioItem.status,
+              scenarioItem.observed,
+            ),
+          },
+        });
+      } catch (error) {
+        await codexEventWrite.catch(() => undefined);
+        const scenarioErrorMessage =
+          error instanceof Error
+            ? error.message
+            : "Failed to execute scenario through Codex app-server.";
+        const failedCompletedAt = new Date().toISOString();
+        const failedItem = {
+          scenarioId: scenario.id,
+          status: "failed" as const,
+          startedAt: scenarioStartedAt,
+          completedAt: failedCompletedAt,
+          observed: scenarioErrorMessage,
+          expected: scenario.passCriteria,
+          failureHypothesis:
+            "Codex execute turn failed before returning terminal scenario output.",
+          artifacts: [] as Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>,
+        };
+        collectedItems.push(failedItem);
+
+        await persistExecutionJobEvent({
+          job: runningJob,
+          event: "status",
+          phase: "run.result",
+          status: "failed",
+          scenarioId: scenario.id,
+          stage: "run",
+          message: summarizeScenarioRunOutcome("failed", scenarioErrorMessage),
+          timestamp: failedCompletedAt,
+          payload: {
+            action: "execute",
+            phase: "run.result",
+            scenarioId: scenario.id,
+            stage: "run",
+            status: "failed",
+            message: summarizeScenarioRunOutcome("failed", scenarioErrorMessage),
+          },
+        });
+      }
     }
 
-    const runInput = buildScenarioRunInputFromCodexOutput(
-      input.ownerId,
-      project.id,
-      executionPack,
-      codexExecution.parsedOutput,
-    );
-    const run = createScenarioRun(runInput);
+    const total = collectedItems.length;
+    const passed = collectedItems.filter((item) => item.status === "passed").length;
+    const failed = total - passed;
+    const run = createScenarioRun({
+      ownerId: input.ownerId,
+      projectId: project.id,
+      scenarioPackId: executionPack.id,
+      status: "completed",
+      startedAt,
+      completedAt: new Date().toISOString(),
+      items: collectedItems,
+      summary: {
+        total,
+        passed,
+        failed,
+        blocked: 0,
+      },
+      events: collectedItems.flatMap((item, index) => {
+        const queuedAt = new Date(Date.parse(item.startedAt) - 50).toISOString();
+        const runningAt = item.startedAt;
+        const completedAt = item.completedAt;
+        return [
+          {
+            id: `evt_${item.scenarioId}_queued_${index}`,
+            scenarioId: item.scenarioId,
+            status: "queued" as const,
+            message: `${item.scenarioId} queued`,
+            timestamp: queuedAt,
+          },
+          {
+            id: `evt_${item.scenarioId}_running_${index}`,
+            scenarioId: item.scenarioId,
+            status: "running" as const,
+            message: `${item.scenarioId} running`,
+            timestamp: runningAt,
+          },
+          {
+            id: `evt_${item.scenarioId}_${item.status}_${index}`,
+            scenarioId: item.scenarioId,
+            status: item.status,
+            message: `${item.scenarioId} ${item.status}`,
+            timestamp: completedAt,
+          },
+        ];
+      }),
+    });
     persistedRun = run;
     await persistScenarioRunToD1(run);
 
@@ -1191,27 +1373,6 @@ const runExecuteJobInBackground = async (
     project.updatedAt = new Date().toISOString();
     upsertProjectRecord(project);
     await persistProjectToD1(project);
-
-    for (const item of run.items) {
-      await persistExecutionJobEvent({
-        job: runningJob,
-        event: "status",
-        phase: "run.result",
-        status: item.status,
-        scenarioId: item.scenarioId,
-        stage: "run",
-        message: summarizeScenarioRunOutcome(item.status, item.observed),
-        timestamp: item.completedAt ?? new Date().toISOString(),
-        payload: {
-          action: "execute",
-          phase: "run.result",
-          scenarioId: item.scenarioId,
-          stage: "run",
-          status: item.status,
-          message: summarizeScenarioRunOutcome(item.status, item.observed),
-        },
-      });
-    }
 
     await persistExecutionJobEvent({
       job: runningJob,
@@ -1233,19 +1394,111 @@ const runExecuteJobInBackground = async (
       runningJob.executionMode === "pr" ||
       runningJob.executionMode === "full"
     ) {
-      const fixInput = buildFixAttemptInputFromCodexOutput(
-        input.ownerId,
-        project.id,
-        run,
-        codexExecution.parsedOutput,
-      );
-      if (!fixInput && run.summary.failed > 0) {
-        throw new Error(
-          "Codex execute output reported failed scenarios but omitted fixAttempt details.",
-        );
-      }
-      if (fixInput) {
-        fixAttempt = createFixAttempt(fixInput);
+      const failedScenarioIdsFromRun = run.items
+        .filter((item) => item.status === "failed")
+        .map((item) => item.scenarioId);
+
+      if (failedScenarioIdsFromRun.length > 0) {
+        const collectedFixInputs = scenarioOutputs
+          .map((output) => {
+            const scenarioItem = run.items.find(
+              (item) => item.scenarioId === output.scenarioId,
+            );
+            if (!scenarioItem) {
+              return null;
+            }
+
+            const tempRun = {
+              id: `tmp_${output.scenarioId}`,
+              projectId: project.id,
+              ownerId: input.ownerId,
+              scenarioPackId: executionPack.id,
+              status: "completed" as const,
+              startedAt: scenarioItem.startedAt,
+              completedAt: scenarioItem.completedAt,
+              items: [scenarioItem],
+              summary: {
+                total: 1,
+                passed: scenarioItem.status === "passed" ? 1 : 0,
+                failed: scenarioItem.status === "failed" ? 1 : 0,
+                blocked: 0,
+              },
+              events: [],
+              createdAt: scenarioItem.startedAt ?? new Date().toISOString(),
+              updatedAt: scenarioItem.completedAt ?? new Date().toISOString(),
+            };
+
+            return buildFixAttemptInputFromCodexOutput(
+              input.ownerId,
+              project.id,
+              tempRun,
+              output.parsedOutput,
+            );
+          })
+          .filter((record): record is NonNullable<typeof record> => Boolean(record));
+
+        if (collectedFixInputs.length === 0) {
+          throw new Error(
+            "Codex execute output reported failed scenarios but omitted fixAttempt details.",
+          );
+        }
+
+        const failedScenarioIds = [
+          ...new Set(
+            collectedFixInputs.flatMap((record) => record.failedScenarioIds).length > 0
+              ? collectedFixInputs.flatMap((record) => record.failedScenarioIds)
+              : failedScenarioIdsFromRun,
+          ),
+        ];
+        const probableRootCause = collectedFixInputs
+          .map((record) => record.probableRootCause.trim())
+          .filter(Boolean)
+          .join(" | ");
+        const patchSummary = collectedFixInputs
+          .map((record) => record.patchSummary.trim())
+          .filter(Boolean)
+          .join(" | ");
+        const impactedFiles = [
+          ...new Set(
+            collectedFixInputs.flatMap((record) => record.impactedFiles),
+          ),
+        ];
+        const rerunRows = collectedFixInputs
+          .map((record) => record.rerunSummary)
+          .filter((record): record is NonNullable<typeof record> => Boolean(record));
+        const rerunSummary = rerunRows.length
+          ? {
+              runId: run.id,
+              passed: rerunRows.reduce((acc, row) => acc + row.passed, 0),
+              failed: rerunRows.reduce((acc, row) => acc + row.failed, 0),
+              blocked: 0,
+            }
+          : null;
+        const aggregateStatus = collectedFixInputs.some(
+          (record) => record.status === "failed",
+        )
+          ? "failed"
+          : collectedFixInputs.some((record) => record.status === "in_progress")
+            ? "in_progress"
+            : collectedFixInputs.some((record) => record.status === "planned")
+              ? "planned"
+              : "validated";
+
+        fixAttempt = createFixAttempt({
+          ownerId: input.ownerId,
+          projectId: project.id,
+          scenarioRunId: run.id,
+          failedScenarioIds:
+            failedScenarioIds.length > 0 ? failedScenarioIds : failedScenarioIdsFromRun,
+          probableRootCause:
+            probableRootCause || "Fix attempt generated from Codex execute output.",
+          patchSummary:
+            patchSummary || "No patch summary returned from Codex.",
+          impactedFiles,
+          model: "gpt-5.3-xhigh",
+          status: aggregateStatus,
+          rerunSummary,
+        });
         await persistFixAttemptToD1(fixAttempt);
 
         for (const scenarioId of fixAttempt.failedScenarioIds) {
@@ -1278,14 +1531,14 @@ const runExecuteJobInBackground = async (
               status: rerunStatus,
               scenarioId,
               stage: "rerun",
-              message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+              message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed.`,
               payload: {
                 action: "execute",
                 phase: "rerun.result",
                 scenarioId,
                 stage: "rerun",
                 status: rerunStatus,
-                message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+                message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed.`,
               },
             });
           }
@@ -1311,12 +1564,23 @@ const runExecuteJobInBackground = async (
       (runningJob.executionMode === "pr" || runningJob.executionMode === "full") &&
       fixAttempt
     ) {
-      const pullRequestInputs = buildPullRequestInputsFromCodexOutput(
-        input.ownerId,
-        project.id,
-        fixAttempt,
-        codexExecution.parsedOutput,
-      );
+      const dedupe = new Map<string, PullRequestCreateInput>();
+      for (const output of scenarioOutputs) {
+        const records = buildPullRequestInputsFromCodexOutput(
+          input.ownerId,
+          project.id,
+          fixAttempt,
+          output.parsedOutput,
+        );
+        for (const record of records) {
+          const key = `${record.url}::${record.title}::${record.branchName}`;
+          if (!dedupe.has(key)) {
+            dedupe.set(key, record);
+          }
+        }
+      }
+
+      const pullRequestInputs = [...dedupe.values()];
       pullRequests = pullRequestInputs.map((entry) => createPullRequestRecord(entry));
       if (run.summary.failed > 0 && pullRequests.length === 0) {
         throw new Error(
@@ -1361,6 +1625,8 @@ const runExecuteJobInBackground = async (
       });
     }
 
+    await codexEventWrite;
+
     const completionStatus = inferExecutionJobStatusFromRun(run);
     const completedAt = new Date().toISOString();
     const finalJob = await updateExecutionJobAndPersist(
@@ -1373,13 +1639,7 @@ const runExecuteJobInBackground = async (
         next.fixAttemptId = fixAttempt?.id ?? null;
         next.pullRequestIds = pullRequests.map((record) => record.id);
         next.summary = run.summary;
-        next.executionAudit = {
-          model: codexExecution.model,
-          threadId: codexExecution.threadId,
-          turnId: codexExecution.turnId,
-          turnStatus: codexExecution.turnStatus,
-          completedAt: codexExecution.completedAt,
-        };
+        next.executionAudit = latestTurnAudit;
         next.error = null;
       },
     );
@@ -1396,13 +1656,7 @@ const runExecuteJobInBackground = async (
         fixAttemptId: fixAttempt?.id ?? null,
         pullRequestIds: pullRequests.map((record) => record.id),
         summary: run.summary,
-        executionAudit: {
-          model: codexExecution.model,
-          threadId: codexExecution.threadId,
-          turnId: codexExecution.turnId,
-          turnStatus: codexExecution.turnStatus,
-          completedAt: codexExecution.completedAt,
-        },
+        executionAudit: latestTurnAudit,
       },
     });
   } catch (error) {

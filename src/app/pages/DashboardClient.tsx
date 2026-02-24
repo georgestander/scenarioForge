@@ -46,10 +46,10 @@ const OUTCOME_STYLES: Record<
     background: "rgba(161, 71, 69, 0.22)",
   },
   blocked: {
-    label: "Blocked",
-    color: "#ffd8a6",
-    borderColor: "#a5692f",
-    background: "rgba(165, 105, 47, 0.22)",
+    label: "Failed",
+    color: "#ffaba7",
+    borderColor: "#a14745",
+    background: "rgba(161, 71, 69, 0.22)",
   },
 };
 
@@ -82,10 +82,10 @@ const ACTIVE_RUN_STYLES: Record<
     background: "rgba(161, 71, 69, 0.22)",
   },
   blocked: {
-    label: "Blocked",
-    color: "#ffd8a6",
-    borderColor: "#a5692f",
-    background: "rgba(165, 105, 47, 0.22)",
+    label: "Failed",
+    color: "#ffaba7",
+    borderColor: "#a14745",
+    background: "rgba(161, 71, 69, 0.22)",
   },
 };
 

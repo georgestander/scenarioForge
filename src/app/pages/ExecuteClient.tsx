@@ -37,7 +37,6 @@ const STATUS_ICON: Record<string, { char: string; color: string }> = {
   running: { char: "\u21BB", color: "var(--forge-fire)" },
   passed: { char: "\u2713", color: "var(--forge-ok)" },
   failed: { char: "\u2717", color: "#e25555" },
-  blocked: { char: "\u2717", color: "#e6b36e" },
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -45,7 +44,6 @@ const STATUS_LABEL: Record<string, string> = {
   running: "in progress",
   passed: "passed",
   failed: "failed",
-  blocked: "failed (limitation)",
 };
 
 const STAGE_LABEL: Record<string, string> = {
@@ -60,7 +58,7 @@ const JOB_STATUS_LABEL: Record<ExecutionJob["status"], string> = {
   running: "Running",
   completed: "Completed",
   failed: "Failed",
-  blocked: "Handoff",
+  blocked: "Failed",
 };
 
 const JOB_TERMINAL: ExecutionJob["status"][] = ["completed", "failed", "blocked"];
@@ -470,13 +468,13 @@ export const ExecuteClient = ({
         continue;
       }
 
+      const rawStatus = event.status === "blocked" ? "failed" : event.status;
       const normalizedStatus =
-        event.status === "passed" ||
-        event.status === "failed" ||
-        event.status === "blocked" ||
-        event.status === "queued" ||
-        event.status === "running"
-          ? event.status
+        rawStatus === "passed" ||
+        rawStatus === "failed" ||
+        rawStatus === "queued" ||
+        rawStatus === "running"
+          ? rawStatus
           : "running";
 
       map.set(event.scenarioId, {
@@ -543,8 +541,7 @@ export const ExecuteClient = ({
       const completedCount = scenarioRows.filter(
         (row) =>
           row.status === "passed" ||
-          row.status === "failed" ||
-          row.status === "blocked",
+          row.status === "failed",
       ).length;
       const activeIndex = Math.min(
         completedCount,
@@ -561,8 +558,7 @@ export const ExecuteClient = ({
       scenarioRows.filter(
         (row) =>
           row.status === "passed" ||
-          row.status === "failed" ||
-          row.status === "blocked",
+          row.status === "failed",
       ).length,
     [scenarioRows],
   );
@@ -952,11 +948,9 @@ export const ExecuteClient = ({
                     ? "rgba(38, 91, 58, 0.2)"
                     : row.status === "failed"
                       ? "rgba(122, 49, 49, 0.18)"
-                      : row.status === "blocked"
-                        ? "rgba(74, 84, 112, 0.16)"
-                        : isRunning
-                          ? "rgba(173, 90, 51, 0.13)"
-                          : "transparent",
+                      : isRunning
+                        ? "rgba(173, 90, 51, 0.13)"
+                        : "transparent",
               }}
             >
               <input

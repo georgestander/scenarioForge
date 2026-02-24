@@ -16,7 +16,7 @@ import type { ReviewBoardPayload } from "@/app/shared/types";
 const STATUS_COLORS: Record<string, string> = {
   passed: "var(--forge-ok)",
   failed: "#e25555",
-  blocked: "var(--forge-muted)",
+  blocked: "#e25555",
   running: "var(--forge-fire)",
   queued: "var(--forge-muted)",
 };
@@ -24,14 +24,14 @@ const STATUS_COLORS: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   passed: "passed",
   failed: "failed",
-  blocked: "handoff",
+  blocked: "failed",
   running: "running",
   queued: "queued",
 };
 
 const STATUS_SORT_ORDER: Record<string, number> = {
   failed: 0,
-  blocked: 1,
+  blocked: 0,
   running: 2,
   queued: 3,
   passed: 4,
@@ -182,9 +182,9 @@ export const CompletedClient = ({
   };
 
   const totalPassed = latestRun?.summary.passed ?? 0;
-  const totalFailed = latestRun?.summary.failed ?? 0;
-  const totalBlocked = latestRun?.summary.blocked ?? 0;
-  const totalScenarios = totalPassed + totalFailed + totalBlocked;
+  const totalLimited = latestRun?.summary.blocked ?? 0;
+  const totalFailed = (latestRun?.summary.failed ?? 0) + totalLimited;
+  const totalScenarios = totalPassed + totalFailed;
   const visibleStatusMessage = useMemo(() => {
     const trimmed = statusMessage.trim();
     if (!trimmed || trimmed === DEFAULT_STATUS_MESSAGE) {
@@ -234,7 +234,7 @@ export const CompletedClient = ({
       <p style={{ textAlign: "center", color: "var(--forge-ink)", fontSize: "0.92rem", lineHeight: 1.6, margin: 0 }}>
         <strong>{project.name}</strong>
         {latestRun
-          ? <> finished with {totalScenarios} scenario{totalScenarios !== 1 ? "s" : ""}: {totalPassed} passed, {totalFailed} failed{totalBlocked > 0 ? `, ${totalBlocked} limited` : ""}.</>
+          ? <> finished with {totalScenarios} scenario{totalScenarios !== 1 ? "s" : ""}: {totalPassed} passed, {totalFailed} failed{totalLimited > 0 ? " (including environment limitations)" : ""}.</>
           : <> has no completed runs yet.</>
         }
         {initialPullRequests.length > 0

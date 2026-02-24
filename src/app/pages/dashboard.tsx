@@ -81,7 +81,7 @@ const deriveLatestRunOutcome = (run: ScenarioRun): DashboardLatestRunOutcome => 
   }
 
   if (run.summary.blocked > 0) {
-    return "blocked";
+    return "failed";
   }
 
   return "passed";
