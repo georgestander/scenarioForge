@@ -241,6 +241,8 @@ Persist and link:
 ### Phase 4
 - `execute` action contract + streaming.
 - Run/fix/rerun/PR flow with evidence capture.
+- Implement app-owned execute controller loop (scenario-by-scenario) with isolated git worktrees per scenario attempt.
+- Keep App Server as harness for bounded turns; controller owns scheduling, retries, and terminal status progression.
 
 ### Phase 5
 - UX hardening: affordances, retries, error visibility.
@@ -318,6 +320,7 @@ This section is the execution blueprint for the UI overhaul from the reference s
 - Required states:
   - live stream of high-signal run/fix/rerun/PR steps,
   - execution mode selector with `full` gated by readiness,
+  - scenario selection controls (select-all default on, per-scenario toggle),
   - current scenario row is visually highlighted while running,
   - per-scenario checklist board with scenario IDs, checklist state, and current run/fix/rerun/PR stage,
   - hard-fail visibility for real errors and stop reasons.
@@ -391,7 +394,20 @@ Required for acceptance:
 8. Full-mode failures produce PR outcomes with URL or explicit blocked handoff details.
 9. Completed export includes per-scenario checks and PR URL/handoff details from persisted run evidence.
 
-## 12. Definition of Done (Current Alignment)
+## 12. Execute Controller Addendum (2026-02-24)
+
+The execute implementation is now explicitly aligned to a controller-driven architecture:
+
+1. The app owns the loop and scenario scheduling.
+2. Codex App Server is used for bounded turns and event streaming, not infinite-loop orchestration.
+3. Scenario writes run in isolated git worktrees (per scenario attempt) to prevent cross-scenario collisions.
+4. Public API surface remains unchanged (`generate`, `execute` plus job-read endpoints).
+
+Detailed implementation and patch order are defined in:
+
+- `docs/APP_SERVER_CONTROLLER_WORKTREE_PLAN.md`
+
+## 13. Definition of Done (Current Alignment)
 
 1. `generate` works end-to-end with source gate and stream updates.
 2. `generate(mode=update)` revises scenario packs from user intent.

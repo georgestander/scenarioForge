@@ -11,6 +11,10 @@ Re-align Scenario Forge to the locked product contract:
 
 This plan removes fake/synthetic behavior, collapses generation into a single user action, and introduces reliable retry/resume so users do not restart from zero after every error.
 
+Execution controller and git-worktree implementation details are captured in:
+
+- `docs/APP_SERVER_CONTROLLER_WORKTREE_PLAN.md`
+
 ---
 
 ## 2. Deep-Dive Findings (Current State)
@@ -90,10 +94,11 @@ From Execute and Completed views, user can:
 ## 4. Guardrails (Non-Negotiable)
 
 1. Keep only core action intents: `generate`, `execute`.
-2. Do not introduce bridge-side business orchestration.
-3. Never fabricate scenario, fix, PR, or artifact outcomes.
-4. Raw errors pass through with context; no masking.
-5. Keep full audit trail: manifest -> pack -> run -> fix -> PR.
+2. Keep app-server turns bounded and avoid giant single-turn execute orchestration.
+3. Execute scheduling/retry progression must be app-controller owned and durable.
+4. Never fabricate scenario, fix, PR, or artifact outcomes.
+5. Raw errors pass through with context; no masking.
+6. Keep full audit trail: manifest -> pack -> run -> fix -> PR.
 
 ---
 
