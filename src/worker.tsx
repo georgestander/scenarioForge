@@ -691,6 +691,8 @@ const githubConnectionView = (connection: GitHubConnection | null) => {
     return null;
   }
 
+  const tokenHealth = readGitHubTokenHealth(connection);
+
   return {
     id: connection.id,
     principalId: connection.principalId,
@@ -699,6 +701,8 @@ const githubConnectionView = (connection: GitHubConnection | null) => {
     accountLogin: connection.accountLogin,
     installationId: connection.installationId,
     accessTokenExpiresAt: connection.accessTokenExpiresAt,
+    tokenHealth: tokenHealth.state,
+    tokenHealthMessage: tokenHealth.message,
     repositories: connection.repositories,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
@@ -706,6 +710,53 @@ const githubConnectionView = (connection: GitHubConnection | null) => {
 };
 
 const GITHUB_TOKEN_REFRESH_WINDOW_MS = 2 * 60 * 1000;
+
+const readGitHubTokenHealth = (
+  connection: GitHubConnection,
+): { state: "fresh" | "stale" | "expired"; message: string | null } => {
+  const token = connection.accessToken.trim();
+  if (!token) {
+    return {
+      state: "expired",
+      message: "GitHub token missing. Reconnect the installation.",
+    };
+  }
+
+  const expiresAt = connection.accessTokenExpiresAt;
+  if (!expiresAt) {
+    return {
+      state: "stale",
+      message: "GitHub token expiry is unknown. Background refresh is recommended.",
+    };
+  }
+
+  const parsed = Date.parse(expiresAt);
+  if (Number.isNaN(parsed)) {
+    return {
+      state: "stale",
+      message: "GitHub token expiry could not be parsed. Background refresh is recommended.",
+    };
+  }
+
+  if (parsed <= Date.now()) {
+    return {
+      state: "expired",
+      message: "GitHub token expired. Reconnect or re-sync the installation.",
+    };
+  }
+
+  if (parsed <= Date.now() + GITHUB_TOKEN_REFRESH_WINDOW_MS) {
+    return {
+      state: "stale",
+      message: "GitHub token is close to expiry. ScenarioForge is refreshing in the background.",
+    };
+  }
+
+  return {
+    state: "fresh",
+    message: null,
+  };
+};
 
 const parseGitHubOwnerFromRepoUrl = (repoUrl: string | null): string | null => {
   if (!repoUrl) {
@@ -762,21 +813,7 @@ const collectGitHubOwnerHintsForPrincipal = (principalId: string): string[] => {
 };
 
 const isGitHubTokenStale = (connection: GitHubConnection): boolean => {
-  if (!connection.accessToken.trim()) {
-    return true;
-  }
-
-  const expiresAt = connection.accessTokenExpiresAt;
-  if (!expiresAt) {
-    return true;
-  }
-
-  const parsed = Date.parse(expiresAt);
-  if (Number.isNaN(parsed)) {
-    return true;
-  }
-
-  return parsed <= Date.now() + GITHUB_TOKEN_REFRESH_WINDOW_MS;
+  return readGitHubTokenHealth(connection).state !== "fresh";
 };
 
 const refreshGitHubConnectionForPrincipal = async (

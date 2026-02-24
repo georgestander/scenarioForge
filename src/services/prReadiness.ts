@@ -3,19 +3,10 @@ import type { GitHubConnection, Project, ProjectPrReadiness } from "@/domain/mod
 
 interface GitHubRepoResponse {
   full_name?: string;
-  permissions?: {
-    admin?: boolean;
-    maintain?: boolean;
-    push?: boolean;
-    triage?: boolean;
-    pull?: boolean;
-  };
 }
 
-interface PermissionResolution {
-  canPush: boolean;
-  canPull: boolean;
-  explicitlyEvaluated: boolean;
+interface GitHubRepoInstallationResponse {
+  permissions?: Record<string, string>;
 }
 
 const parseRepoFullName = (repoUrl: string | null): string | null => {
@@ -50,48 +41,6 @@ const readGitHubError = async (response: Response): Promise<string> => {
 
 const uniqueStrings = (items: string[]): string[] =>
   [...new Set(items.map((item) => item.trim()).filter((item) => item.length > 0))];
-
-const resolveRepoPermissions = (
-  permissions: GitHubRepoResponse["permissions"] | undefined,
-): PermissionResolution => {
-  if (!permissions || typeof permissions !== "object") {
-    return {
-      canPush: true,
-      canPull: true,
-      explicitlyEvaluated: false,
-    };
-  }
-
-  const hasAnyExplicitFlag =
-    typeof permissions.admin === "boolean" ||
-    typeof permissions.maintain === "boolean" ||
-    typeof permissions.push === "boolean" ||
-    typeof permissions.triage === "boolean" ||
-    typeof permissions.pull === "boolean";
-
-  if (!hasAnyExplicitFlag) {
-    return {
-      canPush: true,
-      canPull: true,
-      explicitlyEvaluated: false,
-    };
-  }
-
-  const canPush = Boolean(permissions.push || permissions.admin || permissions.maintain);
-  const canPull = Boolean(
-    permissions.pull ||
-      permissions.push ||
-      permissions.admin ||
-      permissions.maintain ||
-      permissions.triage,
-  );
-
-  return {
-    canPush,
-    canPull,
-    explicitlyEvaluated: true,
-  };
-};
 
 export const evaluateProjectPrReadiness = async ({
   ownerId,
@@ -171,25 +120,62 @@ export const evaluateProjectPrReadiness = async ({
           `Repository access check failed for '${repositoryFullName}' (${await readGitHubError(repoResponse)}).`,
         );
       } else {
-        const repoPayload = (await repoResponse.json()) as GitHubRepoResponse;
-        const permissionResolution = resolveRepoPermissions(repoPayload.permissions);
-
+        await repoResponse.json();
         capabilities.repositoryAccessible = true;
-        capabilities.canPush = permissionResolution.canPush;
-        capabilities.canCreateBranch = permissionResolution.canPush;
-        capabilities.canOpenPr = permissionResolution.canPush && permissionResolution.canPull;
+        // Optimistic default: if the repo is reachable via installation token, allow full mode
+        // unless installation permissions explicitly prove otherwise.
+        capabilities.canPush = true;
+        capabilities.canCreateBranch = true;
+        capabilities.canOpenPr = true;
 
-        if (permissionResolution.explicitlyEvaluated) {
-          if (!permissionResolution.canPush) {
-            reasons.push(
-              "Connected token lacks push/admin permission required for branch and PR automation.",
-            );
-            recommendedActions.push("Grant write permissions to the GitHub app installation.");
-          }
+        const installationResponse = await fetch(
+          `https://api.github.com/repos/${encodedRepo}/installation`,
+          {
+            method: "GET",
+            headers: githubHeaders(token),
+          },
+        );
 
-          if (!capabilities.canOpenPr) {
-            reasons.push("Current permissions cannot open pull requests automatically.");
-            recommendedActions.push("Ensure installation has pull-request and contents write permissions.");
+        if (installationResponse.ok) {
+          const installationPayload =
+            (await installationResponse.json()) as GitHubRepoInstallationResponse;
+          const permissions = installationPayload.permissions ?? {};
+          const contentsPermission = String(permissions.contents ?? "")
+            .trim()
+            .toLowerCase();
+          const pullRequestsPermission = String(permissions.pull_requests ?? "")
+            .trim()
+            .toLowerCase();
+          const hasExplicitPermissionSignal =
+            contentsPermission.length > 0 || pullRequestsPermission.length > 0;
+
+          if (hasExplicitPermissionSignal) {
+            const canWriteContents =
+              contentsPermission === "write" || contentsPermission === "admin";
+            const canWritePullRequests =
+              pullRequestsPermission === "write" || pullRequestsPermission === "admin";
+
+            capabilities.canPush = canWriteContents;
+            capabilities.canCreateBranch = canWriteContents;
+            capabilities.canOpenPr = canWriteContents && canWritePullRequests;
+
+            if (!canWriteContents) {
+              reasons.push(
+                "Connected installation is missing contents write permission required for branch automation.",
+              );
+              recommendedActions.push(
+                "Grant Contents: Read and write in GitHub app installation permissions.",
+              );
+            }
+
+            if (!canWritePullRequests) {
+              reasons.push(
+                "Connected installation is missing pull-request write permission required for PR automation.",
+              );
+              recommendedActions.push(
+                "Grant Pull requests: Read and write in GitHub app installation permissions.",
+              );
+            }
           }
         }
       }

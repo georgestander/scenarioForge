@@ -33,6 +33,8 @@ export const ConnectPage = ({ ctx, params }: AppRequestInfo) => {
         accountLogin: connection.accountLogin,
         installationId: connection.installationId,
         accessTokenExpiresAt: connection.accessTokenExpiresAt,
+        tokenHealth: "fresh" as const,
+        tokenHealthMessage: null,
         repositories: connection.repositories,
         createdAt: connection.createdAt,
         updatedAt: connection.updatedAt,

@@ -32,6 +32,8 @@ export const ConnectClient = ({
   const [projectName, setProjectName] = useState(project.name || "");
   const [isSaving, setIsSaving] = useState(false);
   const isConnected = Boolean(connection);
+  const tokenHealth = connection?.tokenHealth ?? "fresh";
+  const tokenHealthMessage = connection?.tokenHealthMessage ?? null;
 
   // Auto-select first repo if repos available
   useEffect(() => {
@@ -40,6 +42,16 @@ export const ConnectClient = ({
       setSelectedBranch(repos[0].defaultBranch);
     }
   }, [repos]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshConnection();
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const refreshConnection = async () => {
     const [connRes, reposRes] = await Promise.all([
@@ -213,6 +225,19 @@ export const ConnectClient = ({
     }
   }, []);
 
+  useEffect(() => {
+    if (!isConnected) {
+      return;
+    }
+
+    void (async () => {
+      const response = await fetch("/api/github/connect/sync", { method: "POST" });
+      if (response.ok) {
+        await refreshConnection();
+      }
+    })();
+  }, [isConnected]);
+
   // Update branch when repo changes
   const handleRepoChange = (fullName: string) => {
     setSelectedRepo(fullName);
@@ -244,6 +269,22 @@ export const ConnectClient = ({
           background: "rgba(42, 52, 84, 0.4)",
         }}>
           {statusMessage}
+        </p>
+      ) : null}
+
+      {isConnected && tokenHealth !== "fresh" ? (
+        <p
+          style={{
+            margin: 0,
+            fontSize: "0.82rem",
+            color: "var(--forge-fire)",
+            padding: "0.45rem 0.6rem",
+            borderRadius: "6px",
+            border: "1px solid var(--forge-line)",
+            background: "rgba(173, 90, 51, 0.15)",
+          }}
+        >
+          {tokenHealthMessage ?? "GitHub token is stale. ScenarioForge is refreshing in the background."}
         </p>
       ) : null}
 

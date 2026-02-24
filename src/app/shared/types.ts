@@ -48,6 +48,8 @@ export interface GitHubConnectionView {
   accountLogin: string | null;
   installationId: number;
   accessTokenExpiresAt: string | null;
+  tokenHealth: "fresh" | "stale" | "expired";
+  tokenHealthMessage: string | null;
   repositories: GitHubRepository[];
   createdAt: string;
   updatedAt: string;
