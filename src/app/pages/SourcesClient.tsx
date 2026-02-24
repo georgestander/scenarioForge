@@ -228,6 +228,15 @@ export const SourcesClient = ({
               <span style={{ display: "grid", gap: "0.1rem", fontSize: "0.85rem" }}>
                 <strong style={{ color: "var(--forge-ink)" }}>{source.title}</strong>
                 <span style={{ color: "var(--forge-muted)", fontSize: "0.78rem" }}>{source.path}</span>
+                <span style={{ color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+                  status: {source.status}
+                  {source.isConflicting ? " | conflicting" : ""}
+                </span>
+                {source.warnings.length > 0 ? (
+                  <span style={{ color: "#f2a96a", fontSize: "0.74rem" }}>
+                    {source.warnings.join(" ")}
+                  </span>
+                ) : null}
               </span>
             </label>
           ))}
