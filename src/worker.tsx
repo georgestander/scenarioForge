@@ -328,7 +328,7 @@ const buildScenarioRunInputFromCodexOutput = (
     throw new Error("Codex execute output did not include run.items.");
   }
 
-  const items = rawItems
+  const parsedItemMap = rawItems
     .map((item, index) => {
       if (!isRecord(item)) {
         throw new Error(`Codex execute output has invalid run item at index ${index}.`);
@@ -374,17 +374,45 @@ const buildScenarioRunInputFromCodexOutput = (
         failureHypothesis: string | null;
         artifacts: Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>;
       } => Boolean(item),
-    );
+    )
+    .reduce((acc, item) => {
+      if (acc.has(item.scenarioId)) {
+        throw new Error(
+          `Codex execute output contains duplicate scenarioId '${item.scenarioId}'.`,
+        );
+      }
+      acc.set(item.scenarioId, item);
+      return acc;
+    }, new Map<string, {
+      scenarioId: string;
+      status: "passed" | "failed" | "blocked";
+      startedAt: string;
+      completedAt: string;
+      observed: string;
+      expected: string;
+      failureHypothesis: string | null;
+      artifacts: Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>;
+    }>());
 
-  const seenScenarioIds = new Set(items.map((item) => item.scenarioId));
-  if (items.length !== pack.scenarios.length) {
-    const missingIds = pack.scenarios
-      .map((scenario) => scenario.id)
-      .filter((scenarioId) => !seenScenarioIds.has(scenarioId));
-    throw new Error(
-      `Codex execute output covered ${items.length}/${pack.scenarios.length} scenarios. Missing: ${missingIds.join(", ")}`,
-    );
-  }
+  // Ensure every scenario reaches a terminal state even if Codex omits some run items.
+  const items = pack.scenarios.map((scenario, index) => {
+    const existing = parsedItemMap.get(scenario.id);
+    if (existing) {
+      return existing;
+    }
+
+    const timestamp = new Date(now.getTime() + index * 250).toISOString();
+    return {
+      scenarioId: scenario.id,
+      status: "blocked" as const,
+      startedAt: timestamp,
+      completedAt: timestamp,
+      observed: "Codex execute output omitted this scenario result. Marked blocked for explicit rerun.",
+      expected: scenario.passCriteria,
+      failureHypothesis: "Missing run item for scenario in Codex execute output.",
+      artifacts: [],
+    };
+  });
 
   const computedSummary = items.reduce(
     (acc, item) => {
@@ -1639,6 +1667,17 @@ export default defineApp([
           executionMode,
           timestamp: new Date().toISOString(),
         });
+        for (const scenario of pack.scenarios) {
+          emit("status", {
+            action: "execute",
+            phase: "run.queue",
+            scenarioId: scenario.id,
+            stage: "run",
+            status: "queued",
+            message: `${scenario.id} queued`,
+            timestamp: new Date().toISOString(),
+          });
+        }
 
         const codexExecution = await executeScenariosViaCodexStream(
           {
@@ -1665,6 +1704,17 @@ export default defineApp([
           codexExecution.parsedOutput,
         );
         const run = createScenarioRun(runInput);
+        for (const item of run.items) {
+          emit("status", {
+            action: "execute",
+            phase: "run.result",
+            scenarioId: item.scenarioId,
+            stage: "run",
+            status: item.status,
+            message: item.observed,
+            timestamp: item.completedAt,
+          });
+        }
         emit("persisted", {
           action: "execute",
           kind: "run",
@@ -1682,6 +1732,31 @@ export default defineApp([
             codexExecution.parsedOutput,
           );
           fixAttempt = createFixAttempt(fixInput);
+          for (const scenarioId of fixAttempt.failedScenarioIds) {
+            emit("status", {
+              action: "execute",
+              phase: "fix.progress",
+              scenarioId,
+              stage: "fix",
+              status: "running",
+              message: fixAttempt.patchSummary,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          if (fixAttempt.rerunSummary) {
+            const rerunStatus = fixAttempt.rerunSummary.failed > 0 ? "failed" : "passed";
+            for (const scenarioId of fixAttempt.failedScenarioIds) {
+              emit("status", {
+                action: "execute",
+                phase: "rerun.result",
+                scenarioId,
+                stage: "rerun",
+                status: rerunStatus,
+                message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
           emit("persisted", {
             action: "execute",
             kind: "fixAttempt",
@@ -1699,6 +1774,19 @@ export default defineApp([
             codexExecution.parsedOutput,
           );
           pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
+          for (const pr of pullRequests) {
+            for (const scenarioId of pr.scenarioIds) {
+              emit("status", {
+                action: "execute",
+                phase: "pr.result",
+                scenarioId,
+                stage: "pr",
+                status: pr.url ? "passed" : "blocked",
+                message: pr.url ? `PR ready: ${pr.title}` : `PR blocked: ${pr.title}`,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
           emit("persisted", {
             action: "execute",
             kind: "pullRequests",

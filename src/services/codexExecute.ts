@@ -379,6 +379,8 @@ const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
     `- Scenario pack id: ${input.pack.id}`,
     `- Manifest id: ${input.pack.manifestId}`,
     "- Use available repo tools to run validation, apply targeted fixes, rerun impacted scenarios, and prepare PR metadata.",
+    "- Execute every scenario ID listed under Scenario subset and return one terminal run.items entry per scenario (`passed`/`failed`/`blocked`).",
+    "- Do not stop early; if a scenario cannot be completed in this environment, mark it `blocked` with explicit observed reason.",
     "- If a step cannot be executed in this environment, return that limitation in observed output and keep statuses accurate.",
     "",
     "Output contract:",
