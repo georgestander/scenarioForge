@@ -90,7 +90,13 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
 
   // Progress bar: count done phases
   const doneCount = phases.filter((p) => p.done).length;
-  const progressPct = phases.length > 0 ? Math.round((doneCount / phases.length) * 100) : 0;
+  const activePhaseIndex = phases.findIndex((p) => p.path === currentPath);
+  const activePhase = activePhaseIndex >= 0 ? phases[activePhaseIndex] : null;
+  const progressCount =
+    phases.length > 0
+      ? Math.max(doneCount, activePhaseIndex >= 0 ? activePhaseIndex + 1 : doneCount)
+      : 0;
+  const progressPct = phases.length > 0 ? Math.round((progressCount / phases.length) * 100) : 0;
 
   return (
     <SessionProvider initialPrincipal={principal}>
@@ -133,20 +139,26 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
 
             {/* Progress bar */}
             {!isDashboard && phases.length > 0 ? (
-              <div style={{
-                height: "8px",
-                borderRadius: "4px",
-                background: "var(--forge-line)",
-                overflow: "hidden",
-                marginTop: "0.3rem",
-              }}>
+              <div style={{ display: "grid", gap: "0.28rem", marginTop: "0.3rem" }}>
+                <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--forge-muted)" }}>
+                  {activePhase
+                    ? `Current phase ${activePhase.id} of ${phases.length}: ${activePhase.label}`
+                    : `Progress: ${progressCount} of ${phases.length} phases`}
+                </p>
                 <div style={{
-                  height: "100%",
-                  width: `${progressPct}%`,
+                  height: "8px",
                   borderRadius: "4px",
-                  background: "var(--forge-hot)",
-                  transition: "width 0.3s ease",
-                }} />
+                  background: "var(--forge-line)",
+                  overflow: "hidden",
+                }}>
+                  <div style={{
+                    height: "100%",
+                    width: `${progressPct}%`,
+                    borderRadius: "4px",
+                    background: "var(--forge-hot)",
+                    transition: "width 0.3s ease",
+                  }} />
+                </div>
               </div>
             ) : null}
 

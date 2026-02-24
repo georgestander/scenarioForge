@@ -22,10 +22,10 @@ export const PhaseRail = ({ projectId, phases, activePath }: PhaseRailProps) => 
       </h2>
       {phases.map((phase) => {
         const isActive = activePath === phase.path;
-        const state = phase.done
-          ? "Done"
-          : isActive
-            ? "Active"
+        const state = isActive
+          ? "Current"
+          : phase.done
+            ? "Done"
             : !phase.unlocked
               ? "Locked"
               : "Ready";
@@ -35,6 +35,7 @@ export const PhaseRail = ({ projectId, phases, activePath }: PhaseRailProps) => 
             key={phase.id}
             href={phase.unlocked ? phase.path : undefined}
             data-active={isActive}
+            aria-current={isActive ? "step" : undefined}
             style={{
               display: "grid",
               gridTemplateColumns: "28px 1fr auto",

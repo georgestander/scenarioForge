@@ -15,6 +15,23 @@
 - Phase 1 is complete.
 - Phase 2 is partially complete and remains `in_progress`.
 
+## Session Update (2026-02-24)
+
+- Decisions made:
+  - Phase visibility is now explicit in both shell surfaces:
+    - sidebar uses a dedicated `Current` state for the active route,
+    - top progress bar includes a persistent `Current phase X of Y` label.
+  - Execute screen stream log is intentionally narrow to prioritize scenario checklist readability.
+  - Execute scenario titles/messages now wrap instead of truncating, avoiding horizontal reading pressure.
+- Current implementation status:
+  - `src/app/layouts/AppShell.tsx` now derives and displays current phase text in the top progress area.
+  - `src/app/layouts/PhaseRail.tsx` now labels active route rows as `Current` (not `Done`) and marks `aria-current`.
+  - `src/app/pages/ExecuteClient.tsx` now uses an asymmetric layout with a constrained stream column and mobile-safe stacking.
+- Next actions:
+  - Validate execute layout against locked UI screenshots on desktop + mobile.
+  - Tighten phase completion semantics (`Generate`/`Review` and `Execute`/`Completed`) using server-authoritative prerequisites.
+  - Add focused UI regression coverage for phase indicator persistence and execute panel sizing.
+
 ## Phase 1 - Auth and Repo Connect (Done)
 
 ### SF-1001 ChatGPT auth integration
@@ -163,7 +180,7 @@
 ### SF-5002 Action affordances and retry UX
 
 - Priority: P0
-- Status: todo
+- Status: in_progress
 - Acceptance criteria:
   - Clear loading/progress affordance for scan/generate/execute actions.
   - Explicit retry/resume behavior after action failures.
