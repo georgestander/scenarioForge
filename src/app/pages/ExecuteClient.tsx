@@ -105,7 +105,9 @@ export const ExecuteClient = ({
       if (payload.readiness?.status === "ready") {
         setStatusMessage("PR automation is ready.");
       } else {
-        setStatusMessage("PR automation needs attention before full execute mode.");
+        setStatusMessage(
+          "PR automation needs attention for full mode only. You can run with mode run, fix, or pr.",
+        );
       }
     } finally {
       setIsCheckingPrReadiness(false);
@@ -222,7 +224,9 @@ export const ExecuteClient = ({
   const handleExecute = async () => {
     if (isExecuting) return;
     if (executionMode === "full" && !fullModeReady) {
-      setStatusMessage("Full mode is blocked until PR automation readiness is green.");
+      setStatusMessage(
+        "Full mode is blocked until PR automation readiness is green. Switch to run, fix, or pr mode to continue now.",
+      );
       return;
     }
     setIsExecuting(true);
@@ -361,6 +365,9 @@ export const ExecuteClient = ({
             ))}
           </ul>
         ) : null}
+        <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+          This check gates full mode only. Other execute modes remain available.
+        </p>
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button type="button" onClick={() => void handleCheckPrReadiness()} disabled={isCheckingPrReadiness || isExecuting}>
             {isCheckingPrReadiness ? "Checking..." : "Check PR readiness"}

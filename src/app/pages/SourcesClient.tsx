@@ -131,7 +131,9 @@ export const SourcesClient = ({
       if (payload.readiness?.status === "ready") {
         setStatusMessage("PR automation is ready.");
       } else {
-        setStatusMessage("PR automation needs attention before full execute mode.");
+        setStatusMessage(
+          "PR automation needs attention for full mode only. You can continue with scan, generate, and non-full execute modes.",
+        );
       }
     } finally {
       setIsCheckingPrReadiness(false);
@@ -227,6 +229,9 @@ export const SourcesClient = ({
             ))}
           </ul>
         ) : null}
+        <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+          This check does not block source scan, manifest creation, or scenario generation.
+        </p>
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button type="button" onClick={() => void handleCheckPrReadiness()} disabled={isCheckingPrReadiness}>
             {isCheckingPrReadiness ? "Checking..." : "Check PR readiness"}
