@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
 import type {
+  CodeBaseline,
   Project,
   ScenarioPack,
   SourceManifest,
   SourceRecord,
 } from "@/domain/models";
+import { isCodeFirstGenerationEnabled } from "@/services/featureFlags";
 
 interface GitHubContentResponse {
   content?: string;
@@ -54,6 +56,7 @@ interface GenerateScenariosViaCodexInput {
   project: Project;
   manifest: SourceManifest;
   selectedSources: SourceRecord[];
+  codeBaseline?: CodeBaseline | null;
   githubToken: string;
   mode?: "initial" | "update";
   userInstruction?: string;
@@ -332,9 +335,6 @@ const truncate = (value: string, maxLength: number): string => {
   return `${value.slice(0, maxLength)}\n... [truncated]`;
 };
 
-const recommendedScenarioCount = (selectedCount: number): number =>
-  Math.max(8, Math.min(24, Math.round(selectedCount * 1.7) + 4));
-
 const buildSourceSection = (
   sources: LoadedSource[],
   hasSelectedSources: boolean,
@@ -374,14 +374,13 @@ const buildSourceSection = (
     .join("\n\n");
 };
 
-export const SCENARIO_OUTPUT_SCHEMA = {
+const LEGACY_SCENARIO_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["scenarios", "groupedByFeature", "groupedByOutcome"],
   properties: {
     scenarios: {
       type: "array",
-      minItems: 8,
       items: {
         type: "object",
         additionalProperties: false,
@@ -475,11 +474,178 @@ export const SCENARIO_OUTPUT_SCHEMA = {
   },
 } as const;
 
+const COVERAGE_FIRST_SCENARIO_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["scenarios", "coverage", "groupedByFeature", "groupedByOutcome"],
+  properties: {
+    scenarios: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "id",
+          "feature",
+          "outcome",
+          "title",
+          "persona",
+          "journey",
+          "riskIntent",
+          "preconditions",
+          "testData",
+          "steps",
+          "expectedCheckpoints",
+          "edgeVariants",
+          "codeEvidenceAnchors",
+          "passCriteria",
+          "priority",
+        ],
+        properties: {
+          id: { type: "string" },
+          feature: { type: "string" },
+          outcome: { type: "string" },
+          title: { type: "string" },
+          persona: { type: "string" },
+          journey: { type: "string" },
+          riskIntent: { type: "string" },
+          preconditions: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          testData: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          steps: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          expectedCheckpoints: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          edgeVariants: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          codeEvidenceAnchors: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          sourceRefs: {
+            type: "array",
+            items: { type: "string" },
+          },
+          passCriteria: { type: "string" },
+          priority: {
+            type: "string",
+            enum: ["critical", "high", "medium"],
+          },
+        },
+      },
+    },
+    coverage: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "personas",
+        "journeys",
+        "edgeBuckets",
+        "features",
+        "outcomes",
+        "assumptions",
+        "knownUnknowns",
+        "uncoveredGaps",
+      ],
+      properties: {
+        personas: { type: "array", minItems: 1, items: { type: "string" } },
+        journeys: { type: "array", minItems: 1, items: { type: "string" } },
+        edgeBuckets: { type: "array", minItems: 1, items: { type: "string" } },
+        features: { type: "array", minItems: 1, items: { type: "string" } },
+        outcomes: { type: "array", minItems: 1, items: { type: "string" } },
+        assumptions: { type: "array", items: { type: "string" } },
+        knownUnknowns: { type: "array", items: { type: "string" } },
+        uncoveredGaps: { type: "array", items: { type: "string" } },
+      },
+    },
+    groupedByFeature: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["feature", "scenarioIds"],
+        properties: {
+          feature: { type: "string" },
+          scenarioIds: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string" },
+          },
+        },
+      },
+    },
+    groupedByOutcome: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["outcome", "scenarioIds"],
+        properties: {
+          outcome: { type: "string" },
+          scenarioIds: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string" },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+export const SCENARIO_OUTPUT_SCHEMA = COVERAGE_FIRST_SCENARIO_OUTPUT_SCHEMA;
+
+const getScenarioOutputSchema = () =>
+  isCodeFirstGenerationEnabled()
+    ? COVERAGE_FIRST_SCENARIO_OUTPUT_SCHEMA
+    : LEGACY_SCENARIO_OUTPUT_SCHEMA;
+
+const buildCodeBaselineSection = (codeBaseline?: CodeBaseline | null): string => {
+  if (!codeBaseline) {
+    return "Code baseline unavailable. Use repository behavior and explain assumptions explicitly.";
+  }
+
+  return [
+    `Code baseline id: ${codeBaseline.id}`,
+    `Code baseline hash: ${codeBaseline.baselineHash}`,
+    `Code baseline generatedAt: ${codeBaseline.generatedAt}`,
+    `Route map: ${codeBaseline.routeMap.join(" | ") || "none"}`,
+    `API surface: ${codeBaseline.apiSurface.join(" | ") || "none"}`,
+    `State transitions: ${codeBaseline.stateTransitions.join(" | ") || "none"}`,
+    `Async boundaries: ${codeBaseline.asyncBoundaries.join(" | ") || "none"}`,
+    `Domain entities: ${codeBaseline.domainEntities.join(" | ") || "none"}`,
+    `Integrations: ${codeBaseline.integrations.join(" | ") || "none"}`,
+    `Error paths: ${codeBaseline.errorPaths.join(" | ") || "none"}`,
+    `Likely failure points: ${codeBaseline.likelyFailurePoints.join(" | ") || "none"}`,
+    `Evidence anchors: ${codeBaseline.evidenceAnchors.join(" | ") || "none"}`,
+  ].join("\n");
+};
+
 const buildScenarioPrompt = (
   input: GenerateScenariosViaCodexInput,
   loadedSources: LoadedSource[],
 ): string => {
-  const scenarioCount = recommendedScenarioCount(input.selectedSources.length);
+  const codeFirstEnabled = isCodeFirstGenerationEnabled();
   const sourcePaths = input.selectedSources.map((source) => source.path).join("\n- ");
   const hasSelectedSources = input.selectedSources.length > 0;
   const mode = input.mode ?? "initial";
@@ -498,7 +664,9 @@ const buildScenarioPrompt = (
       : "Update context: none";
 
   return [
-    "Generate realistic end-to-end user scenarios for ScenarioForge.",
+    codeFirstEnabled
+      ? "Generate coverage-complete, code-first end-to-end user scenarios for ScenarioForge."
+      : "Generate realistic end-to-end user scenarios for ScenarioForge.",
     "",
     "Hard constraints:",
     `- Generation mode: ${mode}`,
@@ -516,12 +684,26 @@ const buildScenarioPrompt = (
           "- Make assumptions explicit in scenario checkpoints when docs are absent.",
         ]),
     "- Scenario quality bar must align to the $scenario skill: realistic journeys, edge variants, binary pass criteria, and evidence-ready checkpoints.",
-    `- Generate approximately ${scenarioCount} scenarios.`,
-    "- Group scenarios by both feature and user outcome.",
-    "- groupedByFeature must be an array of objects: { feature, scenarioIds[] }.",
-    "- groupedByOutcome must be an array of objects: { outcome, scenarioIds[] }.",
+    ...(codeFirstEnabled
+      ? [
+          "- Enumerate all materially distinct user journeys and edge variants discoverable from current code behavior.",
+          "- Do not optimize for fixed scenario count; optimize for coverage completeness and closure.",
+          "- Include a top-level coverage object with: personas, journeys, edgeBuckets, features, outcomes, assumptions, knownUnknowns, uncoveredGaps.",
+          "- Each scenario must include journey, riskIntent, and codeEvidenceAnchors (file/function/route identifiers).",
+          "- sourceRefs are optional and should only reference selected docs.",
+          "- groupedByFeature must be an array of objects: { feature, scenarioIds[] }.",
+          "- groupedByOutcome must be an array of objects: { outcome, scenarioIds[] }.",
+        ]
+      : [
+          "- Group scenarios by both feature and user outcome.",
+          "- groupedByFeature must be an array of objects: { feature, scenarioIds[] }.",
+          "- groupedByOutcome must be an array of objects: { outcome, scenarioIds[] }.",
+        ]),
     "- Return final output directly as JSON response text.",
     "- Do not call apply_patch or write files.",
+    "",
+    "Code baseline:",
+    buildCodeBaselineSection(input.codeBaseline),
     "",
     "Selected source paths:",
     hasSelectedSources ? `- ${sourcePaths}` : "- none (code-only mode)",
@@ -579,7 +761,7 @@ const generateScenariosViaCodexInternal = async (
     sandboxPolicy: {
       type: "readOnly",
     },
-    outputSchema: SCENARIO_OUTPUT_SCHEMA,
+    outputSchema: getScenarioOutputSchema(),
     prompt,
   };
 

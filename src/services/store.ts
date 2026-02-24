@@ -568,6 +568,18 @@ export const getLatestCodeBaselineForProject = (
   return baselines[0] ?? null;
 };
 
+export const getCodeBaselineById = (
+  ownerId: string,
+  codeBaselineId: string,
+): CodeBaseline | null => {
+  const state = getState();
+  return (
+    state.codeBaselines.find(
+      (record) => record.ownerId === ownerId && record.id === codeBaselineId,
+    ) ?? null
+  );
+};
+
 export const createScenarioPack = (
   input: Omit<ScenarioPack, "id" | "createdAt" | "updatedAt">,
 ): ScenarioPack => {

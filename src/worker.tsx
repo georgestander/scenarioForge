@@ -71,6 +71,7 @@ import {
   createScenarioRun,
   createSourceManifest,
   disconnectGitHubConnectionForPrincipal,
+  getCodeBaselineById,
   getFixAttemptById,
   getGitHubConnectionForPrincipal,
   getLatestCodeBaselineForProject,
@@ -1640,6 +1641,15 @@ export default defineApp([
       if (manifest.sourceIds.length > 0 && selectedSources.length === 0) {
         return json({ error: "Manifest selected sources could not be resolved." }, 400);
       }
+      const codeBaseline =
+        getCodeBaselineById(principal.id, manifest.codeBaselineId) ??
+        getLatestCodeBaselineForProject(principal.id, project.id);
+      if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+        return json(
+          { error: "Code baseline is required for generation. Re-scan sources first." },
+          400,
+        );
+      }
 
       const modeValue = String(payload?.mode ?? "initial")
         .trim()
@@ -1684,6 +1694,7 @@ export default defineApp([
                 project,
                 manifest,
                 selectedSources,
+                codeBaseline,
                 githubToken: githubConnection.accessToken,
                 mode,
                 userInstruction,
@@ -2004,6 +2015,15 @@ export default defineApp([
       if (manifest.sourceIds.length > 0 && selectedSources.length === 0) {
         return json({ error: "Manifest selected sources could not be resolved." }, 400);
       }
+      const codeBaseline =
+        getCodeBaselineById(principal.id, manifest.codeBaselineId) ??
+        getLatestCodeBaselineForProject(principal.id, project.id);
+      if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+        return json(
+          { error: "Code baseline is required for generation. Re-scan sources first." },
+          400,
+        );
+      }
 
       const modeValue = String(payload?.mode ?? "initial")
         .trim()
@@ -2034,6 +2054,7 @@ export default defineApp([
             project,
             manifest,
             selectedSources,
+            codeBaseline,
             githubToken: githubConnection.accessToken,
             mode,
             userInstruction,
@@ -2248,6 +2269,15 @@ export default defineApp([
         if (manifest.sourceIds.length > 0 && sources.length === 0) {
           return json({ error: "Manifest selected sources could not be resolved." }, 400);
         }
+        const codeBaseline =
+          getCodeBaselineById(principal.id, manifest.codeBaselineId) ??
+          getLatestCodeBaselineForProject(principal.id, project.id);
+        if (isCodeFirstGenerationEnabled() && !codeBaseline) {
+          return json(
+            { error: "Code baseline is required for generation. Re-scan sources first." },
+            400,
+          );
+        }
 
         const githubConnection = await ensureGitHubConnectionForPrincipal(
           principal.id,
@@ -2270,6 +2300,7 @@ export default defineApp([
               project,
               manifest,
               selectedSources: sources,
+              codeBaseline,
               githubToken: githubConnection.accessToken,
               useSkill,
             });

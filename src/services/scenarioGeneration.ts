@@ -74,6 +74,13 @@ const requireString = (value: unknown, fieldName: string): string => {
   return value.trim();
 };
 
+const optionalString = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim();
+};
+
 const requireStringArray = (value: unknown, fieldName: string): string[] => {
   if (!Array.isArray(value)) {
     throw new Error(`Invalid scenario output: ${fieldName} must be an array of strings.`);
@@ -88,6 +95,15 @@ const requireStringArray = (value: unknown, fieldName: string): string[] => {
   }
 
   return normalized;
+};
+
+const optionalStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0);
 };
 
 const normalizePriority = (value: unknown): ScenarioPriority => {
@@ -115,6 +131,9 @@ const normalizeScenario = (value: unknown, index: number): ScenarioContract => {
     outcome: requireString(value.outcome, `scenarios[${index}].outcome`),
     title: requireString(value.title, `scenarios[${index}].title`),
     persona: requireString(value.persona, `scenarios[${index}].persona`),
+    journey:
+      optionalString(value.journey) || requireString(value.title, `scenarios[${index}].title`),
+    riskIntent: optionalString(value.riskIntent),
     preconditions: requireStringArray(
       value.preconditions,
       `scenarios[${index}].preconditions`,
@@ -129,6 +148,8 @@ const normalizeScenario = (value: unknown, index: number): ScenarioContract => {
       value.edgeVariants,
       `scenarios[${index}].edgeVariants`,
     ),
+    codeEvidenceAnchors: optionalStringArray(value.codeEvidenceAnchors),
+    sourceRefs: optionalStringArray(value.sourceRefs),
     passCriteria: requireString(value.passCriteria, `scenarios[${index}].passCriteria`),
     priority: normalizePriority(value.priority),
   };
