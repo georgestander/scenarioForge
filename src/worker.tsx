@@ -1,4 +1,4 @@
-import { render, route } from "rwsdk/router";
+import { render, route, layout, prefix } from "rwsdk/router";
 import type { RouteMiddleware } from "rwsdk/router";
 import type { RequestInfo } from "rwsdk/worker";
 import { defineApp } from "rwsdk/worker";
@@ -6,6 +6,14 @@ import { defineApp } from "rwsdk/worker";
 import { Document } from "@/app/document";
 import { setCommonHeaders } from "@/app/headers";
 import { Home } from "@/app/pages/home";
+import { AppShell } from "@/app/layouts/AppShell";
+import { DashboardPage } from "@/app/pages/dashboard";
+import { ConnectPage } from "@/app/pages/connect";
+import { SourcesPage } from "@/app/pages/sources";
+import { GeneratePage } from "@/app/pages/generate";
+import { ReviewPage } from "@/app/pages/review";
+import { ExecutePage } from "@/app/pages/execute";
+import { CompletedPage } from "@/app/pages/completed";
 import type {
   AuthPrincipal,
   AuthSession,
@@ -275,6 +283,28 @@ const normalizeArtifacts = (value: unknown): Array<{
 
 type PullRequestCreateInput = Parameters<typeof createPullRequestRecord>[0];
 
+const getExecutionOutputContainer = (
+  parsedOutput: unknown,
+): Record<string, unknown> => {
+  if (!isRecord(parsedOutput)) {
+    throw new Error("Codex execute output is not a JSON object.");
+  }
+
+  if (isRecord(parsedOutput.run) || Array.isArray(parsedOutput.pullRequests)) {
+    return parsedOutput;
+  }
+
+  if (isRecord(parsedOutput.result)) {
+    return parsedOutput.result;
+  }
+
+  if (isRecord(parsedOutput.output)) {
+    return parsedOutput.output;
+  }
+
+  return parsedOutput;
+};
+
 const buildScenarioRunInputFromCodexOutput = (
   ownerId: string,
   projectId: string,
@@ -285,20 +315,30 @@ const buildScenarioRunInputFromCodexOutput = (
   const startedAt = now.toISOString();
 
   const scenariosById = new Map(pack.scenarios.map((scenario) => [scenario.id, scenario]));
-  const outputContainer = isRecord(parsedOutput) ? parsedOutput : {};
-  const runRecord = isRecord(outputContainer.run) ? outputContainer.run : {};
+  const outputContainer = getExecutionOutputContainer(parsedOutput);
+  const runRecord = isRecord(outputContainer.run) ? outputContainer.run : null;
+
+  if (!runRecord) {
+    throw new Error("Codex execute output is missing run details.");
+  }
+
   const rawItems = Array.isArray(runRecord.items) ? runRecord.items : [];
+  if (rawItems.length === 0) {
+    throw new Error("Codex execute output did not include run.items.");
+  }
 
   const items = rawItems
     .map((item, index) => {
       if (!isRecord(item)) {
-        return null;
+        throw new Error(`Codex execute output has invalid run item at index ${index}.`);
       }
 
       const scenarioId = String(item.scenarioId ?? "").trim();
       const scenario = scenariosById.get(scenarioId);
       if (!scenario) {
-        return null;
+        throw new Error(
+          `Codex execute output referenced unknown scenarioId '${scenarioId}'.`,
+        );
       }
 
       const timestamp = new Date(now.getTime() + index * 250).toISOString();
@@ -335,24 +375,17 @@ const buildScenarioRunInputFromCodexOutput = (
       } => Boolean(item),
     );
 
-  const finalItems =
-    items.length > 0
-      ? items
-      : pack.scenarios.map((scenario, index) => {
-          const timestamp = new Date(now.getTime() + index * 250).toISOString();
-          return {
-            scenarioId: scenario.id,
-            status: "blocked" as const,
-            startedAt: timestamp,
-            completedAt: timestamp,
-            observed: "Codex execute output did not provide scenario item details.",
-            expected: scenario.passCriteria,
-            failureHypothesis: "Execution output schema mismatch or tool limitations.",
-            artifacts: [],
-          };
-        });
+  const seenScenarioIds = new Set(items.map((item) => item.scenarioId));
+  if (items.length !== pack.scenarios.length) {
+    const missingIds = pack.scenarios
+      .map((scenario) => scenario.id)
+      .filter((scenarioId) => !seenScenarioIds.has(scenarioId));
+    throw new Error(
+      `Codex execute output covered ${items.length}/${pack.scenarios.length} scenarios. Missing: ${missingIds.join(", ")}`,
+    );
+  }
 
-  const computedSummary = finalItems.reduce(
+  const computedSummary = items.reduce(
     (acc, item) => {
       if (item.status === "passed") {
         acc.passed += 1;
@@ -363,18 +396,16 @@ const buildScenarioRunInputFromCodexOutput = (
       }
       return acc;
     },
-    { total: finalItems.length, passed: 0, failed: 0, blocked: 0 },
+    { total: items.length, passed: 0, failed: 0, blocked: 0 },
   );
-
-  const summaryRecord = isRecord(runRecord.summary) ? runRecord.summary : {};
   const summary = {
     total: computedSummary.total,
-    passed: readNumber(summaryRecord.passed, computedSummary.passed),
-    failed: readNumber(summaryRecord.failed, computedSummary.failed),
-    blocked: readNumber(summaryRecord.blocked, computedSummary.blocked),
+    passed: computedSummary.passed,
+    failed: computedSummary.failed,
+    blocked: computedSummary.blocked,
   };
 
-  const events = finalItems.flatMap((item, index) => {
+  const events = items.flatMap((item, index) => {
     const queuedAt = new Date(now.getTime() + index * 250).toISOString();
     const runningAt = new Date(now.getTime() + index * 250 + 60).toISOString();
     const completedAt = item.completedAt;
@@ -410,8 +441,8 @@ const buildScenarioRunInputFromCodexOutput = (
     scenarioPackId: pack.id,
     status: "completed" as const,
     startedAt,
-    completedAt: new Date(now.getTime() + finalItems.length * 250 + 200).toISOString(),
-    items: finalItems,
+    completedAt: new Date(now.getTime() + items.length * 250 + 200).toISOString(),
+    items,
     summary,
     events,
   };
@@ -423,16 +454,32 @@ const buildFixAttemptInputFromCodexOutput = (
   run: ReturnType<typeof createScenarioRun>,
   parsedOutput: unknown,
 ) => {
-  const fallback = createFixAttemptFromRun({
-    ownerId,
-    projectId,
-    run,
-  });
-  const outputContainer = isRecord(parsedOutput) ? parsedOutput : {};
+  const failedScenarioIdsFromRun = run.items
+    .filter((item) => item.status === "failed")
+    .map((item) => item.scenarioId);
+
+  if (failedScenarioIdsFromRun.length === 0) {
+    return null;
+  }
+
+  const outputContainer = getExecutionOutputContainer(parsedOutput);
   const fixRecord = isRecord(outputContainer.fixAttempt) ? outputContainer.fixAttempt : null;
 
   if (!fixRecord) {
-    return fallback;
+    return {
+      ownerId,
+      projectId,
+      scenarioRunId: run.id,
+      failedScenarioIds: failedScenarioIdsFromRun,
+      probableRootCause:
+        "Codex execute reported failed scenarios but did not emit fixAttempt details.",
+      patchSummary:
+        "No fix details available from Codex output. Review execute transcript.",
+      impactedFiles: [],
+      model: "gpt-5.3-xhigh",
+      status: "failed" as const,
+      rerunSummary: null,
+    };
   }
 
   const failedScenarioIds = readStringArray(fixRecord.failedScenarioIds);
@@ -446,24 +493,24 @@ const buildFixAttemptInputFromCodexOutput = (
     projectId,
     scenarioRunId: run.id,
     failedScenarioIds:
-      failedScenarioIds.length > 0 ? failedScenarioIds : fallback.failedScenarioIds,
+      failedScenarioIds.length > 0 ? failedScenarioIds : failedScenarioIdsFromRun,
     probableRootCause:
-      String(fixRecord.probableRootCause ?? "").trim() || fallback.probableRootCause,
-    patchSummary: String(fixRecord.patchSummary ?? "").trim() || fallback.patchSummary,
-    impactedFiles: impactedFiles.length > 0 ? impactedFiles : fallback.impactedFiles,
+      String(fixRecord.probableRootCause ?? "").trim() ||
+      "Fix attempt generated from Codex execute output.",
+    patchSummary:
+      String(fixRecord.patchSummary ?? "").trim() ||
+      "No patch summary returned from Codex.",
+    impactedFiles,
     model: "gpt-5.3-xhigh",
     status: normalizeFixAttemptStatus(fixRecord.status),
     rerunSummary: rerunSummaryRecord
       ? {
           runId: run.id,
-          passed: readNumber(rerunSummaryRecord.passed, fallback.rerunSummary?.passed ?? 0),
-          failed: readNumber(rerunSummaryRecord.failed, fallback.rerunSummary?.failed ?? 0),
-          blocked: readNumber(
-            rerunSummaryRecord.blocked,
-            fallback.rerunSummary?.blocked ?? 0,
-          ),
+          passed: readNumber(rerunSummaryRecord.passed, 0),
+          failed: readNumber(rerunSummaryRecord.failed, 0),
+          blocked: readNumber(rerunSummaryRecord.blocked, 0),
         }
-      : fallback.rerunSummary,
+      : null,
   };
 };
 
@@ -477,45 +524,44 @@ const buildPullRequestInputsFromCodexOutput = (
     return [] as PullRequestCreateInput[];
   }
 
-  const outputContainer = isRecord(parsedOutput) ? parsedOutput : {};
+  const outputContainer = getExecutionOutputContainer(parsedOutput);
   const pullRequests = Array.isArray(outputContainer.pullRequests)
     ? outputContainer.pullRequests
     : [];
 
-  if (pullRequests.length === 0) {
-    return [createPullRequestFromFix({ ownerId, projectId, fixAttempt })];
-  }
-
-  const fallback = createPullRequestFromFix({ ownerId, projectId, fixAttempt });
-
   return pullRequests
-    .map((record, index) => {
+    .map((record) => {
       if (!isRecord(record)) {
         return null;
       }
 
       const scenarioIds = readStringArray(record.scenarioIds);
       const riskNotes = readStringArray(record.riskNotes);
+      const title = String(record.title ?? "").trim();
+      const url = String(record.url ?? "").trim();
+
+      if (!title || !url) {
+        return null;
+      }
 
       return {
         ownerId,
         projectId,
         fixAttemptId: fixAttempt.id,
-        scenarioIds: scenarioIds.length > 0 ? scenarioIds : fallback.scenarioIds,
-        title:
-          String(record.title ?? "").trim() ||
-          `${fallback.title} (${index + 1})`,
+        scenarioIds:
+          scenarioIds.length > 0 ? scenarioIds : fixAttempt.failedScenarioIds,
+        title,
         branchName:
           String(record.branchName ?? "").trim() ||
-          `${fallback.branchName}-${index + 1}`,
-        url: String(record.url ?? "").trim() || fallback.url,
+          `scenariofix/${fixAttempt.id}`,
+        url,
         status: normalizePullRequestStatus(record.status),
         rootCauseSummary:
-          String(record.rootCauseSummary ?? "").trim() || fallback.rootCauseSummary,
-        rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? fallback.rerunEvidenceRunId,
-        rerunEvidenceSummary:
-          fixAttempt.rerunSummary ?? fallback.rerunEvidenceSummary,
-        riskNotes: riskNotes.length > 0 ? riskNotes : fallback.riskNotes,
+          String(record.rootCauseSummary ?? "").trim() ||
+          fixAttempt.probableRootCause,
+        rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
+        rerunEvidenceSummary: fixAttempt.rerunSummary ?? null,
+        riskNotes,
       };
     })
     .filter(
@@ -2250,5 +2296,18 @@ export default defineApp([
       });
     },
   ]),
-  render(Document, [route("/", Home)]),
+  render(Document, [
+    route("/", Home),
+    layout(AppShell, [
+      route("/dashboard", DashboardPage),
+      ...(prefix("/projects/:projectId", [
+        route("/connect", ConnectPage),
+        route("/sources", SourcesPage),
+        route("/generate", GeneratePage),
+        route("/review", ReviewPage),
+        route("/execute", ExecutePage),
+        route("/completed", CompletedPage),
+      ]) as any[]),
+    ]),
+  ]),
 ]);
