@@ -12,6 +12,12 @@ interface GitHubRepoResponse {
   };
 }
 
+interface PermissionResolution {
+  canPush: boolean;
+  canPull: boolean;
+  explicitlyEvaluated: boolean;
+}
+
 const parseRepoFullName = (repoUrl: string | null): string | null => {
   if (!repoUrl) {
     return null;
@@ -44,6 +50,48 @@ const readGitHubError = async (response: Response): Promise<string> => {
 
 const uniqueStrings = (items: string[]): string[] =>
   [...new Set(items.map((item) => item.trim()).filter((item) => item.length > 0))];
+
+const resolveRepoPermissions = (
+  permissions: GitHubRepoResponse["permissions"] | undefined,
+): PermissionResolution => {
+  if (!permissions || typeof permissions !== "object") {
+    return {
+      canPush: true,
+      canPull: true,
+      explicitlyEvaluated: false,
+    };
+  }
+
+  const hasAnyExplicitFlag =
+    typeof permissions.admin === "boolean" ||
+    typeof permissions.maintain === "boolean" ||
+    typeof permissions.push === "boolean" ||
+    typeof permissions.triage === "boolean" ||
+    typeof permissions.pull === "boolean";
+
+  if (!hasAnyExplicitFlag) {
+    return {
+      canPush: true,
+      canPull: true,
+      explicitlyEvaluated: false,
+    };
+  }
+
+  const canPush = Boolean(permissions.push || permissions.admin || permissions.maintain);
+  const canPull = Boolean(
+    permissions.pull ||
+      permissions.push ||
+      permissions.admin ||
+      permissions.maintain ||
+      permissions.triage,
+  );
+
+  return {
+    canPush,
+    canPull,
+    explicitlyEvaluated: true,
+  };
+};
 
 export const evaluateProjectPrReadiness = async ({
   ownerId,
@@ -124,31 +172,25 @@ export const evaluateProjectPrReadiness = async ({
         );
       } else {
         const repoPayload = (await repoResponse.json()) as GitHubRepoResponse;
-        const permissions = repoPayload.permissions ?? {};
-        const canPush = Boolean(permissions.push || permissions.admin || permissions.maintain);
-        const canPull = Boolean(
-          permissions.pull ||
-            permissions.push ||
-            permissions.admin ||
-            permissions.maintain ||
-            permissions.triage,
-        );
+        const permissionResolution = resolveRepoPermissions(repoPayload.permissions);
 
         capabilities.repositoryAccessible = true;
-        capabilities.canPush = canPush;
-        capabilities.canCreateBranch = canPush;
-        capabilities.canOpenPr = canPush && canPull;
+        capabilities.canPush = permissionResolution.canPush;
+        capabilities.canCreateBranch = permissionResolution.canPush;
+        capabilities.canOpenPr = permissionResolution.canPush && permissionResolution.canPull;
 
-        if (!canPush) {
-          reasons.push(
-            "Connected token lacks push/admin permission required for branch and PR automation.",
-          );
-          recommendedActions.push("Grant write permissions to the GitHub app installation.");
-        }
+        if (permissionResolution.explicitlyEvaluated) {
+          if (!permissionResolution.canPush) {
+            reasons.push(
+              "Connected token lacks push/admin permission required for branch and PR automation.",
+            );
+            recommendedActions.push("Grant write permissions to the GitHub app installation.");
+          }
 
-        if (!capabilities.canOpenPr) {
-          reasons.push("Current permissions cannot open pull requests automatically.");
-          recommendedActions.push("Ensure installation has pull-request and contents write permissions.");
+          if (!capabilities.canOpenPr) {
+            reasons.push("Current permissions cannot open pull requests automatically.");
+            recommendedActions.push("Ensure installation has pull-request and contents write permissions.");
+          }
         }
       }
 
