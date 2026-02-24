@@ -18,12 +18,23 @@ export const SignInPanel = () => {
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
   const loginIdRef = useRef<string | null>(null);
+  const pollTimerRef = useRef<number | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      window.clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
 
   const setLoginState = useCallback(
     (id: string | null, isPending: boolean, authUrl?: string | null) => {
       loginIdRef.current = id;
       setLoginId(id);
       setPending(isPending);
+      if (!isPending) {
+        stopPolling();
+      }
       if (typeof authUrl !== "undefined") {
         setLoginUrl(authUrl);
       } else if (!isPending) {
@@ -46,7 +57,7 @@ export const SignInPanel = () => {
         // Ignore storage errors in private browsing.
       }
     },
-    [],
+    [stopPolling],
   );
 
   const completeChatGptSignIn = useCallback(
@@ -81,18 +92,15 @@ export const SignInPanel = () => {
 
   const pollForChatGptSignIn = useCallback(
     (currentLoginId: string) => {
-      let attempts = 0;
-      const maxAttempts = 45;
-
       const run = async () => {
         if (loginIdRef.current !== currentLoginId) {
+          stopPolling();
           return;
         }
-
-        attempts += 1;
         const completed = await completeChatGptSignIn(currentLoginId);
 
         if (completed) {
+          stopPolling();
           return;
         }
 
@@ -109,23 +117,20 @@ export const SignInPanel = () => {
                 ? `ChatGPT sign-in failed (${statusPayload.completed.error}).`
                 : "ChatGPT sign-in did not complete.",
             );
+            stopPolling();
             return;
           }
         }
 
-        if (attempts < maxAttempts) {
-          window.setTimeout(run, 2000);
-          return;
-        }
-
-        setMessage(
-          "Still waiting for ChatGPT sign-in. Finish sign-in in the opened tab, then click Complete ChatGPT Sign-In.",
-        );
+        pollTimerRef.current = window.setTimeout(() => {
+          void run();
+        }, 2000);
       };
 
-      window.setTimeout(run, 2000);
+      stopPolling();
+      void run();
     },
-    [completeChatGptSignIn, setLoginState],
+    [completeChatGptSignIn, setLoginState, stopPolling],
   );
 
   // Restore pending login on mount
@@ -136,13 +141,36 @@ export const SignInPanel = () => {
     if (pendingId) {
       setLoginState(pendingId, true, pendingUrl ?? null);
       setMessage("Resuming pending ChatGPT sign-in.");
-      void completeChatGptSignIn(pendingId).then((completed) => {
-        if (!completed) {
-          pollForChatGptSignIn(pendingId);
-        }
-      });
+      pollForChatGptSignIn(pendingId);
     }
-  }, [setLoginState, completeChatGptSignIn, pollForChatGptSignIn]);
+  }, [setLoginState, pollForChatGptSignIn]);
+
+  useEffect(
+    () => () => {
+      stopPolling();
+    },
+    [stopPolling],
+  );
+
+  useEffect(() => {
+    if (!pending || !loginId) {
+      return;
+    }
+
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void completeChatGptSignIn(loginId);
+      }
+    };
+
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [pending, loginId, completeChatGptSignIn]);
 
   const handleSignIn = async () => {
     const response = await fetch("/api/auth/chatgpt/sign-in", { method: "POST" });
@@ -165,15 +193,16 @@ export const SignInPanel = () => {
 
     if (result === "blocked") {
       setMessage(
-        "Pop-up blocked. Click Open ChatGPT Sign-In Tab below.",
+        "Pop-up blocked. Click Open ChatGPT Sign-In Tab below. We will complete sign-in automatically once finished.",
       );
+      pollForChatGptSignIn(payload.loginId);
       return;
     }
 
+    pollForChatGptSignIn(payload.loginId);
     setMessage(
       "Opened ChatGPT sign-in in a new tab. Finish the login there; this page will auto-complete when done.",
     );
-    pollForChatGptSignIn(payload.loginId);
   };
 
   const handleOpenTab = () => {
@@ -188,20 +217,7 @@ export const SignInPanel = () => {
       return;
     }
 
-    setMessage("Opened ChatGPT sign-in in a new tab. Finish login there, then return here.");
-    pollForChatGptSignIn(loginId);
-  };
-
-  const handleComplete = async () => {
-    if (!loginId) {
-      setMessage("Start ChatGPT sign-in first.");
-      return;
-    }
-
-    const completed = await completeChatGptSignIn(loginId);
-    if (!completed) {
-      setMessage("ChatGPT sign-in is still in progress. Complete it in the opened tab and retry.");
-    }
+    setMessage("Opened ChatGPT sign-in in a new tab. Finish login there; this page will complete automatically.");
   };
 
   const handleCancel = async () => {
@@ -240,17 +256,22 @@ export const SignInPanel = () => {
         <button type="button" onClick={() => void handleSignIn()} disabled={pending}>
           {pending ? "Waiting for ChatGPT..." : "Sign In With ChatGPT"}
         </button>
-        <button
-          type="button"
-          onClick={() => void handleComplete()}
-          disabled={!pending}
+        <p
           style={{
-            borderColor: "#3f557f",
-            background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+            margin: 0,
+            fontSize: "0.8rem",
+            color: "var(--forge-muted)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "1px solid var(--forge-line)",
+            borderRadius: "8px",
+            padding: "0.35rem 0.45rem",
+            background: "rgba(22, 37, 66, 0.42)",
           }}
         >
-          Complete ChatGPT Sign-In
-        </button>
+          Auto-completes after ChatGPT login
+        </p>
       </div>
 
       {pending ? (

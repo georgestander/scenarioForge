@@ -454,10 +454,29 @@ const parseTurnErrorMessage = (message) => {
   }
 };
 
+const readBridgeAccount = async (refreshToken) => {
+  try {
+    return await sendRpc("account/read", { refreshToken });
+  } catch {
+    return null;
+  }
+};
+
 const assertAuthenticated = async () => {
-  const account = await sendRpc("account/read", { refreshToken: true });
-  const requiresAuth = Boolean(account?.requiresOpenaiAuth);
-  const hasAccount = Boolean(account?.account);
+  // First try a refresh to keep long-lived sessions healthy.
+  const refreshed = await readBridgeAccount(true);
+  if (refreshed) {
+    const requiresAuth = Boolean(refreshed?.requiresOpenaiAuth);
+    const hasAccount = Boolean(refreshed?.account);
+    if (!requiresAuth || hasAccount) {
+      return;
+    }
+  }
+
+  // Fallback to non-refresh read so transient refresh failures do not kill runs.
+  const current = await readBridgeAccount(false);
+  const requiresAuth = Boolean(current?.requiresOpenaiAuth ?? true);
+  const hasAccount = Boolean(current?.account);
 
   if (requiresAuth && !hasAccount) {
     throw new Error("ChatGPT sign-in is required before Codex actions can run.");
