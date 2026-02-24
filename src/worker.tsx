@@ -86,6 +86,7 @@ import {
   listSourcesForProject,
   updateSourceSelections,
   upsertGitHubConnection,
+  upsertProjectRecord,
   upsertProjectSources,
 } from "@/services/store";
 
@@ -988,6 +989,42 @@ export default defineApp([
       }
 
       return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const payload = await parseJsonBody(request);
+      const name = payload?.name != null ? String(payload.name).trim() : undefined;
+      const repoUrl = payload?.repoUrl != null ? String(payload.repoUrl).trim() || null : undefined;
+      const defaultBranch = payload?.defaultBranch != null ? String(payload.defaultBranch).trim() : undefined;
+
+      if (name !== undefined) project.name = name;
+      if (repoUrl !== undefined) project.repoUrl = repoUrl;
+      if (defaultBranch !== undefined) project.defaultBranch = defaultBranch;
+      project.updatedAt = new Date().toISOString();
+
+      upsertProjectRecord(project);
+      await persistProjectToD1(project);
+
+      return json({ project });
     },
   ]),
   route("/api/github/connect/start", [
