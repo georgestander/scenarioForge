@@ -217,27 +217,45 @@ export const CompletedClient = ({
                   color: "var(--forge-muted)",
                   padding: "0.4rem 0.55rem",
                   borderBottom: "1px solid var(--forge-line)",
+                  display: "grid",
+                  gap: "0.25rem",
                 }}
               >
-                <span style={{
-                  fontSize: "0.72rem",
-                  fontWeight: 600,
-                  padding: "0.1rem 0.3rem",
-                  borderRadius: "4px",
-                  marginRight: "0.4rem",
-                  color: pr.status === "merged" ? "var(--forge-ok)" : pr.status === "open" ? "#5a9af2" : "var(--forge-muted)",
-                  background: pr.status === "merged" ? "#1a3a2a" : pr.status === "open" ? "#1a2a3a" : "#3a1a1a",
-                }}>
-                  {pr.status}
-                </span>
-                <strong>{pr.title}</strong>
-                {pr.url ? (
-                  <>
-                    {" "}
+                <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{
+                    fontSize: "0.72rem",
+                    fontWeight: 600,
+                    padding: "0.1rem 0.3rem",
+                    borderRadius: "4px",
+                    marginRight: "0.4rem",
+                    color: pr.status === "merged" ? "var(--forge-ok)" : pr.status === "open" ? "#5a9af2" : "var(--forge-muted)",
+                    background: pr.status === "merged" ? "#1a3a2a" : pr.status === "open" ? "#1a2a3a" : "#3a1a1a",
+                  }}>
+                    {pr.status}
+                  </span>
+                  <strong>{pr.title}</strong>
+                  {pr.url ? (
                     <a href={pr.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.78rem", color: "var(--forge-fire)" }}>
                       view
                     </a>
-                  </>
+                  ) : (
+                    <span style={{ fontSize: "0.78rem", color: "var(--forge-fire)" }}>
+                      manual handoff
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: 0, fontSize: "0.75rem" }}>
+                  Branch: <strong style={{ color: "var(--forge-ink)" }}>{pr.branchName}</strong>
+                </p>
+                <p style={{ margin: 0, fontSize: "0.75rem" }}>
+                  Root cause: <strong style={{ color: "var(--forge-ink)" }}>{pr.rootCauseSummary}</strong>
+                </p>
+                {pr.riskNotes.length > 0 ? (
+                  <ul style={{ margin: 0, paddingLeft: "1rem", display: "grid", gap: "0.15rem", fontSize: "0.74rem" }}>
+                    {pr.riskNotes.map((riskNote) => (
+                      <li key={`${pr.id}_${riskNote}`}>{riskNote}</li>
+                    ))}
+                  </ul>
                 ) : null}
               </li>
             ))}
@@ -338,10 +356,14 @@ export const CompletedClient = ({
                       <ul style={{ margin: 0, paddingLeft: "1rem", color: "var(--forge-muted)", fontSize: "0.75rem", display: "grid", gap: "0.15rem" }}>
                         {scenarioPullRequests.map((pullRequest) => (
                           <li key={`${item.scenarioId}_${pullRequest.id}`}>
-                            <a href={pullRequest.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--forge-fire)" }}>
-                              {pullRequest.title}
-                            </a>{" "}
-                            ({pullRequest.status})
+                            {pullRequest.url ? (
+                              <a href={pullRequest.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--forge-fire)" }}>
+                                {pullRequest.title}
+                              </a>
+                            ) : (
+                              <span style={{ color: "var(--forge-fire)" }}>{pullRequest.title}</span>
+                            )}{" "}
+                            ({pullRequest.status}) — {pullRequest.branchName}
                           </li>
                         ))}
                       </ul>

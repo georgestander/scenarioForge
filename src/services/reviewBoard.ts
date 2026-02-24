@@ -144,9 +144,12 @@ export const buildChallengeReport = (
   } else {
     pullRequests.forEach((pullRequest) => {
       lines.push(
-        `- [${pullRequest.title}](${pullRequest.url})`,
+        pullRequest.url
+          ? `- [${pullRequest.title}](${pullRequest.url})`
+          : `- ${pullRequest.title} (manual handoff required)`,
       );
       lines.push(`  - Status: ${pullRequest.status}`);
+      lines.push(`  - Branch: ${pullRequest.branchName}`);
       lines.push(
         `  - Scenarios: ${
           pullRequest.scenarioIds.length > 0
@@ -154,6 +157,7 @@ export const buildChallengeReport = (
             : "none"
         }`,
       );
+      lines.push(`  - Root cause: ${pullRequest.rootCauseSummary}`);
       if (pullRequest.riskNotes.length > 0) {
         lines.push(`  - Risk notes: ${pullRequest.riskNotes.join(" | ")}`);
       }
@@ -194,7 +198,11 @@ export const buildChallengeReport = (
       if (scenarioPullRequests.length > 0) {
         lines.push("- Related PRs:");
         scenarioPullRequests.forEach((pullRequest) => {
-          lines.push(`  - [${pullRequest.title}](${pullRequest.url}) (${pullRequest.status})`);
+          lines.push(
+            pullRequest.url
+              ? `  - [${pullRequest.title}](${pullRequest.url}) (${pullRequest.status})`
+              : `  - ${pullRequest.title} (${pullRequest.status}, branch: ${pullRequest.branchName})`,
+          );
         });
       }
       lines.push("");
