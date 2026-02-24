@@ -144,6 +144,11 @@ export const ExecuteClient = ({
       <h2 style={{ textAlign: "center", margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.5rem", color: "var(--forge-ink)" }}>
         {isExecuting ? "Running Scenarios" : done ? "Execution Complete" : "Execute Scenarios"}
       </h2>
+      {statusMessage ? (
+        <p style={{ textAlign: "center", margin: 0, fontSize: "0.84rem", color: "var(--forge-muted)" }}>
+          {statusMessage}
+        </p>
+      ) : null}
 
       {done && (
         <p style={{ textAlign: "center", margin: 0, fontSize: "0.84rem", color: "var(--forge-muted)" }}>
@@ -196,7 +201,7 @@ export const ExecuteClient = ({
       </div>
 
       {/* Side-by-side: checklist (left) + stream log (right) */}
-      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "0.75rem", alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem", alignItems: "start" }}>
 
         {/* Scenario checklist */}
         <div style={{
