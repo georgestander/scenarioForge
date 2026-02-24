@@ -6,6 +6,7 @@ import { defineApp } from "rwsdk/worker";
 import { Document } from "@/app/document";
 import { setCommonHeaders } from "@/app/headers";
 import { Home } from "@/app/pages/home";
+import { SignInPage } from "@/app/pages/signIn";
 import { AppShell } from "@/app/layouts/AppShell";
 import { DashboardPage } from "@/app/pages/dashboard";
 import { ConnectPage } from "@/app/pages/connect";
@@ -3753,6 +3754,7 @@ export default defineApp([
     },
   ]),
   render(Document, [
+    route("/sign-in", SignInPage),
     route("/", Home),
     layout(AppShell, [
       route("/dashboard", DashboardPage),
