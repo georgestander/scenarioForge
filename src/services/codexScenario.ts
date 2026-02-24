@@ -499,6 +499,7 @@ const COVERAGE_FIRST_SCENARIO_OUTPUT_SCHEMA = {
           "expectedCheckpoints",
           "edgeVariants",
           "codeEvidenceAnchors",
+          "sourceRefs",
           "passCriteria",
           "priority",
         ],
@@ -690,7 +691,8 @@ const buildScenarioPrompt = (
           "- Do not optimize for fixed scenario count; optimize for coverage completeness and closure.",
           "- Include a top-level coverage object with: personas, journeys, edgeBuckets, features, outcomes, assumptions, knownUnknowns, uncoveredGaps.",
           "- Each scenario must include journey, riskIntent, and codeEvidenceAnchors (file/function/route identifiers).",
-          "- sourceRefs are optional and should only reference selected docs.",
+          "- Each scenario must include sourceRefs as an array; use [] when there are no selected docs to reference.",
+          "- Required edge buckets must be represented in scenarios/edgeVariants and must not remain in uncoveredGaps.",
           "- groupedByFeature must be an array of objects: { feature, scenarioIds[] }.",
           "- groupedByOutcome must be an array of objects: { outcome, scenarioIds[] }.",
         ]
