@@ -53,7 +53,7 @@ export const SourcesClient = ({
       const scanned = payload.data ?? [];
       setSources(scanned);
       setSelectedSourceIds(scanned.filter((s) => s.selected).map((s) => s.id));
-      setStatusMessage(`Scanned ${scanned.length} sources. Review trust statuses.`);
+      setStatusMessage(`Scanned ${scanned.length} sources. Review and select below.`);
     } finally {
       setIsScanning(false);
     }
@@ -65,7 +65,7 @@ export const SourcesClient = ({
     );
   };
 
-  const handleConfirmManifest = async () => {
+  const handleCreateScenarios = async () => {
     if (selectedSourceIds.length === 0) {
       setStatusMessage("Select at least one source.");
       return;
@@ -96,127 +96,135 @@ export const SourcesClient = ({
     setSources((current) =>
       current.map((s) => ({ ...s, selected: selectedSourceIds.includes(s.id) })),
     );
-    setStatusMessage(`Source manifest ${payload.manifest.id} confirmed. Proceed to generation.`);
+    setStatusMessage(`Source manifest confirmed. Proceed to generation.`);
   };
 
   return (
-    <section style={{ display: "grid", gap: "0.55rem" }}>
-      <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-        Source Trust Gate
-      </h2>
-      <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-        Project: <strong>{project.name}</strong> — Scan sources, select trusted context, and confirm relevance.
-      </p>
-
-      <p style={{
+    <section style={{ display: "grid", gap: "1.5rem", maxWidth: "480px", margin: "0 auto", textAlign: "center" }}>
+      <h2 style={{
         margin: 0,
-        border: "1px solid #6a452f",
-        borderRadius: "10px",
-        background: "linear-gradient(180deg, rgb(163 87 46 / 0.22) 0%, rgb(97 53 29 / 0.18) 100%)",
-        padding: "0.6rem 0.75rem",
-        color: "var(--forge-ink)",
-        fontSize: "0.9rem",
+        fontFamily: "'VT323', monospace",
+        fontSize: "1.65rem",
+        color: "var(--forge-hot)",
       }}>
-        {statusMessage}
-      </p>
+        Sources found
+      </h2>
 
-      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-        <button type="button" onClick={handleScanSources} disabled={isScanning}>
-          {isScanning ? "Scanning Sources..." : "Scan Sources"}
-        </button>
-        <button
-          type="button"
-          onClick={handleConfirmManifest}
-          disabled={sources.length === 0}
-          style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-        >
-          Confirm Source Manifest
-        </button>
-      </div>
-
-      {sources.length === 0 ? (
-        <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-          No sources yet. Run scan to discover candidates.
-        </p>
-      ) : (
-        <div style={{ display: "grid", gap: "0.5rem" }}>
-          {sources.map((source) => (
-            <label
-              key={source.id}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "20px 1fr",
-                alignItems: "start",
-                gap: "0.55rem",
-                border: "1px solid var(--forge-line)",
-                borderRadius: "9px",
-                padding: "0.48rem 0.55rem",
-                background: "#0f1628",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={selectedSourceIds.includes(source.id)}
-                onChange={() => handleToggleSource(source.id)}
-                style={{ width: "auto", marginTop: "0.18rem" }}
-              />
-              <span style={{ display: "grid", gap: "0.14rem", fontSize: "0.83rem", color: "var(--forge-muted)" }}>
-                <strong style={{ color: "var(--forge-ink)" }}>{source.title}</strong>
-                <span>{source.path}</span>
-                <span>{source.type} | score {source.relevanceScore} | status {source.status}</span>
-                {source.warnings.length > 0 ? (
-                  <span style={{ color: "#f2a96a" }}>{source.warnings.join(" ")}</span>
-                ) : null}
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-
-      <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)" }}>
-        Confirmation note
-        <input
-          value={confirmationNote}
-          onChange={(e) => setConfirmationNote(e.target.value)}
-          placeholder="Selected sources align with current product direction."
-        />
-      </label>
-
-      <label style={{ display: "flex", alignItems: "center", gap: "0.45rem", fontSize: "0.88rem", color: "var(--forge-muted)" }}>
-        <input
-          type="checkbox"
-          checked={includeStaleConfirmed}
-          onChange={(e) => setIncludeStaleConfirmed(e.target.checked)}
-          style={{ width: "auto", margin: 0 }}
-        />
-        I understand stale or conflicting sources may degrade scenario quality.
-      </label>
-
-      {latestManifest ? (
-        <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-          Latest manifest: <strong>{latestManifest.id}</strong> (hash {latestManifest.manifestHash}).
+      {statusMessage ? (
+        <p style={{
+          margin: 0,
+          fontSize: "0.85rem",
+          color: "var(--forge-muted)",
+          padding: "0.45rem 0.6rem",
+          borderRadius: "6px",
+          background: "rgba(42, 52, 84, 0.4)",
+        }}>
+          {statusMessage}
         </p>
       ) : null}
 
-      <a
-        href={`/projects/${projectId}/generate`}
-        style={{
-          display: "inline-block",
-          padding: "0.52rem 0.62rem",
-          borderRadius: "7px",
-          border: "1px solid #7f482b",
-          background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
-          color: "var(--forge-ink)",
-          textDecoration: "none",
-          fontWeight: 600,
-          fontSize: "0.89rem",
-          textAlign: "center",
-          opacity: latestManifest ? 1 : 0.55,
-          pointerEvents: latestManifest ? "auto" : "none",
-        }}
-      >
-        Create Scenarios →
-      </a>
+      {sources.length === 0 ? (
+        <>
+          <p style={{ color: "var(--forge-muted)", fontSize: "0.88rem", margin: 0 }}>
+            No sources yet. Scan <strong style={{ color: "var(--forge-ink)" }}>{project.name}</strong> to discover planning docs.
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleScanSources()}
+            disabled={isScanning}
+            style={{ justifySelf: "center" }}
+          >
+            {isScanning ? "Scanning..." : "Scan sources"}
+          </button>
+        </>
+      ) : (
+        <>
+          <div style={{ display: "grid", gap: "0.5rem", textAlign: "left" }}>
+            {sources.map((source) => (
+              <label
+                key={source.id}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "0.55rem",
+                  padding: "0.5rem 0.6rem",
+                  borderRadius: "7px",
+                  border: "1px solid var(--forge-line)",
+                  background: "rgba(20, 26, 46, 0.6)",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedSourceIds.includes(source.id)}
+                  onChange={() => handleToggleSource(source.id)}
+                  style={{ width: "auto", marginTop: "0.2rem", flexShrink: 0 }}
+                />
+                <span style={{ display: "grid", gap: "0.1rem", fontSize: "0.85rem" }}>
+                  <strong style={{ color: "var(--forge-ink)" }}>{source.title}</strong>
+                  <span style={{ color: "var(--forge-muted)", fontSize: "0.78rem" }}>{source.path}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {riskySelectedCount > 0 ? (
+            <label style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "0.45rem",
+              fontSize: "0.82rem",
+              color: "var(--forge-muted)",
+            }}>
+              <input
+                type="checkbox"
+                checked={includeStaleConfirmed}
+                onChange={(e) => setIncludeStaleConfirmed(e.target.checked)}
+                style={{ width: "auto", margin: 0 }}
+              />
+              Include stale/conflicting sources
+            </label>
+          ) : null}
+
+          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center" }}>
+            <button
+              type="button"
+              onClick={() => void handleScanSources()}
+              disabled={isScanning}
+              style={{ fontSize: "0.85rem" }}
+            >
+              {isScanning ? "Scanning..." : "Rescan"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCreateScenarios()}
+              disabled={selectedSourceIds.length === 0}
+            >
+              create scenarios
+            </button>
+          </div>
+        </>
+      )}
+
+      {latestManifest ? (
+        <a
+          href={`/projects/${projectId}/generate`}
+          style={{
+            display: "inline-block",
+            justifySelf: "center",
+            padding: "0.52rem 1.2rem",
+            borderRadius: "7px",
+            border: "1px solid var(--forge-line)",
+            color: "var(--forge-ink)",
+            textDecoration: "none",
+            fontWeight: 600,
+            fontSize: "0.89rem",
+          }}
+        >
+          Continue to generation
+        </a>
+      ) : null}
     </section>
   );
 };
