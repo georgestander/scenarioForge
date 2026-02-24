@@ -12,6 +12,12 @@ const OUTCOME_STYLES: Record<
   DashboardLatestRunOutcome,
   { label: string; color: string; borderColor: string; background: string }
 > = {
+  idle: {
+    label: "Ready",
+    color: "#cfd8ee",
+    borderColor: "#495777",
+    background: "rgba(73, 87, 119, 0.2)",
+  },
   queued: {
     label: "Queued",
     color: "#d0d7ea",
@@ -84,7 +90,7 @@ export const DashboardClient = ({
       >
         <img
           src="/scenarioForge.png"
-          alt="ScenarioForge mission control"
+          alt="Scenario Forge mission control"
           style={{
             width: "120px",
             height: "78px",
@@ -96,7 +102,7 @@ export const DashboardClient = ({
         />
         <div style={{ display: "grid", gap: "0.18rem" }}>
           <strong style={{ color: "var(--forge-ink)", fontSize: "0.93rem" }}>
-            ScenarioForge Mission Control
+            Scenario Forge Mission Control
           </strong>
           <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.78rem", lineHeight: 1.45 }}>
             Select a project, continue the wizard, and stream scenario execution evidence through to final report and PR handoff.
@@ -114,16 +120,33 @@ export const DashboardClient = ({
       </h2>
 
       {statusMessage ? (
-        <p style={{
-          margin: 0,
-          fontSize: "0.85rem",
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) auto",
+          gap: "0.5rem",
+          alignItems: "start",
+          fontSize: "0.82rem",
           color: "var(--forge-muted)",
-          padding: "0.45rem 0.6rem",
+          padding: "0.5rem 0.6rem",
           borderRadius: "6px",
-          background: "rgba(42, 52, 84, 0.4)",
+          border: "1px solid rgba(127, 72, 43, 0.45)",
+          background: "rgba(42, 52, 84, 0.35)",
         }}>
-          {statusMessage}
-        </p>
+          <p style={{ margin: 0, overflowWrap: "anywhere", lineHeight: 1.35 }}>
+            {statusMessage}
+          </p>
+          <button
+            type="button"
+            onClick={() => setStatusMessage("")}
+            style={{
+              padding: "0.2rem 0.5rem",
+              borderRadius: "6px",
+              fontSize: "0.75rem",
+            }}
+          >
+            Clear
+          </button>
+        </div>
       ) : null}
 
       <button
@@ -136,7 +159,7 @@ export const DashboardClient = ({
 
       {initialRepoGroups.length === 0 ? (
         <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.84rem" }}>
-          No run history yet. Projects appear here after their first execute run.
+          No projects yet. Create one to start the connect → generate → execute flow.
         </p>
       ) : (
         <div style={{ display: "grid", gap: "0.55rem" }}>

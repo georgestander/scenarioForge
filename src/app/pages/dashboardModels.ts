@@ -1,4 +1,5 @@
 export type DashboardLatestRunOutcome =
+  | "idle"
   | "queued"
   | "running"
   | "passed"

@@ -84,28 +84,26 @@ const deriveLatestRunOutcome = (run: ScenarioRun): DashboardLatestRunOutcome => 
 
 const buildDashboardGroups = (ownerId: string): DashboardRepoGroup[] => {
   const projects = listProjectsForOwner(ownerId);
-  const projectSummaries: DashboardProjectSummary[] = projects.flatMap((project) => {
+  const projectSummaries: DashboardProjectSummary[] = projects.map((project) => {
     const runs = listScenarioRunsForProject(ownerId, project.id);
-    if (runs.length === 0) {
-      return [];
-    }
-
-    const latestRun = runs[0];
+    const latestRun = runs[0] ?? null;
     const lastActivityAt =
-      latestRun.completedAt ?? latestRun.updatedAt ?? latestRun.startedAt ?? project.updatedAt;
+      latestRun?.completedAt ??
+      latestRun?.updatedAt ??
+      latestRun?.startedAt ??
+      project.updatedAt;
 
-    return [
-      {
-        id: project.id,
-        name: project.name,
-        repoUrl: project.repoUrl,
-        defaultBranch: project.defaultBranch,
-        runCount: runs.length,
-        latestRunOutcome: deriveLatestRunOutcome(latestRun),
-        lastActivityAt,
-        lastActivityLabel: formatUtcTimestamp(lastActivityAt),
-      },
-    ];
+    return {
+      id: project.id,
+      name: project.name,
+      repoUrl: project.repoUrl,
+      defaultBranch: project.defaultBranch,
+      runCount: runs.length,
+      latestRunOutcome: latestRun ? deriveLatestRunOutcome(latestRun) : "idle",
+      lastActivityAt,
+      lastActivityLabel:
+        runs.length > 0 ? formatUtcTimestamp(lastActivityAt) : "Not run yet",
+    };
   });
 
   const groupedByRepo = new Map<
