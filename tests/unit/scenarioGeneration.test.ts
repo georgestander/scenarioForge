@@ -15,6 +15,9 @@ test("buildSourceManifest links selected source IDs and hash", () => {
     ownerId: project.ownerId,
     projectId: project.id,
     selectedSources: sources,
+    repositoryFullName: sources[0]?.repositoryFullName ?? "example/scenarioforge",
+    branch: sources[0]?.branch ?? project.defaultBranch,
+    headCommitSha: sources[0]?.headCommitSha ?? "unknown",
     userConfirmed: true,
     confirmationNote: "Test confirmation",
   });
@@ -31,6 +34,9 @@ test("generateScenarioPack returns contract-complete grouped scenarios", () => {
     ownerId: project.ownerId,
     projectId: project.id,
     selectedSources: sources,
+    repositoryFullName: sources[0]?.repositoryFullName ?? "example/scenarioforge",
+    branch: sources[0]?.branch ?? project.defaultBranch,
+    headCommitSha: sources[0]?.headCommitSha ?? "unknown",
     userConfirmed: true,
     confirmationNote: "Test confirmation",
   });

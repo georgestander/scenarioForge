@@ -602,13 +602,6 @@ export const validateGenerationSelection = (
 ):
   | { ok: true; includesStale: boolean; includesConflicts: boolean }
   | { ok: false; error: string } => {
-  if (selectedSources.length === 0) {
-    return {
-      ok: false,
-      error: "Select at least one source before generation.",
-    };
-  }
-
   const includesStale = selectedSources.some((source) => source.status === "stale");
   const includesConflicts = selectedSources.some((source) => source.isConflicting);
 
@@ -631,6 +624,9 @@ interface BuildManifestInput {
   ownerId: string;
   projectId: string;
   selectedSources: SourceRecord[];
+  repositoryFullName: string;
+  branch: string;
+  headCommitSha: string;
   userConfirmed: boolean;
   confirmationNote: string;
 }
@@ -657,10 +653,9 @@ export const buildSourceManifest = (
   );
   const includesConflicts = input.selectedSources.some((source) => source.isConflicting);
   const confirmedAt = input.userConfirmed ? new Date().toISOString() : null;
-  const anchorSource = input.selectedSources[0];
-  const repositoryFullName = anchorSource?.repositoryFullName ?? "unknown";
-  const branch = anchorSource?.branch ?? "unknown";
-  const headCommitSha = anchorSource?.headCommitSha ?? "unknown";
+  const repositoryFullName = input.repositoryFullName.trim() || "unknown";
+  const branch = input.branch.trim() || "unknown";
+  const headCommitSha = input.headCommitSha.trim() || "unknown";
 
   return {
     ownerId: input.ownerId,

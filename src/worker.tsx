@@ -658,6 +658,32 @@ const parseGitHubOwnerFromRepoUrl = (repoUrl: string | null): string | null => {
   }
 };
 
+const parseGitHubRepoFullNameFromUrl = (repoUrl: string | null): string | null => {
+  if (!repoUrl) {
+    return null;
+  }
+
+  try {
+    const url = new URL(repoUrl);
+    const host = url.hostname.toLowerCase();
+    if (host !== "github.com" && host !== "www.github.com") {
+      return null;
+    }
+
+    const segments = url.pathname
+      .replace(/^\/+/g, "")
+      .replace(/\.git$/i, "")
+      .split("/")
+      .filter(Boolean);
+    if (segments.length < 2) {
+      return null;
+    }
+    return `${segments[0]}/${segments[1]}`;
+  } catch {
+    return null;
+  }
+};
+
 const collectGitHubOwnerHintsForPrincipal = (principalId: string): string[] => {
   const owners = listProjectsForOwner(principalId)
     .map((project) => parseGitHubOwnerFromRepoUrl(project.repoUrl))
@@ -1475,6 +1501,12 @@ export default defineApp([
         const confirmationNote = String(payload?.confirmationNote ?? "");
 
         const allSources = listSourcesForProject(principal.id, project.id);
+        if (allSources.length === 0) {
+          return json(
+            { error: "Scan repository sources before creating a manifest." },
+            400,
+          );
+        }
         const selectedSet = new Set(sourceIds);
         const selectedSources = allSources.filter((source) =>
           selectedSet.has(source.id),
@@ -1493,10 +1525,20 @@ export default defineApp([
         const finalSelectedSources = updatedSources.filter((source) =>
           selectedSet.has(source.id),
         );
+        const fallbackSource = finalSelectedSources[0] ?? updatedSources[0] ?? null;
+        const repositoryFullName =
+          fallbackSource?.repositoryFullName ??
+          parseGitHubRepoFullNameFromUrl(project.repoUrl) ??
+          "unknown";
+        const branch = fallbackSource?.branch ?? project.defaultBranch ?? "main";
+        const headCommitSha = fallbackSource?.headCommitSha ?? "unknown";
         const manifestInput = buildSourceManifest({
           ownerId: principal.id,
           projectId: project.id,
           selectedSources: finalSelectedSources,
+          repositoryFullName,
+          branch,
+          headCommitSha,
           userConfirmed,
           confirmationNote,
         });

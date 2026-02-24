@@ -95,6 +95,9 @@ test("phase2-6 flow persists source -> generation -> run -> fix -> review artifa
     ownerId,
     projectId: project.id,
     selectedSources,
+    repositoryFullName: selectedSources[0]?.repositoryFullName ?? "example/scenarioforge",
+    branch: selectedSources[0]?.branch ?? project.defaultBranch,
+    headCommitSha: selectedSources[0]?.headCommitSha ?? "unknown",
     userConfirmed: true,
     confirmationNote: "Regression test confirmation.",
   });

@@ -335,9 +335,19 @@ const truncate = (value: string, maxLength: number): string => {
 const recommendedScenarioCount = (selectedCount: number): number =>
   Math.max(8, Math.min(24, Math.round(selectedCount * 1.7) + 4));
 
-const buildSourceSection = (sources: LoadedSource[]): string => {
+const buildSourceSection = (
+  sources: LoadedSource[],
+  hasSelectedSources: boolean,
+): string => {
+  if (!hasSelectedSources) {
+    return [
+      "No planning documents were selected.",
+      "Operate in code-only mode using repository behavior and runtime evidence as the source of truth.",
+    ].join(" ");
+  }
+
   if (sources.length === 0) {
-    return "No source content could be loaded from GitHub for the selected manifest.";
+    return "Selected source docs could not be loaded from GitHub. Fall back to repository code behavior and report assumptions explicitly.";
   }
 
   return sources
@@ -471,6 +481,7 @@ const buildScenarioPrompt = (
 ): string => {
   const scenarioCount = recommendedScenarioCount(input.selectedSources.length);
   const sourcePaths = input.selectedSources.map((source) => source.path).join("\n- ");
+  const hasSelectedSources = input.selectedSources.length > 0;
   const mode = input.mode ?? "initial";
   const userInstruction = input.userInstruction?.trim() ?? "";
   const updateContext =
@@ -494,26 +505,33 @@ const buildScenarioPrompt = (
     `- Repository: ${input.manifest.repositoryFullName}`,
     `- Branch: ${input.manifest.branch}`,
     `- Head commit: ${input.manifest.headCommitSha}`,
-    "- Use only selected planning/spec/task sources listed below.",
-    "- Do not use deselected or unknown documents.",
+    ...(hasSelectedSources
+      ? [
+          "- Use selected planning/spec/task sources listed below.",
+          "- Do not use deselected documents.",
+          "- If selected docs conflict with current code behavior, preserve current behavior and encode the conflict as edge variants/checkpoints.",
+        ]
+      : [
+          "- No planning docs are selected. Use repository code and runtime behavior as the primary source of truth.",
+          "- Make assumptions explicit in scenario checkpoints when docs are absent.",
+        ]),
     "- Scenario quality bar must align to the $scenario skill: realistic journeys, edge variants, binary pass criteria, and evidence-ready checkpoints.",
     `- Generate approximately ${scenarioCount} scenarios.`,
     "- Group scenarios by both feature and user outcome.",
     "- groupedByFeature must be an array of objects: { feature, scenarioIds[] }.",
     "- groupedByOutcome must be an array of objects: { outcome, scenarioIds[] }.",
-    "- If source docs conflict with current code behavior, preserve current behavior and encode the conflict as edge variants/checkpoints.",
     "- Return final output directly as JSON response text.",
     "- Do not call apply_patch or write files.",
     "",
     "Selected source paths:",
-    `- ${sourcePaths}`,
+    hasSelectedSources ? `- ${sourcePaths}` : "- none (code-only mode)",
     "",
     updateContext,
     "",
     "Return strict JSON only; no markdown and no code fences.",
     "",
     "Source excerpts:",
-    buildSourceSection(loadedSources),
+    buildSourceSection(loadedSources, hasSelectedSources),
     "",
     "Context for naming and intent:",
     `- Project name: ${input.project.name}`,

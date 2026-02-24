@@ -73,11 +73,6 @@ export const SourcesClient = ({
   };
 
   const handleCreateScenarios = async () => {
-    if (selectedSourceIds.length === 0) {
-      setStatusMessage("Select at least one source.");
-      return;
-    }
-
     if (riskySelectedCount > 0 && !includeStaleConfirmed) {
       setStatusMessage("Selected sources include stale or conflicting entries. Check the confirmation toggle.");
       return;
@@ -103,7 +98,11 @@ export const SourcesClient = ({
     setSources((current) =>
       current.map((s) => ({ ...s, selected: selectedSourceIds.includes(s.id) })),
     );
-    setStatusMessage(`Source manifest confirmed. Proceed to generation.`);
+    if (selectedSourceIds.length === 0) {
+      setStatusMessage("Source manifest confirmed in code-only mode. Proceed to generation.");
+    } else {
+      setStatusMessage(`Source manifest confirmed. Proceed to generation.`);
+    }
   };
 
   const loadPrReadiness = async () => {
@@ -258,7 +257,6 @@ export const SourcesClient = ({
             <button
               type="button"
               onClick={() => void handleCreateScenarios()}
-              disabled={selectedSourceIds.length === 0}
             >
               create scenarios
             </button>
@@ -283,6 +281,12 @@ export const SourcesClient = ({
           </>
         )}
       </div>
+
+      {sources.length > 0 && selectedSourceIds.length === 0 ? (
+        <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
+          No docs selected. Generation will run in code-only mode using repository behavior.
+        </p>
+      ) : null}
 
       {riskySelectedCount > 0 ? (
         <label style={{

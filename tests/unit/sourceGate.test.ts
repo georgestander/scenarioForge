@@ -107,7 +107,7 @@ test("validateGenerationSelection enforces explicit confirmation for risky sourc
   assert.ok(stale);
 
   const emptyCheck = validateGenerationSelection([], false);
-  assert.equal(emptyCheck.ok, false);
+  assert.equal(emptyCheck.ok, true);
 
   const staleCheck = validateGenerationSelection(
     [

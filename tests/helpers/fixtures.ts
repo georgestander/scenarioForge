@@ -124,6 +124,9 @@ export const buildManifest = (
     ownerId,
     projectId: project.id,
     selectedSources: sources,
+    repositoryFullName: sources[0]?.repositoryFullName ?? "example/scenarioforge",
+    branch: sources[0]?.branch ?? project.defaultBranch,
+    headCommitSha: sources[0]?.headCommitSha ?? "unknown",
     userConfirmed: true,
     confirmationNote: "Validated for tests",
   });
