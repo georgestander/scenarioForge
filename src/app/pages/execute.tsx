@@ -1,5 +1,6 @@
 import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
+import { redirect } from "@/app/shared/api";
 import {
   getProjectByIdForOwner,
   listScenarioPacksForProject,
@@ -12,19 +13,19 @@ export const ExecutePage = ({ ctx, params }: AppRequestInfo) => {
   const principal = ctx?.auth?.principal ?? null;
 
   if (!principal) {
-    return Response.redirect("/") as unknown as React.JSX.Element;
+    return redirect("/");
   }
 
   const projectId = params?.projectId ?? "";
   const project = getProjectByIdForOwner(projectId, principal.id);
 
   if (!project) {
-    return Response.redirect("/dashboard") as unknown as React.JSX.Element;
+    return redirect("/dashboard");
   }
 
   const packs = listScenarioPacksForProject(principal.id, projectId);
   if (packs.length === 0) {
-    return Response.redirect(`/projects/${projectId}/generate`) as unknown as React.JSX.Element;
+    return redirect(`/projects/${projectId}/generate`);
   }
 
   return (

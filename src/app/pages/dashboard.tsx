@@ -1,5 +1,6 @@
 import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
+import { redirect } from "@/app/shared/api";
 import { listProjectsForOwner } from "@/services/store";
 import { DashboardClient } from "./DashboardClient";
 
@@ -9,7 +10,7 @@ export const DashboardPage = ({ ctx }: AppRequestInfo) => {
   const principal = ctx?.auth?.principal ?? null;
 
   if (!principal) {
-    return Response.redirect("/") as unknown as React.JSX.Element;
+    return redirect("/");
   }
 
   const projects = listProjectsForOwner(principal.id);

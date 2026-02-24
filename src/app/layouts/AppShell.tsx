@@ -1,6 +1,7 @@
 import type { LayoutProps } from "rwsdk/router";
 import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
+import { redirect } from "@/app/shared/api";
 import {
   getGitHubConnectionForPrincipal,
   getLatestSourceManifestForProject,
@@ -76,7 +77,7 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
   const principal = requestInfo?.ctx?.auth?.principal ?? null;
 
   if (!principal) {
-    return Response.redirect("/") as unknown as React.JSX.Element;
+    return redirect("/");
   }
 
   const projectId = requestInfo?.params?.projectId ?? "";

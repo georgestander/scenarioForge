@@ -1,5 +1,6 @@
 import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
+import { redirect } from "@/app/shared/api";
 import { SignInPanel } from "./SignInPanel";
 
 type AppRequestInfo = RequestInfo<any, AppContext>;
@@ -8,7 +9,7 @@ export const Home = ({ ctx }: AppRequestInfo) => {
   const principal = ctx?.auth?.principal ?? null;
 
   if (principal) {
-    return Response.redirect("/dashboard") as unknown as React.JSX.Element;
+    return redirect("/dashboard");
   }
 
   return (

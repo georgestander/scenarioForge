@@ -1,5 +1,13 @@
 import type { Stage } from "./types.js";
 
+/**
+ * Return a 302 redirect Response that RSC can throw/return.
+ * Uses the Location header (accepts relative paths) instead of
+ * Response.redirect() which requires an absolute URL.
+ */
+export const redirect = (path: string) =>
+  new Response(null, { status: 302, headers: { Location: path } }) as unknown as React.JSX.Element;
+
 export const readError = async (
   response: Response,
   fallbackMessage: string,
