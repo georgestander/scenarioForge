@@ -76,6 +76,28 @@ export interface CodexSession {
 export type SourceType = "prd" | "spec" | "plan" | "architecture" | "code";
 export type SourceRelevanceStatus = "trusted" | "suspect" | "stale" | "excluded";
 
+export interface CodeBaseline {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  repositoryFullName: string;
+  branch: string;
+  headCommitSha: string;
+  generatedAt: string;
+  baselineHash: string;
+  routeMap: string[];
+  apiSurface: string[];
+  stateTransitions: string[];
+  asyncBoundaries: string[];
+  domainEntities: string[];
+  integrations: string[];
+  errorPaths: string[];
+  likelyFailurePoints: string[];
+  evidenceAnchors: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SourceRecord {
   id: string;
   projectId: string;
@@ -115,6 +137,9 @@ export interface SourceManifest {
   userConfirmed: boolean;
   confirmationNote: string;
   confirmedAt: string | null;
+  codeBaselineId: string;
+  codeBaselineHash: string;
+  codeBaselineGeneratedAt: string;
   manifestHash: string;
   createdAt: string;
   updatedAt: string;
@@ -128,13 +153,28 @@ export interface ScenarioContract {
   outcome: string;
   title: string;
   persona: string;
+  journey?: string;
+  riskIntent?: string;
   preconditions: string[];
   testData: string[];
   steps: string[];
   expectedCheckpoints: string[];
   edgeVariants: string[];
+  codeEvidenceAnchors?: string[];
+  sourceRefs?: string[];
   passCriteria: string;
   priority: ScenarioPriority;
+}
+
+export interface ScenarioCoverageSummary {
+  personas: string[];
+  journeys: string[];
+  edgeBuckets: string[];
+  features: string[];
+  outcomes: string[];
+  assumptions: string[];
+  knownUnknowns: string[];
+  uncoveredGaps: string[];
 }
 
 export interface ScenarioGenerationAudit {
@@ -162,6 +202,7 @@ export interface ScenarioPack {
   sourceIds: string[];
   model: string;
   generationAudit: ScenarioGenerationAudit;
+  coverage: ScenarioCoverageSummary;
   groupedByFeature: Record<string, string[]>;
   groupedByOutcome: Record<string, string[]>;
   scenarios: ScenarioContract[];

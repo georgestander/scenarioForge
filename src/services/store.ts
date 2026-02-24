@@ -1,6 +1,7 @@
 import type {
   AuthPrincipal,
   AuthProvider,
+  CodeBaseline,
   CodexSession,
   FixAttempt,
   GitHubConnection,
@@ -24,6 +25,7 @@ interface AppState {
   githubConnections: GitHubConnection[];
   sources: SourceRecord[];
   sourceManifests: SourceManifest[];
+  codeBaselines: CodeBaseline[];
   scenarioPacks: ScenarioPack[];
   scenarioRuns: ScenarioRun[];
   fixAttempts: FixAttempt[];
@@ -47,6 +49,7 @@ const getState = (): AppState => {
       githubConnections: [],
       sources: [],
       sourceManifests: [],
+      codeBaselines: [],
       scenarioPacks: [],
       scenarioRuns: [],
       fixAttempts: [],
@@ -431,6 +434,9 @@ interface CreateSourceManifestInput {
   userConfirmed: boolean;
   confirmationNote: string;
   confirmedAt: string | null;
+  codeBaselineId: string;
+  codeBaselineHash: string;
+  codeBaselineGeneratedAt: string;
   manifestHash: string;
 }
 
@@ -456,6 +462,9 @@ export const createSourceManifest = (
     userConfirmed: input.userConfirmed,
     confirmationNote: input.confirmationNote,
     confirmedAt: input.confirmedAt,
+    codeBaselineId: input.codeBaselineId,
+    codeBaselineHash: input.codeBaselineHash,
+    codeBaselineGeneratedAt: input.codeBaselineGeneratedAt,
     manifestHash: input.manifestHash,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -496,6 +505,67 @@ export const getLatestSourceManifestForProject = (
 ): SourceManifest | null => {
   const manifests = listSourceManifestsForProject(ownerId, projectId);
   return manifests[0] ?? null;
+};
+
+export const upsertProjectCodeBaseline = (
+  input: Omit<CodeBaseline, "id" | "createdAt" | "updatedAt">,
+): CodeBaseline => {
+  const state = getState();
+  const timestamp = nowIso();
+  const existing = state.codeBaselines.find(
+    (record) =>
+      record.ownerId === input.ownerId &&
+      record.projectId === input.projectId &&
+      record.repositoryFullName === input.repositoryFullName &&
+      record.branch === input.branch,
+  );
+
+  if (existing) {
+    existing.headCommitSha = input.headCommitSha;
+    existing.generatedAt = input.generatedAt;
+    existing.baselineHash = input.baselineHash;
+    existing.routeMap = [...input.routeMap];
+    existing.apiSurface = [...input.apiSurface];
+    existing.stateTransitions = [...input.stateTransitions];
+    existing.asyncBoundaries = [...input.asyncBoundaries];
+    existing.domainEntities = [...input.domainEntities];
+    existing.integrations = [...input.integrations];
+    existing.errorPaths = [...input.errorPaths];
+    existing.likelyFailurePoints = [...input.likelyFailurePoints];
+    existing.evidenceAnchors = [...input.evidenceAnchors];
+    existing.updatedAt = timestamp;
+    return existing;
+  }
+
+  const record: CodeBaseline = {
+    ...input,
+    id: newId("cb"),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  state.codeBaselines.push(record);
+  return record;
+};
+
+export const listCodeBaselinesForProject = (
+  ownerId: string,
+  projectId: string,
+): CodeBaseline[] => {
+  const state = getState();
+  return sortByUpdatedDesc(
+    state.codeBaselines.filter(
+      (record) => record.ownerId === ownerId && record.projectId === projectId,
+    ),
+  );
+};
+
+export const getLatestCodeBaselineForProject = (
+  ownerId: string,
+  projectId: string,
+): CodeBaseline | null => {
+  const baselines = listCodeBaselinesForProject(ownerId, projectId);
+  return baselines[0] ?? null;
 };
 
 export const createScenarioPack = (

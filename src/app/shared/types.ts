@@ -1,5 +1,6 @@
 import type {
   AuthPrincipal,
+  CodeBaseline,
   FixAttempt,
   GitHubRepository,
   ProjectPrReadiness,
@@ -71,6 +72,12 @@ export interface ManifestCreatePayload {
   selectedSources: SourceRecord[];
   includesStale: boolean;
   includesConflicts: boolean;
+  codeBaseline: CodeBaseline | null;
+}
+
+export interface SourcesScanPayload {
+  data: SourceRecord[];
+  codeBaseline: CodeBaseline | null;
 }
 
 export interface ScenarioActionGeneratePayload {

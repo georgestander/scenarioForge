@@ -1,6 +1,7 @@
 import type {
   Project,
   ScenarioContract,
+  ScenarioCoverageSummary,
   ScenarioPack,
   ScenarioPriority,
   SourceManifest,
@@ -28,6 +29,7 @@ export interface ScenarioGenerationMetadata {
 
 interface ParsedScenarioOutput {
   scenarios: ScenarioContract[];
+  coverage: ScenarioCoverageSummary;
   groupedByFeature: Record<string, string[]>;
   groupedByOutcome: Record<string, string[]>;
 }
@@ -228,6 +230,44 @@ const deriveGroupsFromScenarios = (
   };
 };
 
+const normalizeLooseStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0);
+};
+
+const buildDerivedCoverage = (
+  scenarios: ScenarioContract[],
+): ScenarioCoverageSummary => {
+  const personas = new Set<string>();
+  const journeys = new Set<string>();
+  const edgeBuckets = new Set<string>();
+  const features = new Set<string>();
+  const outcomes = new Set<string>();
+
+  scenarios.forEach((scenario) => {
+    personas.add(scenario.persona);
+    journeys.add(scenario.journey?.trim() || scenario.title);
+    features.add(scenario.feature);
+    outcomes.add(scenario.outcome);
+    scenario.edgeVariants.forEach((variant) => edgeBuckets.add(variant));
+  });
+
+  return {
+    personas: [...personas],
+    journeys: [...journeys],
+    edgeBuckets: [...edgeBuckets],
+    features: [...features],
+    outcomes: [...outcomes],
+    assumptions: [],
+    knownUnknowns: [],
+    uncoveredGaps: [],
+  };
+};
+
 const parseScenarioOutput = (rawOutput: unknown): ParsedScenarioOutput => {
   const parsed = parseRawOutput(rawOutput);
 
@@ -253,9 +293,32 @@ const parseScenarioOutput = (rawOutput: unknown): ParsedScenarioOutput => {
     "outcome",
   );
   const derivedGroups = deriveGroupsFromScenarios(scenarios);
+  const derivedCoverage = buildDerivedCoverage(scenarios);
+  const coverageContainer = isRecord(container.coverage) ? container.coverage : null;
+  const coverage: ScenarioCoverageSummary = {
+    personas: normalizeLooseStringArray(coverageContainer?.personas),
+    journeys: normalizeLooseStringArray(coverageContainer?.journeys),
+    edgeBuckets: normalizeLooseStringArray(coverageContainer?.edgeBuckets),
+    features: normalizeLooseStringArray(coverageContainer?.features),
+    outcomes: normalizeLooseStringArray(coverageContainer?.outcomes),
+    assumptions: normalizeLooseStringArray(coverageContainer?.assumptions),
+    knownUnknowns: normalizeLooseStringArray(coverageContainer?.knownUnknowns),
+    uncoveredGaps: normalizeLooseStringArray(coverageContainer?.uncoveredGaps),
+  };
 
   return {
     scenarios,
+    coverage: {
+      personas: coverage.personas.length > 0 ? coverage.personas : derivedCoverage.personas,
+      journeys: coverage.journeys.length > 0 ? coverage.journeys : derivedCoverage.journeys,
+      edgeBuckets:
+        coverage.edgeBuckets.length > 0 ? coverage.edgeBuckets : derivedCoverage.edgeBuckets,
+      features: coverage.features.length > 0 ? coverage.features : derivedCoverage.features,
+      outcomes: coverage.outcomes.length > 0 ? coverage.outcomes : derivedCoverage.outcomes,
+      assumptions: coverage.assumptions,
+      knownUnknowns: coverage.knownUnknowns,
+      uncoveredGaps: coverage.uncoveredGaps,
+    },
     groupedByFeature:
       Object.keys(generatedGroupsByFeature).length > 0
         ? generatedGroupsByFeature
@@ -320,6 +383,7 @@ export const generateScenarioPack = (
       cwd: input.metadata.cwd,
       generatedAt: input.metadata.generatedAt ?? nowIso(),
     },
+    coverage: parsedOutput.coverage,
     groupedByFeature: parsedOutput.groupedByFeature,
     groupedByOutcome: parsedOutput.groupedByOutcome,
     scenarios: parsedOutput.scenarios,

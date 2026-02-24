@@ -33,6 +33,6 @@
 
   // Environment variables
   "vars": {
-    // Add your environment variables here
+    "SCENARIO_CODE_FIRST_GENERATION": "1"
   }
 }

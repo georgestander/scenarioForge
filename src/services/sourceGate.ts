@@ -629,6 +629,9 @@ interface BuildManifestInput {
   headCommitSha: string;
   userConfirmed: boolean;
   confirmationNote: string;
+  codeBaselineId?: string;
+  codeBaselineHash?: string;
+  codeBaselineGeneratedAt?: string;
 }
 
 export const buildSourceManifest = (
@@ -656,6 +659,13 @@ export const buildSourceManifest = (
   const repositoryFullName = input.repositoryFullName.trim() || "unknown";
   const branch = input.branch.trim() || "unknown";
   const headCommitSha = input.headCommitSha.trim() || "unknown";
+  const fallbackBaselineSeed = `${repositoryFullName}|${branch}|${headCommitSha}|${sourceHashes.join("|")}`;
+  const codeBaselineHash =
+    input.codeBaselineHash?.trim() || hashText(`baseline|${fallbackBaselineSeed}`);
+  const codeBaselineId =
+    input.codeBaselineId?.trim() || `cb_${hashText(codeBaselineHash).slice(1, 13)}`;
+  const codeBaselineGeneratedAt =
+    input.codeBaselineGeneratedAt?.trim() || new Date().toISOString();
 
   return {
     ownerId: input.ownerId,
@@ -672,8 +682,11 @@ export const buildSourceManifest = (
     userConfirmed: input.userConfirmed,
     confirmationNote: input.confirmationNote.trim(),
     confirmedAt,
+    codeBaselineId,
+    codeBaselineHash,
+    codeBaselineGeneratedAt,
     manifestHash: hashText(
-      `${repositoryFullName}|${branch}|${headCommitSha}|${sourceHashes.join("|")}|${confirmedAt ?? "none"}`,
+      `${repositoryFullName}|${branch}|${headCommitSha}|${sourceHashes.join("|")}|${codeBaselineHash}|${confirmedAt ?? "none"}`,
     ),
   };
 };
