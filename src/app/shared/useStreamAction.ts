@@ -83,6 +83,7 @@ export const useStreamAction = () => {
       url: string,
       body: Record<string, unknown>,
       fallbackErrorMessage: string,
+      onEvent?: (event: CodexStreamEventLog) => void,
     ): Promise<TPayload> => {
       const response = await fetch(url, {
         method: "POST",
@@ -112,7 +113,70 @@ export const useStreamAction = () => {
         }
 
         const payload = parseSsePayload(dataLines.join("\n"));
-        appendStreamEvent(action, currentEvent, payload);
+        const record =
+          payload && typeof payload === "object"
+            ? (payload as Record<string, unknown>)
+            : null;
+        const nested =
+          record?.payload && typeof record.payload === "object"
+            ? (record.payload as Record<string, unknown>)
+            : null;
+        const deep =
+          nested?.payload && typeof nested.payload === "object"
+            ? (nested.payload as Record<string, unknown>)
+            : null;
+
+        const phase =
+          (typeof record?.phase === "string" && record.phase.trim()) ||
+          (typeof nested?.phase === "string" && nested.phase.trim()) ||
+          (typeof deep?.phase === "string" && deep.phase.trim()) ||
+          (typeof nested?.event === "string" && nested.event.trim()) ||
+          currentEvent;
+        const message =
+          (typeof record?.message === "string" && record.message.trim()) ||
+          (typeof nested?.message === "string" && nested.message.trim()) ||
+          (typeof deep?.message === "string" && deep.message.trim()) ||
+          (typeof record?.error === "string" && record.error.trim()) ||
+          (typeof nested?.error === "string" && nested.error.trim()) ||
+          (typeof deep?.error === "string" && deep.error.trim()) ||
+          (typeof nested?.event === "string" && nested.event.trim()) ||
+          currentEvent;
+        const timestamp =
+          (typeof record?.timestamp === "string" && record.timestamp.trim()) ||
+          (typeof nested?.timestamp === "string" && nested.timestamp.trim()) ||
+          (typeof deep?.timestamp === "string" && deep.timestamp.trim()) ||
+          new Date().toISOString();
+
+        const scenarioId =
+          (typeof record?.scenarioId === "string" && record.scenarioId.trim()) ||
+          (typeof nested?.scenarioId === "string" && nested.scenarioId.trim()) ||
+          (typeof deep?.scenarioId === "string" && deep.scenarioId.trim()) ||
+          undefined;
+        const stage =
+          (typeof record?.stage === "string" && record.stage.trim()) ||
+          (typeof nested?.stage === "string" && nested.stage.trim()) ||
+          (typeof deep?.stage === "string" && deep.stage.trim()) ||
+          undefined;
+        const status =
+          (typeof record?.status === "string" && record.status.trim()) ||
+          (typeof nested?.status === "string" && nested.status.trim()) ||
+          (typeof deep?.status === "string" && deep.status.trim()) ||
+          undefined;
+
+        const eventRecord: CodexStreamEventLog = {
+          id: `${action}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+          action,
+          event: currentEvent,
+          phase,
+          message,
+          timestamp,
+          scenarioId: scenarioId || undefined,
+          stage: stage || undefined,
+          status: status || undefined,
+        };
+
+        setCodexStreamEvents((current) => [...current.slice(-119), eventRecord]);
+        onEvent?.(eventRecord);
 
         if (currentEvent === "error") {
           throw new Error(readStreamError(payload, fallbackErrorMessage));

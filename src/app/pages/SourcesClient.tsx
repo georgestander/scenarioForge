@@ -10,9 +10,12 @@ import type {
 } from "@/domain/models";
 import { readError } from "@/app/shared/api";
 import { useSession } from "@/app/shared/SessionContext";
+import { useStreamAction } from "@/app/shared/useStreamAction";
 import type {
+  CodexStreamEventLog,
   ManifestCreatePayload,
   ProjectPrReadinessPayload,
+  ScenarioActionGeneratePayload,
   SourcesScanPayload,
 } from "@/app/shared/types";
 
@@ -39,8 +42,13 @@ export const SourcesClient = ({
   const [confirmationNote, setConfirmationNote] = useState("Confirmed against current product direction.");
   const [includeStaleConfirmed, setIncludeStaleConfirmed] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [prReadiness, setPrReadiness] = useState<ProjectPrReadiness | null>(null);
   const [isCheckingPrReadiness, setIsCheckingPrReadiness] = useState(false);
+  const [generatedCount, setGeneratedCount] = useState(0);
+  const [generatedTotal, setGeneratedTotal] = useState(0);
+  const [latestGeneratedLabel, setLatestGeneratedLabel] = useState("");
+  const { streamAction, clearStreamEvents } = useStreamAction();
 
   const latestManifest = manifests[0] ?? null;
   const prReady = prReadiness?.status === "ready";
@@ -57,7 +65,7 @@ export const SourcesClient = ({
   );
 
   const handleScanSources = async () => {
-    if (isScanning) return;
+    if (isScanning || isGenerating) return;
     setIsScanning(true);
     setStatusMessage("Scanning repository and building code baseline...");
     try {
@@ -85,7 +93,42 @@ export const SourcesClient = ({
     );
   };
 
-  const handleCreateScenarios = async () => {
+  const parseGenerationProgressEvent = (event: CodexStreamEventLog) => {
+    if (event.action !== "generate" || event.event !== "status") {
+      return;
+    }
+    if (event.phase !== "generate.scenario") {
+      return;
+    }
+
+    const text = event.message.trim();
+    if (!text) {
+      return;
+    }
+
+    const match = text.match(/^Created\s+(\d+)\s*\/\s*(\d+):\s*(.+)$/i);
+    if (!match) {
+      return;
+    }
+
+    const current = Number.parseInt(match[1] ?? "", 10);
+    const total = Number.parseInt(match[2] ?? "", 10);
+    const label = (match[3] ?? "").trim();
+    if (Number.isFinite(current) && current > 0) {
+      setGeneratedCount(current);
+    }
+    if (Number.isFinite(total) && total > 0) {
+      setGeneratedTotal(total);
+    }
+    if (label) {
+      setLatestGeneratedLabel(label);
+    }
+  };
+
+  const handleGenerateScenarios = async () => {
+    if (isGenerating) {
+      return;
+    }
     if (riskySelectedCount > 0 && !includeStaleConfirmed) {
       setStatusMessage("Selected sources include stale or conflicting entries. Check the confirmation toggle.");
       return;
@@ -95,31 +138,68 @@ export const SourcesClient = ({
       return;
     }
 
-    const response = await fetch(`/api/projects/${projectId}/source-manifests`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceIds: selectedSourceIds,
-        userConfirmed: true,
-        confirmationNote,
-      }),
-    });
+    setIsGenerating(true);
+    setGeneratedCount(0);
+    setGeneratedTotal(0);
+    setLatestGeneratedLabel("");
+    clearStreamEvents();
 
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to create source manifest."));
-      return;
-    }
+    try {
+      const response = await fetch(`/api/projects/${projectId}/source-manifests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceIds: selectedSourceIds,
+          userConfirmed: true,
+          confirmationNote,
+        }),
+      });
 
-    const payload = (await response.json()) as ManifestCreatePayload;
-    setManifests((current) => [payload.manifest, ...current]);
-    setCodeBaseline(payload.codeBaseline ?? codeBaseline);
-    setSources((current) =>
-      current.map((s) => ({ ...s, selected: selectedSourceIds.includes(s.id) })),
-    );
-    if (selectedSourceIds.length === 0) {
-      setStatusMessage("Source manifest confirmed in code-only mode. Proceed to generation.");
-    } else {
-      setStatusMessage(`Source manifest confirmed. Proceed to generation.`);
+      if (!response.ok) {
+        setStatusMessage(await readError(response, "Failed to create source manifest."));
+        return;
+      }
+
+      const payload = (await response.json()) as ManifestCreatePayload;
+      setManifests((current) => [payload.manifest, ...current]);
+      setCodeBaseline(payload.codeBaseline ?? codeBaseline);
+      setSources((current) =>
+        current.map((s) => ({ ...s, selected: selectedSourceIds.includes(s.id) })),
+      );
+
+      setStatusMessage(
+        selectedSourceIds.length === 0
+          ? "Generating scenarios in code-only mode..."
+          : "Generating scenarios from selected sources...",
+      );
+
+      const generationPayload = await streamAction<ScenarioActionGeneratePayload>(
+        "generate",
+        `/api/projects/${projectId}/actions/generate/stream`,
+        {
+          sourceManifestId: payload.manifest.id,
+          mode: "initial",
+          userInstruction: "",
+        },
+        "Failed to generate scenarios.",
+        parseGenerationProgressEvent,
+      );
+
+      const generatedScenarios = generationPayload.pack.scenarios.length;
+      setGeneratedCount(generatedScenarios);
+      setGeneratedTotal(generatedScenarios);
+      setStatusMessage(
+        `Generated ${generatedScenarios} scenario${
+          generatedScenarios === 1 ? "" : "s"
+        }. Opening review...`,
+      );
+      window.location.href = `/projects/${projectId}/review?packId=${encodeURIComponent(generationPayload.pack.id)}`;
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : "Failed to generate scenarios.",
+      );
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -300,7 +380,7 @@ export const SourcesClient = ({
           <button
             type="button"
             onClick={() => void handleScanSources()}
-            disabled={isScanning}
+            disabled={isScanning || isGenerating}
           >
             {isScanning ? "Scanning..." : "Scan sources"}
           </button>
@@ -309,21 +389,21 @@ export const SourcesClient = ({
             <button
               type="button"
               onClick={() => void handleScanSources()}
-              disabled={isScanning}
+              disabled={isScanning || isGenerating}
               style={{ fontSize: "0.85rem" }}
             >
               {isScanning ? "Scanning..." : "Rescan"}
             </button>
             <button
               type="button"
-              onClick={() => void handleCreateScenarios()}
-              disabled={!canCreateManifest}
+              onClick={() => void handleGenerateScenarios()}
+              disabled={!canCreateManifest || isGenerating}
             >
-              create scenarios
+              {isGenerating ? "Generating..." : "Generate Scenarios"}
             </button>
             {latestManifest ? (
               <a
-                href={`/projects/${projectId}/generate`}
+                href={`/projects/${projectId}/review`}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -336,12 +416,40 @@ export const SourcesClient = ({
                   fontSize: "0.89rem",
                 }}
               >
-                Continue to generation
+                Open Latest Review
               </a>
             ) : null}
           </>
         )}
       </div>
+
+      {isGenerating ? (
+        <div
+          style={{
+            border: "1px solid var(--forge-line)",
+            borderRadius: "8px",
+            background: "rgba(18, 24, 43, 0.6)",
+            padding: "0.55rem 0.65rem",
+            display: "grid",
+            gap: "0.35rem",
+            textAlign: "left",
+          }}
+        >
+          <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
+            Generation in progress
+          </strong>
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
+            Created {generatedCount}
+            {generatedTotal > 0 ? ` / ${generatedTotal}` : ""} scenario
+            {generatedCount === 1 ? "" : "s"}.
+          </p>
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+            {latestGeneratedLabel
+              ? `Latest: ${latestGeneratedLabel}`
+              : "Codex is generating scenario coverage..."}
+          </p>
+        </div>
+      ) : null}
 
       {sources.length > 0 && selectedSourceIds.length === 0 ? (
         <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
@@ -362,6 +470,7 @@ export const SourcesClient = ({
             type="checkbox"
             checked={includeStaleConfirmed}
             onChange={(e) => setIncludeStaleConfirmed(e.target.checked)}
+            disabled={isGenerating}
             style={{ width: "auto", margin: 0 }}
           />
           Include stale/conflicting sources
@@ -406,6 +515,7 @@ export const SourcesClient = ({
                 type="checkbox"
                 checked={selectedSourceIds.includes(source.id)}
                 onChange={() => handleToggleSource(source.id)}
+                disabled={isGenerating}
                 style={{ width: "auto", marginTop: "0.2rem", flexShrink: 0 }}
               />
               <span style={{ display: "grid", gap: "0.1rem", fontSize: "0.85rem" }}>

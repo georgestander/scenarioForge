@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { Project, ScenarioPack } from "@/domain/models";
 import { useSession } from "@/app/shared/SessionContext";
 import { useStreamAction } from "@/app/shared/useStreamAction";
@@ -10,15 +10,21 @@ export const ReviewClient = ({
   projectId,
   project,
   initialPacks,
+  initialSelectedPackId,
 }: {
   projectId: string;
   project: Project;
   initialPacks: ScenarioPack[];
+  initialSelectedPackId?: string;
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
-  const { streamAction, codexStreamEvents, clearStreamEvents } = useStreamAction();
+  const { streamAction, clearStreamEvents } = useStreamAction();
   const [scenarioPacks, setScenarioPacks] = useState<ScenarioPack[]>(initialPacks);
-  const [selectedPackId, setSelectedPackId] = useState(initialPacks[0]?.id ?? "");
+  const [selectedPackId, setSelectedPackId] = useState(
+    initialSelectedPackId && initialPacks.some((pack) => pack.id === initialSelectedPackId)
+      ? initialSelectedPackId
+      : initialPacks[0]?.id ?? "",
+  );
   const [updateInstruction, setUpdateInstruction] = useState("");
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -34,11 +40,6 @@ export const ReviewClient = ({
     knownUnknowns: [],
     uncoveredGaps: [],
   };
-
-  const updateEvents = useMemo(
-    () => codexStreamEvents.filter((e) => e.action === "generate"),
-    [codexStreamEvents],
-  );
 
   const handleUpdateScenarios = async () => {
     if (isUpdating || !selectedPack) return;
@@ -110,7 +111,7 @@ export const ReviewClient = ({
           disabled={!selectedPack}
           style={{ borderColor: "var(--forge-line)", background: "transparent" }}
         >
-          download
+          Download Markdown
         </button>
         {selectedPack ? (
           <a
@@ -128,7 +129,7 @@ export const ReviewClient = ({
               fontSize: "0.89rem",
             }}
           >
-            Run
+            Run Execute Loop
           </a>
         ) : null}
       </div>
@@ -194,7 +195,7 @@ export const ReviewClient = ({
             whiteSpace: "nowrap",
           }}
         >
-          {isUpdating ? "Updating..." : "Update"}
+          {isUpdating ? "Updating..." : "Update Scenarios"}
         </button>
       </div>
 
@@ -222,13 +223,14 @@ export const ReviewClient = ({
                 fontWeight: 600,
                 color: "var(--forge-ink)",
                 cursor: "pointer",
-                listStyle: "none",
                 display: "flex",
                 alignItems: "center",
                 gap: "0.4rem",
               }}>
-                <span style={{ color: "var(--forge-muted)", fontSize: "0.7rem", flexShrink: 0 }}>&#9654;</span>
-                {scenario.title}
+                <span style={{ color: "var(--forge-muted)", fontSize: "0.72rem", flexShrink: 0 }}>
+                  {scenario.id}
+                </span>
+                <span>{scenario.title}</span>
               </summary>
               <div style={{
                 padding: "0 0.65rem 0.55rem",

@@ -9,7 +9,7 @@ import { ReviewClient } from "./ReviewClient";
 
 type AppRequestInfo = RequestInfo<{ projectId: string }, AppContext>;
 
-export const ReviewPage = ({ ctx, params }: AppRequestInfo) => {
+export const ReviewPage = ({ ctx, params, request }: AppRequestInfo) => {
   const principal = ctx?.auth?.principal ?? null;
 
   if (!principal) {
@@ -23,9 +23,18 @@ export const ReviewPage = ({ ctx, params }: AppRequestInfo) => {
     return redirect("/dashboard");
   }
 
+  const requestedPackId = String(new URL(request.url).searchParams.get("packId") ?? "").trim();
   const latestPacks = listScenarioPacksForProject(principal.id, projectId);
   const packs =
-    project.activeScenarioPackId
+    requestedPackId
+      ? (() => {
+          const requestedPack = latestPacks.find((pack) => pack.id === requestedPackId);
+          if (!requestedPack) {
+            return latestPacks;
+          }
+          return [requestedPack, ...latestPacks.filter((pack) => pack.id !== requestedPack.id)];
+        })()
+      : project.activeScenarioPackId
       ? (() => {
           const activePack = latestPacks.find((pack) => pack.id === project.activeScenarioPackId);
           if (!activePack) {
@@ -43,6 +52,7 @@ export const ReviewPage = ({ ctx, params }: AppRequestInfo) => {
       projectId={projectId}
       project={project}
       initialPacks={packs}
+      initialSelectedPackId={requestedPackId}
     />
   );
 };
