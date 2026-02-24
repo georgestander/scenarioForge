@@ -3,6 +3,7 @@ import test from "node:test";
 import { buildProject } from "../helpers/fixtures.ts";
 import type { RepositorySnapshot } from "@/services/sourceGate";
 import {
+  scanSourcesAndCodeBaselineForProject,
   scanSourcesForProject,
   scoreSource,
   validateGenerationSelection,
@@ -157,4 +158,47 @@ test("scanSourcesForProject is scoped to selected repository and branch", async 
 
   assert.ok(sources.every((source) => source.repositoryFullName === "acme/critical-repo"));
   assert.ok(sources.every((source) => source.branch === "release/1.2.3"));
+});
+
+test("scanSourcesAndCodeBaselineForProject returns required baseline metadata", async () => {
+  const project = buildProject({
+    repoUrl: "https://github.com/example/scenarioforge",
+    defaultBranch: "main",
+  });
+
+  const scan = await scanSourcesAndCodeBaselineForProject(
+    project,
+    project.ownerId,
+    [
+      {
+        id: 1,
+        name: "scenarioforge",
+        fullName: "example/scenarioforge",
+        defaultBranch: "main",
+        private: false,
+        url: "https://github.com/example/scenarioforge",
+      },
+    ],
+    {
+      snapshot: {
+        ...buildSnapshot("example/scenarioforge", "main"),
+        codeSamples: [
+          {
+            path: "src/worker.tsx",
+            content: `route("/dashboard", DashboardPage); route("/api/projects", [requireAuth]);`,
+          },
+          {
+            path: "src/domain/models.ts",
+            content: `export interface Project { id: string }\nexport interface ScenarioPack { id: string }`,
+          },
+        ],
+      },
+    },
+  );
+
+  assert.ok(scan.sources.length > 0);
+  assert.ok(scan.codeBaseline.routeMap.length > 0);
+  assert.ok(scan.codeBaseline.apiSurface.length > 0);
+  assert.ok(scan.codeBaseline.domainEntities.length > 0);
+  assert.ok(scan.codeBaseline.baselineHash.startsWith("h"));
 });

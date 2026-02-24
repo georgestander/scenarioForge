@@ -211,6 +211,8 @@ export const buildGeneratedScenarios = (): ScenarioContract[] => {
     outcome: item.outcome,
     title: item.title,
     persona: item.persona,
+    journey: `${item.outcome} journey`,
+    riskIntent: index % 2 === 0 ? "functional-correctness" : "resilience",
     preconditions: ["Project exists", "Source manifest is confirmed"],
     testData: ["Repository metadata", "Selected source ids"],
     steps: [
@@ -227,6 +229,11 @@ export const buildGeneratedScenarios = (): ScenarioContract[] => {
       "Source data is stale or conflicting.",
       "External integration responds slowly.",
     ],
+    codeEvidenceAnchors: [
+      "src/worker.tsx#route",
+      "src/services/scenarioGeneration.ts#generateScenarioPack",
+    ],
+    sourceRefs: ["docs/IMPLEMENTATION_PLAN.md"],
     passCriteria:
       "All checkpoints pass without unresolved errors and evidence is traceable.",
     priority: item.priority,
@@ -248,6 +255,21 @@ export const buildGeneratedOutput = () => {
 
   return {
     scenarios,
+    coverage: {
+      personas: [...new Set(scenarios.map((scenario) => scenario.persona))],
+      journeys: [...new Set(scenarios.map((scenario) => scenario.journey ?? scenario.title))],
+      edgeBuckets: [
+        "validation",
+        "permissions",
+        "interruptions",
+        "integration-failure",
+      ],
+      features: [...new Set(scenarios.map((scenario) => scenario.feature))],
+      outcomes: [...new Set(scenarios.map((scenario) => scenario.outcome))],
+      assumptions: ["GitHub and Codex integrations are reachable."],
+      knownUnknowns: ["Runtime behavior can vary by repository branch state."],
+      uncoveredGaps: [],
+    },
     groupedByFeature,
     groupedByOutcome,
   };

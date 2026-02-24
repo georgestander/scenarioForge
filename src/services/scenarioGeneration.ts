@@ -169,8 +169,8 @@ const normalizeScenarios = (value: unknown): ScenarioContract[] => {
   }
 
   const scenarios = value.map((scenario, index) => normalizeScenario(scenario, index));
-  if (scenarios.length < 8) {
-    throw new Error("Invalid scenario output: expected at least 8 scenarios.");
+  if (scenarios.length === 0) {
+    throw new Error("Invalid scenario output: expected at least one scenario.");
   }
 
   const seenIds = new Set<string>();
