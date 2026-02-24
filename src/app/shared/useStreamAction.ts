@@ -33,6 +33,19 @@ export const useStreamAction = () => {
         (typeof nested?.timestamp === "string" && nested.timestamp.trim()) ||
         new Date().toISOString();
 
+      const scenarioId =
+        (typeof record?.scenarioId === "string" && record.scenarioId.trim()) ||
+        (typeof nested?.scenarioId === "string" && nested.scenarioId.trim()) ||
+        undefined;
+      const stage =
+        (typeof record?.stage === "string" && record.stage.trim()) ||
+        (typeof nested?.stage === "string" && nested.stage.trim()) ||
+        undefined;
+      const status =
+        (typeof record?.status === "string" && record.status.trim()) ||
+        (typeof nested?.status === "string" && nested.status.trim()) ||
+        undefined;
+
       setCodexStreamEvents((current) => [
         ...current.slice(-119),
         {
@@ -42,6 +55,9 @@ export const useStreamAction = () => {
           phase,
           message,
           timestamp,
+          scenarioId: scenarioId || undefined,
+          stage: stage || undefined,
+          status: status || undefined,
         },
       ]);
     },

@@ -99,6 +99,9 @@ export interface CodexStreamEventLog {
   phase: string;
   message: string;
   timestamp: string;
+  scenarioId?: string;
+  stage?: string;
+  status?: string;
 }
 
 export interface ReviewBoardPayload {
