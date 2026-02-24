@@ -103,7 +103,11 @@ export const ReviewClient = ({
           download
         </button>
         <a
-          href={`/projects/${projectId}/execute`}
+          href={
+            selectedPack
+              ? `/projects/${projectId}/execute?packId=${encodeURIComponent(selectedPack.id)}`
+              : `/projects/${projectId}/execute`
+          }
           style={{
             display: "inline-flex",
             alignItems: "center",

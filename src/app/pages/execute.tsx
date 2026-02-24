@@ -9,7 +9,7 @@ import { ExecuteClient } from "./ExecuteClient";
 
 type AppRequestInfo = RequestInfo<{ projectId: string }, AppContext>;
 
-export const ExecutePage = ({ ctx, params }: AppRequestInfo) => {
+export const ExecutePage = ({ ctx, params, request }: AppRequestInfo) => {
   const principal = ctx?.auth?.principal ?? null;
 
   if (!principal) {
@@ -28,11 +28,19 @@ export const ExecutePage = ({ ctx, params }: AppRequestInfo) => {
     return redirect(`/projects/${projectId}/generate`);
   }
 
+  const requestedPackId = String(new URL(request.url).searchParams.get("packId") ?? "").trim();
+  if (requestedPackId && !packs.some((pack) => pack.id === requestedPackId)) {
+    return redirect(`/projects/${projectId}/review`);
+  }
+  const initialPack = requestedPackId
+    ? packs.find((pack) => pack.id === requestedPackId) ?? packs[0]
+    : packs[0];
+
   return (
     <ExecuteClient
       projectId={projectId}
       project={project}
-      initialPack={packs[0]}
+      initialPack={initialPack}
     />
   );
 };
