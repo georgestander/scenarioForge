@@ -2327,6 +2327,92 @@ export const persistPullRequestToD1 = async (
     .run();
 };
 
+export interface DeleteProjectExecutionHistoryD1Result {
+  scenarioRuns: number;
+  executionJobs: number;
+  executionJobEvents: number;
+  fixAttempts: number;
+  pullRequests: number;
+}
+
+export const deleteProjectExecutionHistoryFromD1 = async (
+  ownerId: string,
+  projectId: string,
+): Promise<DeleteProjectExecutionHistoryD1Result> => {
+  const db = getDb();
+  const emptyResult: DeleteProjectExecutionHistoryD1Result = {
+    scenarioRuns: 0,
+    executionJobs: 0,
+    executionJobEvents: 0,
+    fixAttempts: 0,
+    pullRequests: 0,
+  };
+
+  if (!db) {
+    return emptyResult;
+  }
+
+  await ensureTables(db);
+
+  const eventsDeleted = await db
+    .prepare(
+      `
+      DELETE FROM sf_execution_job_events
+      WHERE owner_id = ? AND project_id = ?
+    `,
+    )
+    .bind(ownerId, projectId)
+    .run();
+
+  const jobsDeleted = await db
+    .prepare(
+      `
+      DELETE FROM sf_execution_jobs
+      WHERE owner_id = ? AND project_id = ?
+    `,
+    )
+    .bind(ownerId, projectId)
+    .run();
+
+  const fixAttemptsDeleted = await db
+    .prepare(
+      `
+      DELETE FROM sf_fix_attempts
+      WHERE owner_id = ? AND project_id = ?
+    `,
+    )
+    .bind(ownerId, projectId)
+    .run();
+
+  const pullRequestsDeleted = await db
+    .prepare(
+      `
+      DELETE FROM sf_pull_requests
+      WHERE owner_id = ? AND project_id = ?
+    `,
+    )
+    .bind(ownerId, projectId)
+    .run();
+
+  const runsDeleted = await db
+    .prepare(
+      `
+      DELETE FROM sf_scenario_runs
+      WHERE owner_id = ? AND project_id = ?
+    `,
+    )
+    .bind(ownerId, projectId)
+    .run();
+
+  return {
+    scenarioRuns: Number(runsDeleted.meta?.changes ?? 0),
+    executionJobs: Number(jobsDeleted.meta?.changes ?? 0),
+    executionJobEvents: Number(eventsDeleted.meta?.changes ?? 0),
+    fixAttempts: Number(fixAttemptsDeleted.meta?.changes ?? 0),
+    pullRequests: Number(pullRequestsDeleted.meta?.changes ?? 0),
+  };
+};
+
 export const persistProjectPrReadinessToD1 = async (
   readiness: ProjectPrReadiness,
 ): Promise<void> => {

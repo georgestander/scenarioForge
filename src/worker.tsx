@@ -24,6 +24,7 @@ import type {
 } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import {
+  deleteProjectExecutionHistoryFromD1,
   persistCodeBaselineToD1,
   persistExecutionJobEventToD1,
   persistExecutionJobToD1,
@@ -51,7 +52,6 @@ import {
   executeScenariosViaCodex,
   executeScenariosViaCodexStream,
 } from "@/services/codexExecute";
-import { createFixAttemptFromRun, createPullRequestFromFix } from "@/services/fixPipeline";
 import {
   generateScenariosViaCodex,
   generateScenariosViaCodexStream,
@@ -66,7 +66,6 @@ import {
 import { isCodeFirstGenerationEnabled } from "@/services/featureFlags";
 import { evaluateProjectPrReadiness } from "@/services/prReadiness";
 import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
-import { createScenarioRunRecord } from "@/services/runEngine";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
 import {
   buildSourceManifest,
@@ -74,6 +73,7 @@ import {
   validateGenerationSelection,
 } from "@/services/sourceGate";
 import {
+  deleteProjectExecutionHistory,
   createFixAttempt,
   createExecutionJob,
   createExecutionJobEvent,
@@ -98,9 +98,11 @@ import {
   getScenarioPackById,
   getScenarioRunById,
   getSourceManifestById,
+  listActiveExecutionJobsForProject,
   listActiveExecutionJobsForOwner,
   listExecutionJobEvents,
   listFixAttemptsForProject,
+  listPrincipals,
   listProjectsForOwner,
   listPullRequestsForProject,
   listScenarioPacksForProject,
@@ -300,14 +302,14 @@ const summarizeScenarioRunOutcome = (
   return `Blocked: ${observed || "execution could not continue in this environment."}`;
 };
 
-const normalizeRunItemStatus = (value: unknown): "passed" | "failed" | "blocked" => {
+const normalizeRunItemStatus = (value: unknown): "passed" | "failed" => {
   const status = String(value ?? "")
     .trim()
     .toLowerCase();
-  if (status === "passed" || status === "failed" || status === "blocked") {
+  if (status === "passed" || status === "failed") {
     return status;
   }
-  return "blocked";
+  return "failed";
 };
 
 const normalizePullRequestStatus = (
@@ -374,6 +376,8 @@ const normalizeArtifacts = (value: unknown): Array<{
 
 const EXECUTION_JOB_MAX_ACTIVE_PER_OWNER = 3;
 const EXECUTION_JOB_EVENT_PAGE_LIMIT = 200;
+const EXECUTION_JOB_STALE_AFTER_MS = 12 * 60 * 1000;
+const EXECUTION_JOB_MAX_CODEX_EVENTS = 300;
 
 type ExecutionJobEventStatus =
   | "queued"
@@ -423,9 +427,6 @@ const inferExecutionJobStatusFromRun = (
   if (run.summary.failed > 0) {
     return "failed";
   }
-  if (run.summary.blocked > 0) {
-    return "blocked";
-  }
   return "completed";
 };
 
@@ -465,81 +466,51 @@ const buildScenarioRunInputFromCodexOutput = (
   const scenariosById = new Map(pack.scenarios.map((scenario) => [scenario.id, scenario]));
   const outputContainer = getExecutionOutputContainer(parsedOutput);
   const runRecord = isRecord(outputContainer.run) ? outputContainer.run : null;
-
-  if (!runRecord) {
-    throw new Error("Codex execute output is missing run details.");
-  }
-
-  const rawItems = Array.isArray(runRecord.items) ? runRecord.items : [];
-  if (rawItems.length === 0) {
-    throw new Error("Codex execute output did not include run.items.");
-  }
-
-  const parsedItemMap = rawItems
-    .map((item, index) => {
-      if (!isRecord(item)) {
-        throw new Error(`Codex execute output has invalid run item at index ${index}.`);
-      }
-
-      const scenarioId = String(item.scenarioId ?? "").trim();
-      const scenario = scenariosById.get(scenarioId);
-      if (!scenario) {
-        throw new Error(
-          `Codex execute output referenced unknown scenarioId '${scenarioId}'.`,
-        );
-      }
-
-      const timestamp = new Date(now.getTime() + index * 250).toISOString();
-      const status = normalizeRunItemStatus(item.status);
-      const observed = String(item.observed ?? "").trim() || "No observed output captured.";
-      const expected = String(item.expected ?? "").trim() || scenario.passCriteria;
-
-      return {
-        scenarioId,
-        status,
-        startedAt: timestamp,
-        completedAt: timestamp,
-        observed,
-        expected,
-        failureHypothesis:
-          item.failureHypothesis === null
-            ? null
-            : String(item.failureHypothesis ?? "").trim() || null,
-        artifacts: normalizeArtifacts(item.artifacts),
-      };
-    })
-    .filter(
-      (
-        item,
-      ): item is {
-        scenarioId: string;
-        status: "passed" | "failed" | "blocked";
-        startedAt: string;
-        completedAt: string;
-        observed: string;
-        expected: string;
-        failureHypothesis: string | null;
-        artifacts: Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>;
-      } => Boolean(item),
-    )
-    .reduce((acc, item) => {
-      if (acc.has(item.scenarioId)) {
-        throw new Error(
-          `Codex execute output contains duplicate scenarioId '${item.scenarioId}'.`,
-        );
-      }
-      acc.set(item.scenarioId, item);
-      return acc;
-    }, new Map<string, {
+  const rawItems = runRecord && Array.isArray(runRecord.items) ? runRecord.items : [];
+  const parsedItemMap = new Map<
+    string,
+    {
       scenarioId: string;
-      status: "passed" | "failed" | "blocked";
+      status: "passed" | "failed";
       startedAt: string;
       completedAt: string;
       observed: string;
       expected: string;
       failureHypothesis: string | null;
       artifacts: Array<{ kind: "log" | "screenshot" | "trace"; label: string; value: string }>;
-    }>());
+    }
+  >();
+
+  rawItems.forEach((item, index) => {
+    if (!isRecord(item)) {
+      return;
+    }
+
+    const scenarioId = String(item.scenarioId ?? "").trim();
+    const scenario = scenariosById.get(scenarioId);
+    if (!scenario || parsedItemMap.has(scenarioId)) {
+      return;
+    }
+
+    const timestamp = new Date(now.getTime() + index * 250).toISOString();
+    const status = normalizeRunItemStatus(item.status);
+    const observed = String(item.observed ?? "").trim() || "No observed output captured.";
+    const expected = String(item.expected ?? "").trim() || scenario.passCriteria;
+
+    parsedItemMap.set(scenarioId, {
+      scenarioId,
+      status,
+      startedAt: timestamp,
+      completedAt: timestamp,
+      observed,
+      expected,
+      failureHypothesis:
+        item.failureHypothesis === null
+          ? null
+          : String(item.failureHypothesis ?? "").trim() || null,
+      artifacts: normalizeArtifacts(item.artifacts),
+    });
+  });
 
   // Ensure every scenario reaches a terminal state even if Codex omits some run items.
   const items = pack.scenarios.map((scenario, index) => {
@@ -551,10 +522,11 @@ const buildScenarioRunInputFromCodexOutput = (
     const timestamp = new Date(now.getTime() + index * 250).toISOString();
     return {
       scenarioId: scenario.id,
-      status: "blocked" as const,
+      status: "failed" as const,
       startedAt: timestamp,
       completedAt: timestamp,
-      observed: "Codex execute output omitted this scenario result. Marked blocked for explicit rerun.",
+      observed:
+        "Codex execute output omitted this scenario result. Marked failed for explicit rerun.",
       expected: scenario.passCriteria,
       failureHypothesis: "Missing run item for scenario in Codex execute output.",
       artifacts: [],
@@ -565,14 +537,12 @@ const buildScenarioRunInputFromCodexOutput = (
     (acc, item) => {
       if (item.status === "passed") {
         acc.passed += 1;
-      } else if (item.status === "failed") {
+      } else {
         acc.failed += 1;
-      } else if (item.status === "blocked") {
-        acc.blocked += 1;
       }
       return acc;
     },
-    { total: items.length, passed: 0, failed: 0, blocked: 0 },
+    { total: items.length, passed: 0, failed: 0, blocked: 0 as number },
   );
   const summary = {
     total: computedSummary.total,
@@ -642,20 +612,7 @@ const buildFixAttemptInputFromCodexOutput = (
   const fixRecord = isRecord(outputContainer.fixAttempt) ? outputContainer.fixAttempt : null;
 
   if (!fixRecord) {
-    return {
-      ownerId,
-      projectId,
-      scenarioRunId: run.id,
-      failedScenarioIds: failedScenarioIdsFromRun,
-      probableRootCause:
-        "Codex execute reported failed scenarios but did not emit fixAttempt details.",
-      patchSummary:
-        "No fix details available from Codex output. Review execute transcript.",
-      impactedFiles: [],
-      model: "gpt-5.3-xhigh",
-      status: "failed" as const,
-      rerunSummary: null,
-    };
+    return null;
   }
 
   const failedScenarioIds = readStringArray(fixRecord.failedScenarioIds);
@@ -723,21 +680,9 @@ const buildPullRequestInputsFromCodexOutput = (
       const title = String(record.title ?? "").trim();
       const url = String(record.url ?? "").trim();
 
-      if (!title) {
+      if (!title || !url) {
         return null;
       }
-
-      const providedStatus = normalizePullRequestStatus(record.status);
-      const status = !url ? "blocked" : providedStatus;
-      const normalizedRiskNotes =
-        riskNotes.length > 0
-          ? riskNotes
-          : !url
-            ? [
-                "Automatic PR creation unavailable.",
-                "Push branch manually and open PR using the generated branch name.",
-              ]
-            : [];
 
       return {
         ownerId,
@@ -750,13 +695,13 @@ const buildPullRequestInputsFromCodexOutput = (
           String(record.branchName ?? "").trim() ||
           `scenariofix/${fixAttempt.id}`,
         url,
-        status,
+        status: normalizePullRequestStatus(record.status),
         rootCauseSummary:
           String(record.rootCauseSummary ?? "").trim() ||
           fixAttempt.probableRootCause,
         rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
         rerunEvidenceSummary,
-        riskNotes: normalizedRiskNotes,
+        riskNotes,
       };
     })
     .filter(
@@ -764,30 +709,7 @@ const buildPullRequestInputsFromCodexOutput = (
         record,
       ): record is PullRequestCreateInput => Boolean(record),
     );
-
-  const coveredScenarioIds = new Set(results.flatMap((record) => record.scenarioIds));
-  const missingScenarioIds = fixAttempt.failedScenarioIds.filter(
-    (scenarioId) => !coveredScenarioIds.has(scenarioId),
-  );
-  const synthesizedFallbacks = missingScenarioIds.map((scenarioId) => ({
-    ownerId,
-    projectId,
-    fixAttemptId: fixAttempt.id,
-    scenarioIds: [scenarioId],
-    title: `Manual PR handoff for ${scenarioId}`,
-    branchName: `scenariofix/${fixAttempt.id}/${scenarioId.toLowerCase()}`,
-    url: "",
-    status: "blocked" as const,
-    rootCauseSummary: fixAttempt.probableRootCause,
-    rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
-    rerunEvidenceSummary,
-    riskNotes: [
-      `Automatic PR creation unavailable for ${scenarioId}.`,
-      `Create branch '${`scenariofix/${fixAttempt.id}/${scenarioId.toLowerCase()}`}' and open PR manually.`,
-    ],
-  }));
-
-  return [...results, ...synthesizedFallbacks];
+  return results;
 };
 
 const resolveExecutionJobArtifacts = (ownerId: string, job: ExecutionJob) => {
@@ -949,6 +871,53 @@ const updateExecutionJobAndPersist = async (
   return next;
 };
 
+const expireStaleExecutionJobs = async (
+  ownerId: string,
+  staleAfterMs = EXECUTION_JOB_STALE_AFTER_MS,
+): Promise<ExecutionJob[]> => {
+  const activeJobs = listActiveExecutionJobsForOwner(ownerId);
+  const now = Date.now();
+  const expired: ExecutionJob[] = [];
+
+  for (const job of activeJobs) {
+    const startedAtMs = job.startedAt ? Date.parse(job.startedAt) : Number.NaN;
+    const createdAtMs = Date.parse(job.createdAt);
+    const baselineMs = Number.isFinite(startedAtMs) ? startedAtMs : createdAtMs;
+    if (!Number.isFinite(baselineMs)) {
+      continue;
+    }
+
+    if (now - baselineMs < staleAfterMs) {
+      continue;
+    }
+
+    const message =
+      "Execution timed out before completion. Marked failed so you can rerun with tighter scope or instruction.";
+    const next = await updateExecutionJobAndPersist(ownerId, job.id, (draft) => {
+      draft.status = "failed";
+      draft.completedAt = new Date().toISOString();
+      draft.error = message;
+    });
+    if (!next) {
+      continue;
+    }
+
+    await persistExecutionJobEvent({
+      job: next,
+      event: "error",
+      phase: "execute.timeout",
+      status: "failed",
+      message,
+      payload: {
+        error: message,
+      },
+    });
+    expired.push(next);
+  }
+
+  return expired;
+};
+
 interface ExecuteJobRunnerInput {
   ownerId: string;
   jobId: string;
@@ -998,6 +967,38 @@ const runExecuteJobInBackground = async (
     return;
   }
 
+  const requestedScenarioIds = readStringArray(
+    isRecord(job.constraints) ? (job.constraints as Record<string, unknown>).scenarioIds : undefined,
+  );
+  const scenarioIdFilter =
+    requestedScenarioIds.length > 0 ? new Set(requestedScenarioIds) : null;
+  const selectedScenarios = scenarioIdFilter
+    ? pack.scenarios.filter((scenario) => scenarioIdFilter.has(scenario.id))
+    : pack.scenarios;
+  if (selectedScenarios.length === 0) {
+    await persistExecutionJobEvent({
+      job,
+      event: "error",
+      phase: "execute.error",
+      status: "failed",
+      message: "No valid scenarios selected for execution.",
+      payload: { error: "No valid scenarios selected for execution." },
+    });
+    await updateExecutionJobAndPersist(input.ownerId, input.jobId, (next) => {
+      next.status = "failed";
+      next.completedAt = new Date().toISOString();
+      next.error = "No valid scenarios selected for execution.";
+    });
+    return;
+  }
+  const executionPack =
+    selectedScenarios.length === pack.scenarios.length
+      ? pack
+      : {
+          ...pack,
+          scenarios: selectedScenarios,
+        };
+
   const runningJob = await updateExecutionJobAndPersist(
     input.ownerId,
     input.jobId,
@@ -1021,7 +1022,7 @@ const runExecuteJobInBackground = async (
     message: "Execution job is running.",
   });
 
-  for (const [index, scenario] of pack.scenarios.entries()) {
+  for (const [index, scenario] of executionPack.scenarios.entries()) {
     await persistExecutionJobEvent({
       job: runningJob,
       event: "status",
@@ -1029,21 +1030,23 @@ const runExecuteJobInBackground = async (
       status: "queued",
       scenarioId: scenario.id,
       stage: "run",
-      message: `Queued ${index + 1}/${pack.scenarios.length}: waiting for prior scenarios to finish.`,
+      message: `Queued ${index + 1}/${executionPack.scenarios.length}: waiting for prior scenarios to finish.`,
       payload: {
         action: "execute",
         phase: "run.queue",
         scenarioId: scenario.id,
         stage: "run",
         status: "queued",
-        message: `Queued ${index + 1}/${pack.scenarios.length}: waiting for prior scenarios to finish.`,
+        message: `Queued ${index + 1}/${executionPack.scenarios.length}: waiting for prior scenarios to finish.`,
       },
     });
   }
 
-  const scenarioIds = pack.scenarios.map((scenario) => scenario.id);
+  const scenarioIds = executionPack.scenarios.map((scenario) => scenario.id);
   let activeScenarioId = scenarioIds[0] ?? null;
   let codexProgressCount = 0;
+  let codexStoredCount = 0;
+  let lastProgressScenarioId: string | null = null;
   if (activeScenarioId) {
     await persistExecutionJobEvent({
       job: runningJob,
@@ -1062,6 +1065,7 @@ const runExecuteJobInBackground = async (
         message: "Starting scenario execution and collecting evidence...",
       },
     });
+    lastProgressScenarioId = activeScenarioId;
   }
 
   let codexEventWrite = Promise.resolve();
@@ -1073,29 +1077,45 @@ const runExecuteJobInBackground = async (
           activeScenarioId = mentionedScenarioId;
         }
         codexProgressCount += 1;
+        const normalizedEventName = eventName.toLowerCase();
+        const isTerminalSignal =
+          normalizedEventName.includes("task_complete") ||
+          normalizedEventName.includes("completed") ||
+          normalizedEventName.includes("failed") ||
+          normalizedEventName.includes("error");
 
-        await persistExecutionJobEvent({
-          job: runningJob,
-          event: "codex",
-          phase: extractExecutionJobEventPhase(eventName, payload),
-          status: extractExecutionJobEventStatus(payload),
-          message: extractExecutionJobEventMessage(eventName, payload),
-          scenarioId: extractExecutionJobEventScenarioId(payload),
-          stage: extractExecutionJobEventStage(payload),
-          payload: {
-            action: "execute",
-            event: eventName,
-            payload,
-          },
-          timestamp: new Date().toISOString(),
-        });
+        const shouldPersistCodexTrace =
+          codexStoredCount < EXECUTION_JOB_MAX_CODEX_EVENTS &&
+          (codexStoredCount < 25 || codexProgressCount % 25 === 0 || isTerminalSignal);
 
-        if (
+        if (shouldPersistCodexTrace) {
+          codexStoredCount += 1;
+          await persistExecutionJobEvent({
+            job: runningJob,
+            event: "codex",
+            phase: extractExecutionJobEventPhase(eventName, payload),
+            status: extractExecutionJobEventStatus(payload),
+            message: extractExecutionJobEventMessage(eventName, payload),
+            scenarioId: extractExecutionJobEventScenarioId(payload),
+            stage: extractExecutionJobEventStage(payload),
+            payload: {
+              action: "execute",
+              event: eventName,
+              payload,
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        const shouldEmitProgress =
           activeScenarioId &&
           (codexProgressCount === 1 ||
-            codexProgressCount % 8 === 0 ||
-            eventName.toLowerCase().includes("task_complete"))
-        ) {
+            codexProgressCount % 25 === 0 ||
+            isTerminalSignal ||
+            activeScenarioId !== lastProgressScenarioId);
+
+        if (activeScenarioId && shouldEmitProgress) {
+          const progressMessage = describeCodexExecuteProgress(eventName);
           await persistExecutionJobEvent({
             job: runningJob,
             event: "status",
@@ -1103,16 +1123,17 @@ const runExecuteJobInBackground = async (
             status: "running",
             scenarioId: activeScenarioId,
             stage: "run",
-            message: describeCodexExecuteProgress(eventName),
+            message: progressMessage,
             payload: {
               action: "execute",
               phase: "run.progress",
               scenarioId: activeScenarioId,
               stage: "run",
               status: "running",
-              message: describeCodexExecuteProgress(eventName),
+              message: progressMessage,
             },
           });
+          lastProgressScenarioId = activeScenarioId;
         }
       })
       .catch(() => {
@@ -1120,11 +1141,12 @@ const runExecuteJobInBackground = async (
       });
   };
 
+  let persistedRun: ReturnType<typeof createScenarioRun> | null = null;
   try {
     const codexExecution = await executeScenariosViaCodexStream(
       {
         project,
-        pack,
+        pack: executionPack,
         executionMode: runningJob.executionMode,
         userInstruction: runningJob.userInstruction ?? "",
         constraints: runningJob.constraints,
@@ -1139,13 +1161,14 @@ const runExecuteJobInBackground = async (
     const runInput = buildScenarioRunInputFromCodexOutput(
       input.ownerId,
       project.id,
-      pack,
+      executionPack,
       codexExecution.parsedOutput,
     );
     const run = createScenarioRun(runInput);
+    persistedRun = run;
     await persistScenarioRunToD1(run);
 
-    project.activeScenarioPackId = pack.id;
+    project.activeScenarioPackId = executionPack.id;
     project.activeScenarioRunId = run.id;
     project.updatedAt = new Date().toISOString();
     upsertProjectRecord(project);
@@ -1198,6 +1221,11 @@ const runExecuteJobInBackground = async (
         run,
         codexExecution.parsedOutput,
       );
+      if (!fixInput && run.summary.failed > 0) {
+        throw new Error(
+          "Codex execute output reported failed scenarios but omitted fixAttempt details.",
+        );
+      }
       if (fixInput) {
         fixAttempt = createFixAttempt(fixInput);
         await persistFixAttemptToD1(fixAttempt);
@@ -1272,6 +1300,11 @@ const runExecuteJobInBackground = async (
         codexExecution.parsedOutput,
       );
       pullRequests = pullRequestInputs.map((entry) => createPullRequestRecord(entry));
+      if (run.summary.failed > 0 && pullRequests.length === 0) {
+        throw new Error(
+          "Failed scenarios remain, but no real pull request URLs were produced by Codex execute.",
+        );
+      }
       await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
 
       for (const pr of pullRequests) {
@@ -1280,17 +1313,17 @@ const runExecuteJobInBackground = async (
             job: runningJob,
             event: "status",
             phase: "pr.result",
-            status: pr.url ? "passed" : "blocked",
+            status: pr.url ? "passed" : "failed",
             scenarioId,
             stage: "pr",
-            message: pr.url ? `PR ready: ${pr.title}` : `PR blocked: ${pr.title}`,
+            message: pr.url ? `PR ready: ${pr.title}` : `PR handoff required: ${pr.title}`,
             payload: {
               action: "execute",
               phase: "pr.result",
               scenarioId,
               stage: "pr",
-              status: pr.url ? "passed" : "blocked",
-              message: pr.url ? `PR ready: ${pr.title}` : `PR blocked: ${pr.title}`,
+              status: pr.url ? "passed" : "failed",
+              message: pr.url ? `PR ready: ${pr.title}` : `PR handoff required: ${pr.title}`,
             },
           });
         }
@@ -1367,9 +1400,14 @@ const runExecuteJobInBackground = async (
       message,
       payload: { error: message },
     });
+
     await updateExecutionJobAndPersist(input.ownerId, input.jobId, (next) => {
       next.status = "failed";
       next.completedAt = new Date().toISOString();
+      next.runId = persistedRun?.id ?? null;
+      next.fixAttemptId = null;
+      next.pullRequestIds = [];
+      next.summary = persistedRun?.summary ?? null;
       next.error = message;
     });
   }
@@ -1380,6 +1418,18 @@ const getPrincipalFromContext = (ctx: AppContext): AuthPrincipal | null =>
 
 const getProjectId = (params: Record<string, unknown> | undefined): string =>
   String(params?.projectId ?? "").trim();
+
+const getLatestScenarioPackForProject = (
+  ownerId: string,
+  projectId: string,
+): ScenarioPack | null => {
+  const packs = listScenarioPacksForProject(ownerId, projectId);
+  if (packs.length === 0) {
+    return null;
+  }
+
+  return [...packs].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
+};
 
 const githubConnectionView = (connection: GitHubConnection | null) => {
   if (!connection) {
@@ -1598,6 +1648,20 @@ const refreshProjectPrReadiness = async (
   return readiness;
 };
 
+const ensureCodexBridgeAccount = async (): Promise<string | null> => {
+  try {
+    const account = await readChatGptAccount(false);
+    if (account) {
+      return null;
+    }
+    return "ChatGPT bridge auth is signed out. Use 'Sign In With ChatGPT' before running generate/execute.";
+  } catch (error) {
+    return error instanceof Error
+      ? error.message
+      : "Unable to verify ChatGPT bridge auth.";
+  }
+};
+
 const withAuthContext: RouteMiddleware<AppRequestInfo> = async ({
   request,
   response,
@@ -1613,7 +1677,15 @@ const withAuthContext: RouteMiddleware<AppRequestInfo> = async ({
     return;
   }
 
-  const principal = getPrincipalById(session.principalId);
+  let principal = getPrincipalById(session.principalId);
+  if (!principal) {
+    try {
+      await hydrateCoreStateFromD1({ force: true });
+      principal = getPrincipalById(session.principalId);
+    } catch {
+      principal = null;
+    }
+  }
 
   if (!principal) {
     await clearAuthSession(request, response.headers);
@@ -1724,6 +1796,23 @@ export default defineApp([
         const account = await readChatGptAccount(true);
 
         if (!account) {
+          await hydrateCoreStateFromD1({ force: true });
+          const fallbackPrincipal = listPrincipals()
+            .filter((entry) => entry.provider === "chatgpt")
+            .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
+
+          if (fallbackPrincipal) {
+            await saveAuthSession(
+              response.headers,
+              createAuthSession(fallbackPrincipal.id),
+            );
+            return json({
+              authenticated: true,
+              principal: fallbackPrincipal,
+              restoredFromLocalState: true,
+            });
+          }
+
           return json(
             {
               authenticated: false,
@@ -1823,10 +1912,15 @@ export default defineApp([
   }),
   route("/api/auth/sign-out", {
     post: async ({ request, response }) => {
-      try {
-        await logoutChatGpt();
-      } catch {
-        // Keep local sign-out reliable even if remote logout cannot be reached.
+      const payload = await parseJsonBody(request);
+      const remoteLogout = Boolean(payload?.remoteLogout);
+
+      if (remoteLogout) {
+        try {
+          await logoutChatGpt();
+        } catch {
+          // Keep local sign-out reliable even if remote logout cannot be reached.
+        }
       }
 
       await clearAuthSession(request, response.headers);
@@ -2402,6 +2496,7 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
+      await expireStaleExecutionJobs(principal.id);
       const projectId = getProjectId(params);
       const project = getProjectByIdForOwner(projectId, principal.id);
       if (!project) {
@@ -2446,7 +2541,7 @@ export default defineApp([
       const defaultPack =
         (project.activeScenarioPackId
           ? getScenarioPackById(principal.id, project.activeScenarioPackId)
-          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
+          : null) ?? getLatestScenarioPackForProject(principal.id, project.id);
       const existingPack =
         mode === "update"
           ? scenarioPackId
@@ -2457,6 +2552,10 @@ export default defineApp([
       const githubConnection = await ensureGitHubConnectionForPrincipal(principal.id);
       if (!githubConnection) {
         return json({ error: "Connect GitHub before generating scenarios." }, 400);
+      }
+      const bridgeAuthError = await ensureCodexBridgeAccount();
+      if (bridgeAuthError) {
+        return json({ error: bridgeAuthError }, 401);
       }
 
       return createSseResponse(async (emit) => {
@@ -2542,6 +2641,16 @@ export default defineApp([
           scenarioCount: pack.scenarios.length,
           timestamp: new Date().toISOString(),
         });
+        for (const [index, scenario] of pack.scenarios.entries()) {
+          emit("status", {
+            action: "generate",
+            phase: "generate.scenario",
+            scenarioId: scenario.id,
+            status: "passed",
+            message: `Created ${index + 1}/${pack.scenarios.length}: ${scenario.id} ${scenario.title}`,
+            timestamp: new Date().toISOString(),
+          });
+        }
         emit("completed", {
           pack,
           mode,
@@ -2569,6 +2678,7 @@ export default defineApp([
         return json({ error: "Project not found." }, 404);
       }
 
+      await expireStaleExecutionJobs(principal.id);
       const activeJobs = listActiveExecutionJobsForOwner(principal.id);
       if (activeJobs.length >= EXECUTION_JOB_MAX_ACTIVE_PER_OWNER) {
         return json(
@@ -2584,7 +2694,7 @@ export default defineApp([
       const defaultPack =
         (project.activeScenarioPackId
           ? getScenarioPackById(principal.id, project.activeScenarioPackId)
-          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
+          : null) ?? getLatestScenarioPackForProject(principal.id, project.id);
       const pack =
         (scenarioPackId
           ? getScenarioPackById(principal.id, scenarioPackId)
@@ -2596,7 +2706,70 @@ export default defineApp([
 
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
-      const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      const baseConstraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      const retryStrategyRaw = String(payload?.retryStrategy ?? "").trim().toLowerCase();
+      const retryStrategy = retryStrategyRaw === "failed_only" ? "failed_only" : "full";
+      const retryFromRunId = String(payload?.retryFromRunId ?? "").trim();
+      const explicitScenarioIds = readStringArray(payload?.scenarioIds);
+      let scenarioIds = explicitScenarioIds;
+
+      if (retryStrategy === "failed_only") {
+        const baselineRunId = retryFromRunId || project.activeScenarioRunId || "";
+        const baselineRun = baselineRunId
+          ? getScenarioRunById(principal.id, baselineRunId)
+          : listScenarioRunsForProject(principal.id, project.id)[0] ?? null;
+        if (!baselineRun || baselineRun.projectId !== project.id) {
+          return json(
+            {
+              error:
+                "Retry failed requires a prior scenario run in this project. Execute once before retrying failed scenarios.",
+            },
+            409,
+          );
+        }
+
+        const failedScenarioIds = baselineRun.items
+          .filter((item) => item.status === "failed")
+          .map((item) => item.scenarioId);
+        if (failedScenarioIds.length === 0) {
+          return json(
+            {
+              error:
+                "Retry failed was requested, but the selected run has no failed scenarios.",
+            },
+            409,
+          );
+        }
+
+        if (explicitScenarioIds.length > 0) {
+          const failedSet = new Set(failedScenarioIds);
+          scenarioIds = explicitScenarioIds.filter((scenarioId) =>
+            failedSet.has(scenarioId),
+          );
+          if (scenarioIds.length === 0) {
+            return json(
+              {
+                error:
+                  "Provided scenarioIds are not part of the failed subset for the selected run.",
+              },
+              400,
+            );
+          }
+        } else {
+          scenarioIds = failedScenarioIds;
+        }
+      }
+
+      const constraints = {
+        ...baseConstraints,
+        retryStrategy,
+        retryFromRunId: retryFromRunId || null,
+        scenarioIds,
+      };
+      const bridgeAuthError = await ensureCodexBridgeAccount();
+      if (bridgeAuthError) {
+        return json({ error: bridgeAuthError }, 401);
+      }
 
       const job = createExecutionJob({
         projectId: project.id,
@@ -2633,6 +2806,8 @@ export default defineApp([
           action: "execute",
           executionMode,
           scenarioPackId: pack.id,
+          retryStrategy,
+          scenarioCount: scenarioIds.length > 0 ? scenarioIds.length : pack.scenarios.length,
           timestamp: new Date().toISOString(),
         },
       });
@@ -2659,241 +2834,14 @@ export default defineApp([
   ]),
   route("/api/projects/:projectId/actions/execute/stream", [
     requireAuth,
-    async ({ request, ctx, params }) => {
-      if (request.method !== "POST") {
-        return json({ error: "Method not allowed." }, 405);
-      }
-
-      const principal = getPrincipalFromContext(ctx);
-      if (!principal) {
-        return json({ error: "Authentication required." }, 401);
-      }
-
-      const projectId = getProjectId(params);
-      const project = getProjectByIdForOwner(projectId, principal.id);
-      if (!project) {
-        return json({ error: "Project not found." }, 404);
-      }
-
-      const payload = await parseJsonBody(request);
-      const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
-      const defaultPack =
-        (project.activeScenarioPackId
-          ? getScenarioPackById(principal.id, project.activeScenarioPackId)
-          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
-      const pack =
-        (scenarioPackId
-          ? getScenarioPackById(principal.id, scenarioPackId)
-          : defaultPack) ?? null;
-
-      if (!pack || pack.projectId !== project.id) {
-        return json({ error: "Scenario pack not found." }, 404);
-      }
-
-      const executionMode = normalizeExecutionMode(payload?.executionMode);
-      const userInstruction = String(payload?.userInstruction ?? "").trim();
-      const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
-
-      return createSseResponse(async (emit) => {
-        emit("started", {
-          action: "execute",
-          executionMode,
-          timestamp: new Date().toISOString(),
-        });
-        for (const [index, scenario] of pack.scenarios.entries()) {
-          emit("status", {
-            action: "execute",
-            phase: "run.queue",
-            scenarioId: scenario.id,
-            stage: "run",
-            status: "queued",
-            message: `Queued ${index + 1}/${pack.scenarios.length}: waiting for prior scenarios to finish.`,
-            timestamp: new Date().toISOString(),
-          });
-        }
-
-        const scenarioIds = pack.scenarios.map((scenario) => scenario.id);
-        let activeScenarioId = scenarioIds[0] ?? null;
-        let codexProgressCount = 0;
-        if (activeScenarioId) {
-          emit("status", {
-            action: "execute",
-            phase: "run.progress",
-            scenarioId: activeScenarioId,
-            stage: "run",
-            status: "running",
-            message: "Starting scenario execution and collecting evidence...",
-            timestamp: new Date().toISOString(),
-          });
-        }
-
-        const codexExecution = await executeScenariosViaCodexStream(
-          {
-            project,
-            pack,
-            executionMode,
-            userInstruction,
-            constraints,
-          },
-          (event) => {
-            emit("codex", {
-              action: "execute",
-              event: event.event,
-              payload: event.payload,
-              timestamp: new Date().toISOString(),
-            });
-
-            const mentionedScenarioId = findMentionedScenarioId(
-              event.payload,
-              scenarioIds,
-            );
-            if (mentionedScenarioId) {
-              activeScenarioId = mentionedScenarioId;
-            }
-            codexProgressCount += 1;
-
-            if (
-              activeScenarioId &&
-              (codexProgressCount === 1 ||
-                codexProgressCount % 8 === 0 ||
-                event.event.toLowerCase().includes("task_complete"))
-            ) {
-              emit("status", {
-                action: "execute",
-                phase: "run.progress",
-                scenarioId: activeScenarioId,
-                stage: "run",
-                status: "running",
-                message: describeCodexExecuteProgress(event.event),
-                timestamp: new Date().toISOString(),
-              });
-            }
-          },
-        );
-
-        const runInput = buildScenarioRunInputFromCodexOutput(
-          principal.id,
-          project.id,
-          pack,
-          codexExecution.parsedOutput,
-        );
-        const run = createScenarioRun(runInput);
-        await persistScenarioRunToD1(run);
-        project.activeScenarioPackId = pack.id;
-        project.activeScenarioRunId = run.id;
-        project.updatedAt = new Date().toISOString();
-        upsertProjectRecord(project);
-        await persistProjectToD1(project);
-        for (const item of run.items) {
-          emit("status", {
-            action: "execute",
-            phase: "run.result",
-            scenarioId: item.scenarioId,
-            stage: "run",
-            status: item.status,
-            message: summarizeScenarioRunOutcome(item.status, item.observed),
-            timestamp: item.completedAt,
-          });
-        }
-        emit("persisted", {
-          action: "execute",
-          kind: "run",
-          runId: run.id,
-          summary: run.summary,
-          timestamp: new Date().toISOString(),
-        });
-
-        let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
-        if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
-          const fixInput = buildFixAttemptInputFromCodexOutput(
-            principal.id,
-            project.id,
-            run,
-            codexExecution.parsedOutput,
-          );
-          if (fixInput) {
-            fixAttempt = createFixAttempt(fixInput);
-            await persistFixAttemptToD1(fixAttempt);
-            for (const scenarioId of fixAttempt.failedScenarioIds) {
-              emit("status", {
-                action: "execute",
-                phase: "fix.progress",
-                scenarioId,
-                stage: "fix",
-                status: "running",
-                message: fixAttempt.patchSummary,
-                timestamp: new Date().toISOString(),
-              });
-            }
-            if (fixAttempt.rerunSummary) {
-              const rerunStatus = fixAttempt.rerunSummary.failed > 0 ? "failed" : "passed";
-              for (const scenarioId of fixAttempt.failedScenarioIds) {
-                emit("status", {
-                  action: "execute",
-                  phase: "rerun.result",
-                  scenarioId,
-                  stage: "rerun",
-                  status: rerunStatus,
-                  message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
-                  timestamp: new Date().toISOString(),
-                });
-              }
-            }
-            emit("persisted", {
-              action: "execute",
-              kind: "fixAttempt",
-              fixAttemptId: fixAttempt.id,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        }
-
-        let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];
-        if ((executionMode === "pr" || executionMode === "full") && fixAttempt) {
-          const pullRequestInputs = buildPullRequestInputsFromCodexOutput(
-            principal.id,
-            project.id,
-            fixAttempt,
-            codexExecution.parsedOutput,
-          );
-          pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
-          await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
-          for (const pr of pullRequests) {
-            for (const scenarioId of pr.scenarioIds) {
-              emit("status", {
-                action: "execute",
-                phase: "pr.result",
-                scenarioId,
-                stage: "pr",
-                status: pr.url ? "passed" : "blocked",
-                message: pr.url ? `PR ready: ${pr.title}` : `PR blocked: ${pr.title}`,
-                timestamp: new Date().toISOString(),
-              });
-            }
-          }
-          emit("persisted", {
-            action: "execute",
-            kind: "pullRequests",
-            count: pullRequests.length,
-            timestamp: new Date().toISOString(),
-          });
-        }
-
-        emit("completed", {
-          run,
-          fixAttempt,
-          pullRequests,
-          executionMode,
-          executionAudit: {
-            model: codexExecution.model,
-            threadId: codexExecution.threadId,
-            turnId: codexExecution.turnId,
-            turnStatus: codexExecution.turnStatus,
-            completedAt: codexExecution.completedAt,
-          },
-          timestamp: new Date().toISOString(),
-        });
-      });
+    async () => {
+      return json(
+        {
+          error:
+            "Deprecated endpoint. Use /api/projects/:projectId/actions/execute/start and job events.",
+        },
+        410,
+      );
     },
   ]),
   route("/api/projects/:projectId/actions/generate", [
@@ -2952,7 +2900,7 @@ export default defineApp([
       const defaultPack =
         (project.activeScenarioPackId
           ? getScenarioPackById(principal.id, project.activeScenarioPackId)
-          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
+          : null) ?? getLatestScenarioPackForProject(principal.id, project.id);
       const existingPack =
         mode === "update"
           ? scenarioPackId
@@ -2963,6 +2911,10 @@ export default defineApp([
       const githubConnection = await ensureGitHubConnectionForPrincipal(principal.id);
       if (!githubConnection) {
         return json({ error: "Connect GitHub before generating scenarios." }, 400);
+      }
+      const bridgeAuthError = await ensureCodexBridgeAccount();
+      if (bridgeAuthError) {
+        return json({ error: bridgeAuthError }, 401);
       }
 
       let scenarioPackInput:
@@ -3061,7 +3013,7 @@ export default defineApp([
       const defaultPack =
         (project.activeScenarioPackId
           ? getScenarioPackById(principal.id, project.activeScenarioPackId)
-          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
+          : null) ?? getLatestScenarioPackForProject(principal.id, project.id);
       const pack =
         (scenarioPackId
           ? getScenarioPackById(principal.id, scenarioPackId)
@@ -3074,6 +3026,10 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      const bridgeAuthError = await ensureCodexBridgeAccount();
+      if (bridgeAuthError) {
+        return json({ error: bridgeAuthError }, 401);
+      }
 
       let codexExecution;
       try {
@@ -3085,15 +3041,11 @@ export default defineApp([
           constraints,
         });
       } catch (error) {
-        return json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to execute scenarios through Codex app-server.",
-          },
-          502,
-        );
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to execute scenarios through Codex app-server.";
+        return json({ error: message }, 502);
       }
 
       const runInput = buildScenarioRunInputFromCodexOutput(
@@ -3118,6 +3070,26 @@ export default defineApp([
           run,
           codexExecution.parsedOutput,
         );
+        if (!fixInput && run.summary.failed > 0) {
+          return json(
+            {
+              run,
+              fixAttempt: null,
+              pullRequests: [],
+              executionMode,
+              executionAudit: {
+                model: codexExecution.model,
+                threadId: codexExecution.threadId,
+                turnId: codexExecution.turnId,
+                turnStatus: codexExecution.turnStatus,
+                completedAt: codexExecution.completedAt,
+              },
+              error:
+                "Codex execute output reported failed scenarios but omitted fixAttempt details.",
+            },
+            502,
+          );
+        }
         if (fixInput) {
           fixAttempt = createFixAttempt(fixInput);
           await persistFixAttemptToD1(fixAttempt);
@@ -3133,6 +3105,26 @@ export default defineApp([
           codexExecution.parsedOutput,
         );
         pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
+        if (run.summary.failed > 0 && pullRequests.length === 0) {
+          return json(
+            {
+              run,
+              fixAttempt,
+              pullRequests: [],
+              executionMode,
+              executionAudit: {
+                model: codexExecution.model,
+                threadId: codexExecution.threadId,
+                turnId: codexExecution.turnId,
+                turnStatus: codexExecution.turnStatus,
+                completedAt: codexExecution.completedAt,
+              },
+              error:
+                "Failed scenarios remain, but no real pull request URLs were produced by Codex execute.",
+            },
+            502,
+          );
+        }
         await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
       }
 
@@ -3156,7 +3148,7 @@ export default defineApp([
   ]),
   route("/api/jobs/active", [
     requireAuth,
-    ({ request, ctx }) => {
+    async ({ request, ctx }) => {
       if (request.method !== "GET") {
         return json({ error: "Method not allowed." }, 405);
       }
@@ -3166,6 +3158,7 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
+      await expireStaleExecutionJobs(principal.id);
       const projects = listProjectsForOwner(principal.id);
       const projectsById = new Map(projects.map((project) => [project.id, project]));
 
@@ -3196,7 +3189,7 @@ export default defineApp([
   ]),
   route("/api/jobs/:jobId/events", [
     requireAuth,
-    ({ request, ctx, params }) => {
+    async ({ request, ctx, params }) => {
       if (request.method !== "GET") {
         return json({ error: "Method not allowed." }, 405);
       }
@@ -3206,6 +3199,7 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
+      await expireStaleExecutionJobs(principal.id);
       const jobId = String(params?.jobId ?? "").trim();
       const job = getExecutionJobById(principal.id, jobId);
       if (!job) {
@@ -3233,7 +3227,7 @@ export default defineApp([
   ]),
   route("/api/jobs/:jobId", [
     requireAuth,
-    ({ request, ctx, params }) => {
+    async ({ request, ctx, params }) => {
       if (request.method !== "GET") {
         return json({ error: "Method not allowed." }, 405);
       }
@@ -3243,6 +3237,7 @@ export default defineApp([
         return json({ error: "Authentication required." }, 401);
       }
 
+      await expireStaleExecutionJobs(principal.id);
       const jobId = String(params?.jobId ?? "").trim();
       const job = getExecutionJobById(principal.id, jobId);
       if (!job) {
@@ -3463,38 +3458,70 @@ export default defineApp([
       }
 
       if (request.method === "POST") {
-        const payload = await parseJsonBody(request);
-        const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
-        const scenarioIds = readStringArray(payload?.scenarioIds);
-        const pack =
-          (scenarioPackId
-            ? getScenarioPackById(principal.id, scenarioPackId)
-            : project.activeScenarioPackId
-              ? getScenarioPackById(principal.id, project.activeScenarioPackId)
-              : null) ?? null;
-
-        if (!pack || pack.projectId !== project.id) {
-          return json({ error: "Scenario pack not found." }, 404);
-        }
-
-        const runInput = createScenarioRunRecord({
-          ownerId: principal.id,
-          projectId: project.id,
-          pack,
-          selectedScenarioIds: scenarioIds,
-        });
-        const run = createScenarioRun(runInput);
-        await persistScenarioRunToD1(run);
-        project.activeScenarioPackId = pack.id;
-        project.activeScenarioRunId = run.id;
-        project.updatedAt = new Date().toISOString();
-        upsertProjectRecord(project);
-        await persistProjectToD1(project);
-
-        return json({ run }, 201);
+        return json(
+          {
+            error:
+              "Deprecated endpoint. Synthetic scenario runs are disabled. Use /api/projects/:projectId/actions/execute/start.",
+          },
+          410,
+        );
       }
 
       return json({ error: "Method not allowed." }, 405);
+    },
+  ]),
+  route("/api/projects/:projectId/scenario-runs/clear", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const activeJobs = listActiveExecutionJobsForProject(principal.id, project.id);
+      if (activeJobs.length > 0) {
+        return json(
+          {
+            error:
+              "Cannot delete run history while execution is active. Wait for active runs to finish first.",
+          },
+          409,
+        );
+      }
+
+      const deletedInMemory = deleteProjectExecutionHistory(principal.id, project.id);
+      const deletedInD1 = await deleteProjectExecutionHistoryFromD1(
+        principal.id,
+        project.id,
+      );
+
+      const totalDeleted = {
+        scenarioRuns: Math.max(deletedInMemory.scenarioRuns, deletedInD1.scenarioRuns),
+        executionJobs: Math.max(deletedInMemory.executionJobs, deletedInD1.executionJobs),
+        executionJobEvents: Math.max(
+          deletedInMemory.executionJobEvents,
+          deletedInD1.executionJobEvents,
+        ),
+        fixAttempts: Math.max(deletedInMemory.fixAttempts, deletedInD1.fixAttempts),
+        pullRequests: Math.max(deletedInMemory.pullRequests, deletedInD1.pullRequests),
+      };
+
+      project.activeScenarioRunId = null;
+      project.updatedAt = new Date().toISOString();
+      upsertProjectRecord(project);
+      await persistProjectToD1(project);
+
+      return json({ deleted: totalDeleted, project });
     },
   ]),
   route("/api/scenario-runs/:runId", [
@@ -3540,22 +3567,13 @@ export default defineApp([
       }
 
       if (request.method === "POST") {
-        const payload = await parseJsonBody(request);
-        const runId = String(payload?.runId ?? "").trim();
-        const run = getScenarioRunById(principal.id, runId);
-
-        if (!run || run.projectId !== project.id) {
-          return json({ error: "Scenario run not found." }, 404);
-        }
-
-        const fixAttemptInput = createFixAttemptFromRun({
-          ownerId: principal.id,
-          projectId: project.id,
-          run,
-        });
-        const fixAttempt = createFixAttempt(fixAttemptInput);
-        await persistFixAttemptToD1(fixAttempt);
-        return json({ fixAttempt }, 201);
+        return json(
+          {
+            error:
+              "Deprecated endpoint. Synthetic fix attempts are disabled. Use /api/projects/:projectId/actions/execute/start.",
+          },
+          410,
+        );
       }
 
       return json({ error: "Method not allowed." }, 405);
@@ -3582,29 +3600,13 @@ export default defineApp([
       }
 
       if (request.method === "POST") {
-        const payload = await parseJsonBody(request);
-        const fixAttemptId = String(payload?.fixAttemptId ?? "").trim();
-        const fixAttempt = getFixAttemptById(principal.id, fixAttemptId);
-
-        if (!fixAttempt || fixAttempt.projectId !== project.id) {
-          return json({ error: "Fix attempt not found." }, 404);
-        }
-
-        if (!fixAttempt.rerunSummary) {
-          return json(
-            { error: "Fix attempt missing rerun evidence. Cannot create PR." },
-            400,
-          );
-        }
-
-        const pullRequestInput = createPullRequestFromFix({
-          ownerId: principal.id,
-          projectId: project.id,
-          fixAttempt,
-        });
-        const pullRequest = createPullRequestRecord(pullRequestInput);
-        await persistPullRequestToD1(pullRequest);
-        return json({ pullRequest }, 201);
+        return json(
+          {
+            error:
+              "Deprecated endpoint. Synthetic pull request records are disabled. Use /api/projects/:projectId/actions/execute/start.",
+          },
+          410,
+        );
       }
 
       return json({ error: "Method not allowed." }, 405);

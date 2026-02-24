@@ -43,18 +43,8 @@ export interface CodexExecuteBridgeStreamEvent {
 
 interface ExecuteRunItemQuality {
   scenarioId: string;
-  status: "passed" | "failed" | "blocked";
+  status: "passed" | "failed";
   observed: string;
-}
-
-interface ExecutePullRequestQuality {
-  title: string;
-  url: string;
-  status: string;
-  scenarioIds: string[];
-  riskNotes: string[];
-  branchName: string;
-  rootCauseSummary: string;
 }
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/g, "");
@@ -284,7 +274,7 @@ const buildExecuteOutputSchema = (scenarioIds: string[]) => {
                 scenarioId: scenarioIdSchema,
                 status: {
                   type: "string",
-                  enum: ["passed", "failed", "blocked"],
+                  enum: ["passed", "failed"],
                 },
                 observed: { type: "string" },
                 expected: { type: "string" },
@@ -312,7 +302,7 @@ const buildExecuteOutputSchema = (scenarioIds: string[]) => {
             properties: {
               passed: { type: "number" },
               failed: { type: "number" },
-              blocked: { type: "number" },
+              blocked: { type: "number", enum: [0] },
             },
           },
         },
@@ -405,17 +395,16 @@ const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
     "- Process scenarios sequentially in listed order and continue until every scenario reaches a terminal outcome.",
     "- Continue after failures: one failed scenario must not stop later scenarios from running.",
     "- Never leave long-running/watch commands in the foreground; use bounded checks and stop background processes before continuing.",
-    "- If a step times out or cannot be executed, mark that scenario blocked and immediately continue to the next scenario.",
-    "- Execute every scenario ID listed under Scenario subset and return one terminal run.items entry per scenario (`passed`/`failed`/`blocked`).",
-    "- Do not stop early; if a scenario cannot be completed in this environment, mark it `blocked` with explicit observed reason.",
+    "- Execute every scenario ID listed under Scenario subset and return one terminal run.items entry per scenario (`passed` or `failed`).",
+    "- Do not stop early; if a scenario cannot be completed in this environment, mark it failed with explicit observed limitation and continue.",
     "- If a step cannot be executed in this environment, return that limitation in observed output and keep statuses accurate.",
-    "- For executionMode=full, provide PR fallback for every failed scenario: either real PR URL or blocked handoff details with branchName and actionable riskNotes.",
+    "- For executionMode=full, include fixAttempt details for failures and open real pull request URLs for failed scenarios when tools/auth permit.",
+    "- If PR creation is impossible in this environment, keep affected scenarios failed and explain the PR limitation in observed/failureHypothesis/riskNotes. Do not fabricate placeholder URLs.",
     "",
     "Output contract:",
     "- Return strict JSON object with keys: run, fixAttempt, pullRequests.",
     "- run.items must include scenarioId, status, observed, expected, optional failureHypothesis and artifacts.",
     "- pullRequests entries should include title, url/status if available, scenarioIds, and riskNotes.",
-    "- If PR cannot be opened, set pullRequests.status=blocked, leave url empty, and include branchName + actionable riskNotes commands for manual completion.",
     "",
     "Constraints:",
     constraints,
@@ -491,62 +480,27 @@ const readRunItemsForQuality = (parsedOutput: unknown): ExecuteRunItemQuality[] 
     if (!scenarioId) {
       throw new Error(`Codex execute output has missing scenarioId at index ${index}.`);
     }
-    if (statusRaw !== "passed" && statusRaw !== "failed" && statusRaw !== "blocked") {
+    if (statusRaw !== "passed" && statusRaw !== "failed") {
       throw new Error(
         `Codex execute output has invalid status '${statusRaw || "<empty>"}' at index ${index}.`,
       );
     }
+    if (!observed) {
+      throw new Error(`Codex execute output has empty observed detail for scenario '${scenarioId}'.`);
+    }
 
     return {
       scenarioId,
-      status: statusRaw as "passed" | "failed" | "blocked",
+      status: statusRaw as "passed" | "failed",
       observed,
     };
   });
 };
 
-const readPullRequestsForQuality = (
-  parsedOutput: unknown,
-): ExecutePullRequestQuality[] => {
-  const outputContainer = getExecutionOutputContainer(parsedOutput);
-  const pullRequests = Array.isArray(outputContainer.pullRequests)
-    ? outputContainer.pullRequests
-    : [];
-
-  return pullRequests
-    .map((item) => {
-      if (!isRecord(item)) {
-        return null;
-      }
-
-      const scenarioIds = Array.isArray(item.scenarioIds)
-        ? item.scenarioIds
-            .map((value) => String(value ?? "").trim())
-            .filter((value) => value.length > 0)
-        : [];
-      const riskNotes = Array.isArray(item.riskNotes)
-        ? item.riskNotes
-            .map((value) => String(value ?? "").trim())
-            .filter((value) => value.length > 0)
-        : [];
-
-      return {
-        title: String(item.title ?? "").trim(),
-        url: String(item.url ?? "").trim(),
-        status: String(item.status ?? "").trim().toLowerCase(),
-        scenarioIds,
-        riskNotes,
-        branchName: String(item.branchName ?? "").trim(),
-        rootCauseSummary: String(item.rootCauseSummary ?? "").trim(),
-      };
-    })
-    .filter((item): item is ExecutePullRequestQuality => Boolean(item));
-};
-
 const evaluateExecuteOutputQuality = (
   parsedOutput: unknown,
   scenarioIds: string[],
-  executionMode: "run" | "fix" | "pr" | "full",
+  _executionMode: "run" | "fix" | "pr" | "full",
 ): string | null => {
   const items = readRunItemsForQuality(parsedOutput);
   const uniqueScenarioIds = new Set(scenarioIds);
@@ -568,10 +522,6 @@ const evaluateExecuteOutputQuality = (
 
   const placeholderPattern =
     /\b(queued after|queued behind|waiting for previous|pending previous|pending|not attempted|skipped due to previous|deferred after|placeholder|not in user subset|n\/a|not applicable)\b/i;
-  const blockedItems = items.filter((item) => item.status === "blocked");
-  const placeholderBlockedCount = blockedItems.filter((item) =>
-    placeholderPattern.test(item.observed),
-  ).length;
   const placeholderAnyCount = items.filter((item) =>
     placeholderPattern.test(item.observed) || placeholderPattern.test(item.scenarioId),
   ).length;
@@ -580,92 +530,15 @@ const evaluateExecuteOutputQuality = (
     return "Run output contains placeholder/pending/not-in-subset content instead of real scenario execution results.";
   }
 
-  if (
-    placeholderBlockedCount >= 2 &&
-    placeholderBlockedCount >= Math.max(uniqueScenarioIds.size - 1, 2)
-  ) {
-    return "Run output used placeholder blocked chaining instead of attempting each scenario.";
-  }
-
-  const limitationPattern =
-    /(cannot|can't|missing|unavailable|permission|auth|network|timeout|sandbox|not configured|not reachable|failed|error|unsupported)/i;
-  const nonActionableBlocked = blockedItems.filter(
-    (item) => !limitationPattern.test(item.observed),
+  const blockedItems = items.filter(
+    (item) => String(item.status).trim().toLowerCase() === "blocked",
   );
-  if (nonActionableBlocked.length > 0) {
-    return `Blocked scenarios must include concrete limitation details. Missing details for: ${nonActionableBlocked
-      .map((item) => item.scenarioId)
-      .join(", ")}.`;
-  }
-
-  if (blockedItems.length === items.length) {
-    const actionableBlockedCount = blockedItems.filter((item) =>
-      limitationPattern.test(item.observed),
-    ).length;
-    if (actionableBlockedCount === 0) {
-      return "All scenarios were blocked without actionable limitation details.";
-    }
-  }
-
-  if (executionMode === "full") {
-    const failedScenarioIds = items
-      .filter((item) => item.status === "failed")
-      .map((item) => item.scenarioId);
-
-    if (failedScenarioIds.length > 0) {
-      const pullRequests = readPullRequestsForQuality(parsedOutput);
-      if (pullRequests.length === 0) {
-        return "Full mode returned failed scenarios without pullRequest fallback details.";
-      }
-
-      const coveredScenarioIds = new Set(
-        pullRequests.flatMap((pullRequest) => pullRequest.scenarioIds),
-      );
-      const missingCoverage = failedScenarioIds.filter(
-        (scenarioId) => !coveredScenarioIds.has(scenarioId),
-      );
-      if (missingCoverage.length > 0) {
-        return `Pull request fallback missing for failed scenarios: ${missingCoverage.join(", ")}.`;
-      }
-
-      for (const pullRequest of pullRequests) {
-        if (!pullRequest.title) {
-          return "Pull request fallback item is missing title.";
-        }
-        if (pullRequest.url.length === 0 && pullRequest.status !== "blocked") {
-          return `Pull request '${pullRequest.title}' has no URL and must be marked blocked.`;
-        }
-        if (pullRequest.url.length === 0) {
-          if (pullRequest.branchName.length === 0) {
-            return `Pull request '${pullRequest.title}' is blocked but missing branchName handoff.`;
-          }
-          if (pullRequest.rootCauseSummary.length === 0) {
-            return `Pull request '${pullRequest.title}' is blocked but missing rootCauseSummary.`;
-          }
-          if (pullRequest.riskNotes.length === 0) {
-            return `Pull request '${pullRequest.title}' is blocked but missing actionable riskNotes handoff.`;
-          }
-        }
-      }
-    }
+  if (blockedItems.length > 0) {
+    return "Run output contained blocked statuses. ScenarioForge execute requires terminal statuses of passed or failed only.";
   }
 
   return null;
 };
-
-const buildRetryPrompt = (basePrompt: string, qualityIssue: string): string =>
-  [
-    basePrompt,
-    "",
-    "Bridge compliance feedback from previous attempt:",
-    `- ${qualityIssue}`,
-    "- Retry now and actually execute every scenario in order.",
-    "- Do not emit placeholder chain text like 'Queued after ...'.",
-    "- Never return 'pending', 'placeholder', 'not in user subset', or 'N/A' as a scenario result.",
-    "- If blocked, include concrete actionable limitation details for that specific scenario.",
-    "- For full mode failures, emit PR fallback handoff entries with branchName and actionable risk notes.",
-    "- Return strict JSON only.",
-  ].join("\n");
 
 export const executeScenariosViaCodex = async (
   input: ExecuteScenariosViaCodexInput,
@@ -689,7 +562,7 @@ const executeScenariosViaCodexInternal = async (
   const scenarioIds = input.pack.scenarios.map((scenario) => scenario.id);
   const requestBody = {
     model: "gpt-5.3-xhigh",
-    skillName: "",
+    skillName: "scenario",
     cwd: configuredWorkspaceCwd || undefined,
     sandbox: "workspace-write",
     approvalPolicy: "never",
@@ -732,48 +605,25 @@ const executeScenariosViaCodexInternal = async (
     return { payload, responseText, parsedOutput };
   };
 
-  const firstAttempt = await invoke(requestBody);
-  const firstIssue = evaluateExecuteOutputQuality(
-    firstAttempt.parsedOutput,
+  const result = await invoke(requestBody);
+  const qualityIssue = evaluateExecuteOutputQuality(
+    result.parsedOutput,
     scenarioIds,
     input.executionMode,
   );
-  if (!firstIssue) {
-    return {
-      model: firstAttempt.payload.model,
-      cwd: firstAttempt.payload.cwd,
-      threadId: firstAttempt.payload.threadId,
-      turnId: firstAttempt.payload.turnId,
-      turnStatus: firstAttempt.payload.turnStatus,
-      responseText: firstAttempt.responseText,
-      parsedOutput: firstAttempt.parsedOutput,
-      completedAt: firstAttempt.payload.completedAt,
-    };
+  if (qualityIssue) {
+    throw new Error(`Codex execute output failed quality checks. ${qualityIssue}`);
   }
 
-  const retryAttempt = await invoke({
-    ...requestBody,
-    prompt: buildRetryPrompt(requestBody.prompt, firstIssue),
-  });
-  const retryIssue = evaluateExecuteOutputQuality(
-    retryAttempt.parsedOutput,
-    scenarioIds,
-    input.executionMode,
-  );
-  if (retryIssue) {
-    throw new Error(
-      `Codex execute output failed loop compliance checks after retry. ${retryIssue}`,
-    );
-  }
-
+  // Keep bridge behavior thin: parse once and persist concrete terminal outcomes.
   return {
-    model: retryAttempt.payload.model,
-    cwd: retryAttempt.payload.cwd,
-    threadId: retryAttempt.payload.threadId,
-    turnId: retryAttempt.payload.turnId,
-    turnStatus: retryAttempt.payload.turnStatus,
-    responseText: retryAttempt.responseText,
-    parsedOutput: retryAttempt.parsedOutput,
-    completedAt: retryAttempt.payload.completedAt,
+    model: result.payload.model,
+    cwd: result.payload.cwd,
+    threadId: result.payload.threadId,
+    turnId: result.payload.turnId,
+    turnStatus: result.payload.turnStatus,
+    responseText: result.responseText,
+    parsedOutput: result.parsedOutput,
+    completedAt: result.payload.completedAt,
   };
 };

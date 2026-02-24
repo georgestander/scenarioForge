@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type {
+  ExecutionJob,
   FixAttempt,
   Project,
   PullRequestRecord,
@@ -9,7 +10,7 @@ import type {
   ScenarioRun,
 } from "@/domain/models";
 import { readError } from "@/app/shared/api";
-import { useSession } from "@/app/shared/SessionContext";
+import { DEFAULT_STATUS_MESSAGE, useSession } from "@/app/shared/SessionContext";
 import type { ReviewBoardPayload } from "@/app/shared/types";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -18,6 +19,22 @@ const STATUS_COLORS: Record<string, string> = {
   blocked: "var(--forge-muted)",
   running: "var(--forge-fire)",
   queued: "var(--forge-muted)",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  passed: "passed",
+  failed: "failed",
+  blocked: "handoff",
+  running: "running",
+  queued: "queued",
+};
+
+const STATUS_SORT_ORDER: Record<string, number> = {
+  failed: 0,
+  blocked: 1,
+  running: 2,
+  queued: 3,
+  passed: 4,
 };
 
 const isLikelyUrl = (value: string): boolean =>
@@ -47,22 +64,34 @@ const parseDownloadFilename = (
 export const CompletedClient = ({
   projectId,
   project,
+  latestPackId,
   initialRuns,
   initialFixAttempts,
   initialPullRequests,
+  initialExecutionJobs,
   initialReviewBoard,
 }: {
   projectId: string;
   project: Project;
+  latestPackId: string | null;
   initialRuns: ScenarioRun[];
   initialFixAttempts: FixAttempt[];
   initialPullRequests: PullRequestRecord[];
+  initialExecutionJobs: ExecutionJob[];
   initialReviewBoard: ReviewBoard | null;
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [reviewBoard, setReviewBoard] = useState<ReviewBoard | null>(initialReviewBoard);
 
   const latestRun = initialRuns[0] ?? null;
+  const latestExecutionJob = initialExecutionJobs[0] ?? null;
+  const latestRunUpdatedAt = latestRun?.updatedAt ?? latestRun?.createdAt ?? "";
+  const hasNewerJobWithoutRun =
+    Boolean(
+      latestExecutionJob &&
+        latestExecutionJob.updatedAt > latestRunUpdatedAt &&
+        (!latestRun || latestExecutionJob.runId !== latestRun.id),
+    );
   const latestFixAttempt = initialFixAttempts[0] ?? null;
   const pullRequestsByScenarioId = useMemo(() => {
     return initialPullRequests.reduce(
@@ -115,10 +144,73 @@ export const CompletedClient = ({
     setStatusMessage("Challenge report downloaded.");
   };
 
+  const handleStartExecute = async (retryStrategy: "full" | "failed_only") => {
+    if (!latestPackId) {
+      setStatusMessage("No scenario pack found for retry.");
+      return;
+    }
+
+    if (retryStrategy === "failed_only" && (!latestRun || latestRun.summary.failed === 0)) {
+      setStatusMessage("No failed scenarios available to retry.");
+      return;
+    }
+
+    const response = await fetch(`/api/projects/${projectId}/actions/execute/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scenarioPackId: latestPackId,
+        executionMode: "full",
+        retryStrategy,
+        retryFromRunId: retryStrategy === "failed_only" ? latestRun?.id : undefined,
+      }),
+    });
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to queue execution retry."));
+      return;
+    }
+
+    const payload = (await response.json()) as {
+      job: { id: string };
+    };
+    setStatusMessage(
+      retryStrategy === "failed_only"
+        ? "Retry for failed scenarios queued."
+        : "Full loop queued.",
+    );
+    window.location.href = `/projects/${projectId}/execute?packId=${encodeURIComponent(latestPackId)}&jobId=${encodeURIComponent(payload.job.id)}`;
+  };
+
   const totalPassed = latestRun?.summary.passed ?? 0;
   const totalFailed = latestRun?.summary.failed ?? 0;
   const totalBlocked = latestRun?.summary.blocked ?? 0;
   const totalScenarios = totalPassed + totalFailed + totalBlocked;
+  const visibleStatusMessage = useMemo(() => {
+    const trimmed = statusMessage.trim();
+    if (!trimmed || trimmed === DEFAULT_STATUS_MESSAGE) {
+      return "";
+    }
+    if (trimmed.length <= 240) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, 237)}...`;
+  }, [statusMessage]);
+  const latestExecutionStatusLabel = latestExecutionJob
+    ? STATUS_LABEL[latestExecutionJob.status] ?? latestExecutionJob.status
+    : "";
+  const orderedRunItems = useMemo(() => {
+    if (!latestRun) {
+      return [];
+    }
+    return [...latestRun.items].sort((a, b) => {
+      const rankA = STATUS_SORT_ORDER[a.status] ?? 99;
+      const rankB = STATUS_SORT_ORDER[b.status] ?? 99;
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+      return a.scenarioId.localeCompare(b.scenarioId);
+    });
+  }, [latestRun]);
 
   return (
     <section style={{ maxWidth: "900px", margin: "0 auto", display: "grid", gap: "1.2rem" }}>
@@ -142,7 +234,7 @@ export const CompletedClient = ({
       <p style={{ textAlign: "center", color: "var(--forge-ink)", fontSize: "0.92rem", lineHeight: 1.6, margin: 0 }}>
         <strong>{project.name}</strong>
         {latestRun
-          ? <> finished with {totalScenarios} scenario{totalScenarios !== 1 ? "s" : ""}: {totalPassed} passed, {totalFailed} failed, {totalBlocked} blocked.</>
+          ? <> finished with {totalScenarios} scenario{totalScenarios !== 1 ? "s" : ""}: {totalPassed} passed, {totalFailed} failed{totalBlocked > 0 ? `, ${totalBlocked} limited` : ""}.</>
           : <> has no completed runs yet.</>
         }
         {initialPullRequests.length > 0
@@ -182,7 +274,7 @@ export const CompletedClient = ({
         </div>
       ) : null}
 
-      {statusMessage ? (
+      {visibleStatusMessage ? (
         <p style={{
           margin: 0,
           fontSize: "0.85rem",
@@ -192,17 +284,57 @@ export const CompletedClient = ({
           borderRadius: "6px",
           background: "rgba(42, 52, 84, 0.4)",
         }}>
-          {statusMessage}
+          {visibleStatusMessage}
+        </p>
+      ) : null}
+
+      {latestExecutionJob && hasNewerJobWithoutRun ? (
+        <p
+          style={{
+            margin: 0,
+            fontSize: "0.82rem",
+            color: latestExecutionJob.status === "failed" ? "#ff9d9d" : "var(--forge-muted)",
+            textAlign: "center",
+            padding: "0.5rem 0.65rem",
+            borderRadius: "6px",
+            border: "1px solid var(--forge-line)",
+            background: "rgba(42, 52, 84, 0.35)",
+          }}
+        >
+          Latest execution job {latestExecutionJob.id} is {latestExecutionStatusLabel}.
+          {latestExecutionJob.error ? ` ${latestExecutionJob.error}` : " Run output has not been persisted yet."}
         </p>
       ) : null}
 
       {/* Primary actions */}
-      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "1fr 1fr" }}>
+      <div style={{ display: "flex", gap: "0.45rem", flexWrap: "wrap" }}>
         <button type="button" onClick={() => void handleRefreshReviewBoard()}>
           Refresh Review Board
         </button>
         <button type="button" onClick={() => void handleExportReport()}>
           Export Report
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleStartExecute("failed_only")}
+          disabled={!latestRun || latestRun.summary.failed === 0 || !latestPackId}
+          style={{
+            borderColor: "#3f557f",
+            background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+          }}
+        >
+          Retry Failed
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleStartExecute("full")}
+          disabled={!latestPackId}
+          style={{
+            borderColor: "#3f557f",
+            background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+          }}
+        >
+          Run Full Again
         </button>
       </div>
 
@@ -287,7 +419,7 @@ export const CompletedClient = ({
             Scenario Checks
           </h3>
           <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.45rem" }}>
-            {latestRun.items.map((item) => {
+            {orderedRunItems.map((item) => {
               const scenarioPullRequests = pullRequestsByScenarioId.get(item.scenarioId) ?? [];
               const statusColor = STATUS_COLORS[item.status] ?? "var(--forge-muted)";
 
@@ -318,7 +450,7 @@ export const CompletedClient = ({
                         lineHeight: 1.2,
                       }}
                     >
-                      {item.status}
+                      {STATUS_LABEL[item.status] ?? item.status}
                     </span>
                   </div>
 

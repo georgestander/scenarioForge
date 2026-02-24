@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExecutionJob,
   ExecutionJobEvent,
@@ -11,7 +11,7 @@ import type {
   ScenarioRun,
 } from "@/domain/models";
 import { readError } from "@/app/shared/api";
-import { useSession } from "@/app/shared/SessionContext";
+import { DEFAULT_STATUS_MESSAGE, useSession } from "@/app/shared/SessionContext";
 import type {
   ExecutionJobDetailPayload,
   ExecutionJobEventsPayload,
@@ -37,7 +37,7 @@ const STATUS_ICON: Record<string, { char: string; color: string }> = {
   running: { char: "\u21BB", color: "var(--forge-fire)" },
   passed: { char: "\u2713", color: "var(--forge-ok)" },
   failed: { char: "\u2717", color: "#e25555" },
-  blocked: { char: "\u2014", color: "var(--forge-muted)" },
+  blocked: { char: "\u2717", color: "#e6b36e" },
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -45,7 +45,7 @@ const STATUS_LABEL: Record<string, string> = {
   running: "in progress",
   passed: "passed",
   failed: "failed",
-  blocked: "blocked",
+  blocked: "failed (limitation)",
 };
 
 const STAGE_LABEL: Record<string, string> = {
@@ -60,7 +60,7 @@ const JOB_STATUS_LABEL: Record<ExecutionJob["status"], string> = {
   running: "Running",
   completed: "Completed",
   failed: "Failed",
-  blocked: "Blocked",
+  blocked: "Handoff",
 };
 
 const JOB_TERMINAL: ExecutionJob["status"][] = ["completed", "failed", "blocked"];
@@ -268,13 +268,24 @@ export const ExecuteClient = ({
     };
   }, [currentJob?.id, syncJobState]);
 
-  const handleExecute = async () => {
+  const handleExecute = async (options?: {
+    mode?: "run" | "fix" | "pr" | "full";
+    retryStrategy?: "failed_only" | "full";
+    retryFromRunId?: string;
+  }) => {
     if (isLaunching || isJobActive(currentJob)) {
       return;
     }
 
+    const mode = options?.mode ?? executionMode;
+    const retryStrategy = options?.retryStrategy ?? "full";
+    const retryFromRunId = options?.retryFromRunId ?? "";
     setIsLaunching(true);
-    setStatusMessage("Queueing background execution job...");
+    setStatusMessage(
+      retryStrategy === "failed_only"
+        ? "Queueing retry for failed scenarios..."
+        : "Queueing full background execution job...",
+    );
 
     try {
       const response = await fetch(
@@ -284,8 +295,10 @@ export const ExecuteClient = ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             scenarioPackId: initialPack.id,
-            executionMode,
+            executionMode: mode,
             userInstruction: executeInstruction.trim(),
+            retryStrategy,
+            retryFromRunId: retryFromRunId || undefined,
           }),
         },
       );
@@ -304,17 +317,17 @@ export const ExecuteClient = ({
       setJobEvents([]);
       setEventsCursor(0);
       eventsCursorRef.current = 0;
+      setExecutionMode(payload.job.executionMode);
 
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
         url.searchParams.set("jobId", payload.job.id);
+        url.searchParams.set("packId", initialPack.id);
         window.history.replaceState({}, "", url.toString());
       }
 
       await syncJobState(payload.job.id, true);
-      setStatusMessage(
-        `Execution job ${payload.job.id} queued (${payload.activeCount}/${payload.activeLimit} active).`,
-      );
+      setStatusMessage(`Execution job ${payload.job.id} queued.`);
     } catch (error) {
       setStatusMessage(
         error instanceof Error ? error.message : "Failed to queue execution.",
@@ -326,6 +339,18 @@ export const ExecuteClient = ({
 
   const isExecuting = isLaunching || isJobActive(currentJob);
   const done = Boolean(currentJob && JOB_TERMINAL.includes(currentJob.status));
+  const hasFailedScenarios = Boolean(latestRun && latestRun.summary.failed > 0);
+  const activeJobId = currentJob && isJobActive(currentJob) ? currentJob.id : null;
+  const visibleStatusMessage = useMemo(() => {
+    const trimmed = statusMessage.trim();
+    if (!trimmed || trimmed === DEFAULT_STATUS_MESSAGE) {
+      return "";
+    }
+    if (trimmed.length <= 240) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, 237)}...`;
+  }, [statusMessage]);
 
   const filteredEvents = useMemo(
     () =>
@@ -517,38 +542,8 @@ export const ExecuteClient = ({
     >
       <style>{`
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-        .execute-panels {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) 220px;
-          gap: 0.75rem;
-          align-items: start;
-        }
         .execute-scenario-list {
           overflow-x: hidden;
-        }
-        .execute-stream-log {
-          width: 220px;
-          max-width: 220px;
-          justify-self: end;
-          overflow-x: hidden;
-        }
-        .execute-stream-log li {
-          white-space: normal;
-          overflow-wrap: anywhere;
-          word-break: break-word;
-        }
-        @media (max-width: 960px) {
-          .execute-panels {
-            grid-template-columns: 1fr;
-          }
-          .execute-stream-log {
-            width: 100%;
-            max-width: none;
-            justify-self: stretch;
-            border-left: none !important;
-            border-top: 1px solid var(--forge-line);
-            padding-top: 0.65rem;
-          }
         }
       `}</style>
 
@@ -568,7 +563,7 @@ export const ExecuteClient = ({
             : "Execute Scenarios"}
       </h2>
 
-      {statusMessage ? (
+      {visibleStatusMessage ? (
         <p
           style={{
             textAlign: "center",
@@ -577,7 +572,7 @@ export const ExecuteClient = ({
             color: "var(--forge-muted)",
           }}
         >
-          {statusMessage}
+          {visibleStatusMessage}
         </p>
       ) : null}
 
@@ -609,6 +604,27 @@ export const ExecuteClient = ({
         </p>
       ) : null}
 
+      {scenarioRows.length > 0 ? (
+        <div
+          style={{
+            height: "7px",
+            borderRadius: "999px",
+            background: "rgba(90, 110, 150, 0.35)",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: `${Math.round((completedCount / Math.max(scenarioRows.length, 1)) * 100)}%`,
+              background:
+                "linear-gradient(90deg, rgba(173, 90, 51, 0.95) 0%, rgba(245, 174, 104, 0.95) 100%)",
+              transition: "width 0.2s ease",
+            }}
+          />
+        </div>
+      ) : null}
+
       {!traceMode && hiddenEventCount > 0 && filteredEvents.length > 0 ? (
         <p
           style={{
@@ -632,8 +648,7 @@ export const ExecuteClient = ({
             color: "var(--forge-muted)",
           }}
         >
-          {latestRun.summary.passed} passed, {latestRun.summary.failed} failed,{" "}
-          {latestRun.summary.blocked} blocked
+          {latestRun.summary.passed} passed, {latestRun.summary.failed} failed.
           {latestFix ? " \u2014 fix attempted" : ""}
           {pullRequests.length > 0
             ? ` \u2014 ${pullRequests.length} PR${
@@ -643,78 +658,103 @@ export const ExecuteClient = ({
         </p>
       ) : null}
 
-      {!isExecuting ? (
+      <div
+        style={{
+          display: "grid",
+          gap: "0.45rem",
+          border: "1px solid var(--forge-line)",
+          borderRadius: "8px",
+          background: "rgba(18, 24, 43, 0.58)",
+          padding: "0.55rem 0.65rem",
+        }}
+      >
+        <input
+          value={executeInstruction}
+          onChange={(event) => setExecuteInstruction(event.target.value)}
+          placeholder="Optional instruction"
+          disabled={isLaunching || isExecuting}
+          style={{ width: "100%", boxSizing: "border-box" }}
+        />
+
         <div
           style={{
             display: "flex",
-            gap: "0.5rem",
+            gap: "0.45rem",
             justifyContent: "center",
-            alignItems: "end",
             flexWrap: "wrap",
           }}
         >
-          <label
-            style={{
-              display: "grid",
-              gap: "0.2rem",
-              fontSize: "0.75rem",
-              color: "var(--forge-muted)",
-            }}
-          >
-            Mode
-            <select
-              value={executionMode}
-              onChange={(event) =>
-                setExecutionMode(
-                  event.target.value as "run" | "fix" | "pr" | "full",
-                )
-              }
-              disabled={isLaunching}
-              style={{ minWidth: "120px" }}
-            >
-              <option value="run">run only</option>
-              <option value="fix">run + fix</option>
-              <option value="pr">run + fix + pr</option>
-              <option value="full">full loop</option>
-            </select>
-          </label>
-          <input
-            value={executeInstruction}
-            onChange={(event) => setExecuteInstruction(event.target.value)}
-            placeholder="Optional instruction"
-            disabled={isLaunching}
-            style={{ flex: 1, minWidth: "140px", boxSizing: "border-box" }}
-          />
           <button
             type="button"
-            onClick={() => void handleExecute()}
-            disabled={isLaunching}
-            style={{ whiteSpace: "nowrap", padding: "0.55rem 1.2rem" }}
+            onClick={() => void handleExecute({ mode: "full", retryStrategy: "full" })}
+            disabled={isLaunching || isExecuting}
+            style={{ whiteSpace: "nowrap" }}
           >
-            {isLaunching ? "Queueing..." : "Start Background Run"}
+            {isLaunching ? "Queueing..." : "Run Full Loop"}
           </button>
+          <button
+            type="button"
+            onClick={() =>
+              void handleExecute({
+                mode: "full",
+                retryStrategy: "failed_only",
+                retryFromRunId: latestRun?.id ?? "",
+              })
+            }
+            disabled={isLaunching || isExecuting || !hasFailedScenarios}
+            style={{
+              whiteSpace: "nowrap",
+              borderColor: "#3f557f",
+              background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+            }}
+          >
+            Retry Failed
+          </button>
+          {activeJobId ? (
+            <a
+              href={`/projects/${projectId}/execute?packId=${encodeURIComponent(initialPack.id)}&jobId=${encodeURIComponent(activeJobId)}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "0.5rem 0.8rem",
+                borderRadius: "7px",
+                border: "1px solid var(--forge-line)",
+                color: "var(--forge-ink)",
+                textDecoration: "none",
+                fontWeight: 600,
+                fontSize: "0.84rem",
+              }}
+            >
+              Resume Active Run
+            </a>
+          ) : null}
           {done && latestRun ? (
             <a
               href={`/projects/${projectId}/completed`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                padding: "0.5rem 1.2rem",
+                padding: "0.5rem 0.8rem",
                 borderRadius: "7px",
                 border: "1px solid #7f482b",
-                background:
-                  "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
+                background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
                 color: "var(--forge-ink)",
                 textDecoration: "none",
                 fontWeight: 600,
-                fontSize: "0.9rem",
+                fontSize: "0.84rem",
               }}
             >
               View Results
             </a>
           ) : null}
         </div>
-      ) : null}
+
+        {isExecuting ? (
+          <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.75rem" }}>
+            Run continues in the background. You can leave this page and return anytime.
+          </p>
+        ) : null}
+      </div>
 
       <div
         className="execute-scenario-list"
@@ -736,6 +776,10 @@ export const ExecuteClient = ({
             isRunning && state === "queued"
               ? "Executing current scenario..."
               : row.message;
+          const displayMessage =
+            detailMessage.length > 220
+              ? `${detailMessage.slice(0, 217)}...`
+              : detailMessage;
 
           return (
             <div
@@ -788,6 +832,16 @@ export const ExecuteClient = ({
                 >
                   <span
                     style={{
+                      fontSize: "0.74rem",
+                      fontWeight: 700,
+                      color: "var(--forge-muted)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {row.scenarioId}
+                  </span>
+                  <span
+                    style={{
                       fontSize: "0.82rem",
                       fontWeight: 600,
                       color: "var(--forge-ink)",
@@ -831,7 +885,7 @@ export const ExecuteClient = ({
                       overflowWrap: "anywhere",
                     }}
                   >
-                    {detailMessage}
+                    {displayMessage}
                   </p>
                 ) : null}
               </div>

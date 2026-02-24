@@ -1,11 +1,13 @@
 import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
+import type { ExecutionJob } from "@/domain/models";
 import { redirect } from "@/app/shared/api";
 import {
   getProjectByIdForOwner,
   listScenarioRunsForProject,
   listFixAttemptsForProject,
   listPullRequestsForProject,
+  listExecutionJobsForProject,
 } from "@/services/store";
 import { buildReviewBoard } from "@/services/reviewBoard";
 import {
@@ -43,16 +45,23 @@ export const CompletedPage = ({ ctx, params }: AppRequestInfo) => {
 
   const fixAttempts = listFixAttemptsForProject(principal.id, projectId);
   const pullRequests = listPullRequestsForProject(principal.id, projectId);
+  const executionJobs = listExecutionJobsForProject(principal.id, projectId);
   const packs = listScenarioPacksForProject(principal.id, projectId);
+  const latestPackId =
+    project.activeScenarioPackId ??
+    packs[0]?.id ??
+    null;
   const reviewBoard = buildReviewBoard(project, packs, orderedRuns, pullRequests);
 
   return (
     <CompletedClient
       projectId={projectId}
       project={project}
+      latestPackId={latestPackId}
       initialRuns={orderedRuns}
       initialFixAttempts={fixAttempts}
       initialPullRequests={pullRequests}
+      initialExecutionJobs={executionJobs as ExecutionJob[]}
       initialReviewBoard={reviewBoard}
     />
   );

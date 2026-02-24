@@ -221,6 +221,11 @@ export const getPrincipalById = (principalId: string): AuthPrincipal | null => {
   return state.principals.find((principal) => principal.id === principalId) ?? null;
 };
 
+export const listPrincipals = (): AuthPrincipal[] => {
+  const state = getState();
+  return [...state.principals];
+};
+
 interface UpsertGitHubConnectionInput {
   principalId: string;
   accountLogin: string | null;
@@ -935,6 +940,61 @@ export const updatePullRequestRecord = (
   updater(record);
   record.updatedAt = nowIso();
   return record;
+};
+
+export interface ProjectExecutionHistoryDeleteResult {
+  scenarioRuns: number;
+  executionJobs: number;
+  executionJobEvents: number;
+  fixAttempts: number;
+  pullRequests: number;
+}
+
+export const deleteProjectExecutionHistory = (
+  ownerId: string,
+  projectId: string,
+): ProjectExecutionHistoryDeleteResult => {
+  const state = getState();
+
+  const scenarioRuns = state.scenarioRuns.filter(
+    (record) => record.ownerId === ownerId && record.projectId === projectId,
+  ).length;
+  const executionJobs = state.executionJobs.filter(
+    (record) => record.ownerId === ownerId && record.projectId === projectId,
+  ).length;
+  const executionJobEvents = state.executionJobEvents.filter(
+    (record) => record.ownerId === ownerId && record.projectId === projectId,
+  ).length;
+  const fixAttempts = state.fixAttempts.filter(
+    (record) => record.ownerId === ownerId && record.projectId === projectId,
+  ).length;
+  const pullRequests = state.pullRequests.filter(
+    (record) => record.ownerId === ownerId && record.projectId === projectId,
+  ).length;
+
+  state.scenarioRuns = state.scenarioRuns.filter(
+    (record) => !(record.ownerId === ownerId && record.projectId === projectId),
+  );
+  state.executionJobs = state.executionJobs.filter(
+    (record) => !(record.ownerId === ownerId && record.projectId === projectId),
+  );
+  state.executionJobEvents = state.executionJobEvents.filter(
+    (record) => !(record.ownerId === ownerId && record.projectId === projectId),
+  );
+  state.fixAttempts = state.fixAttempts.filter(
+    (record) => !(record.ownerId === ownerId && record.projectId === projectId),
+  );
+  state.pullRequests = state.pullRequests.filter(
+    (record) => !(record.ownerId === ownerId && record.projectId === projectId),
+  );
+
+  return {
+    scenarioRuns,
+    executionJobs,
+    executionJobEvents,
+    fixAttempts,
+    pullRequests,
+  };
 };
 
 export const upsertProjectPrReadinessCheck = (

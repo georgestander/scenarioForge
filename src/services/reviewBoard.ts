@@ -22,9 +22,7 @@ export const buildReviewBoard = (
 ): ReviewBoard => {
   const latestRun = runs[0] ?? null;
   const latestPack = scenarioPacks[0] ?? null;
-  const failures =
-    latestRun?.items.filter((item) => item.status === "failed" || item.status === "blocked") ??
-    [];
+  const failures = latestRun?.items.filter((item) => item.status === "failed") ?? [];
 
   const recommendations: ReviewBoard["recommendations"] = [];
 
@@ -34,7 +32,7 @@ export const buildReviewBoard = (
       priority: "high",
       title: "Prioritize unresolved failed scenarios",
       detail:
-        "Resolve failed and blocked scenarios before shipping; rerun impacted flows after each fix.",
+        "Resolve failed scenarios before shipping; rerun impacted flows after each fix.",
       scenarioIds: failures.map((item) => item.scenarioId),
     });
   }
@@ -86,7 +84,7 @@ export const buildReviewBoard = (
     risks: [
       ...failures.map((item) => ({
         scenarioId: item.scenarioId,
-        severity: item.status === "failed" ? ("high" as const) : ("medium" as const),
+        severity: "high" as const,
         reason:
           item.failureHypothesis ??
           "Scenario did not pass and requires investigation before merge.",
@@ -143,6 +141,11 @@ export const buildChallengeReport = (
   lines.push("## Pull Requests");
   if (pullRequests.length === 0) {
     lines.push("- No pull requests recorded.");
+    if (latestRun && latestRun.summary.failed > 0) {
+      lines.push(
+        "- Failed scenarios remain. This run did not produce PR links for those failures.",
+      );
+    }
   } else {
     pullRequests.forEach((pullRequest) => {
       lines.push(
@@ -206,6 +209,10 @@ export const buildChallengeReport = (
               : `  - ${pullRequest.title} (${pullRequest.status}, branch: ${pullRequest.branchName})`,
           );
         });
+      } else if (item.status === "failed") {
+        lines.push(
+          "- Related PRs: none generated for this failed scenario in the latest run.",
+        );
       }
       lines.push("");
     });
