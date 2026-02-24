@@ -68,101 +68,99 @@ export const GenerateClient = ({
   const hasGenerated = !isGenerating && generateEvents.length > 0;
 
   return (
-    <section style={{ maxWidth: "520px", margin: "0 auto", padding: "2rem 1rem", display: "grid", gap: "1.2rem" }}>
+    <section style={{ maxWidth: "520px", margin: "0 auto", padding: "2rem 1rem", display: "grid", gap: "1rem" }}>
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
 
-      {/* IDLE: show generate button */}
-      {!isGenerating && generateEvents.length === 0 && (
-        <div style={{ textAlign: "center", display: "grid", gap: "1rem" }}>
-          <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-            Generate Scenarios
-          </h2>
+      {/* Heading */}
+      <h2 style={{ margin: 0, textAlign: "center", fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
+        {isGenerating ? "Generating Scenarios" : hasGenerated ? "Scenarios Generated" : "Generate Scenarios"}
+      </h2>
 
-          {scenarioPacks.length > 0 && (
-            <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.84rem", color: "var(--forge-muted)", textAlign: "left" }}>
-              Update instruction (optional)
-              <input
-                value={updateInstruction}
-                onChange={(e) => setUpdateInstruction(e.target.value)}
-                placeholder="e.g. add checkout edge cases"
-              />
-            </label>
-          )}
+      {hasGenerated && statusMessage && (
+        <p style={{ margin: 0, textAlign: "center", fontSize: "0.84rem", color: "var(--forge-muted)" }}>
+          {statusMessage}
+        </p>
+      )}
 
-          <div style={{ display: "grid", gap: "0.5rem", gridTemplateColumns: scenarioPacks.length > 0 ? "1fr 1fr" : "1fr" }}>
-            <button type="button" onClick={() => void handleGenerate("initial")}>
+      {/* Buttons — always at top */}
+      <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center", flexWrap: "wrap" }}>
+        {!isGenerating && (
+          <>
+            <button type="button" onClick={() => void handleGenerate("initial")} disabled={isGenerating}>
               Generate Scenarios
             </button>
             {scenarioPacks.length > 0 && (
               <button
                 type="button"
                 onClick={() => void handleGenerate("update")}
+                disabled={isGenerating}
                 style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
               >
                 Update Scenarios
               </button>
             )}
-          </div>
-        </div>
+            {hasGenerated && (
+              <a
+                href={`/projects/${projectId}/review`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "0.55rem 1.5rem",
+                  borderRadius: "7px",
+                  border: "1px solid var(--forge-line)",
+                  background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
+                  color: "var(--forge-ink)",
+                  textDecoration: "none",
+                  fontWeight: 600,
+                  fontSize: "0.9rem",
+                }}
+              >
+                Review
+              </a>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Update instruction — shown when packs exist and not generating */}
+      {!isGenerating && scenarioPacks.length > 0 && (
+        <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.84rem", color: "var(--forge-muted)", textAlign: "left" }}>
+          Update instruction (optional)
+          <input
+            value={updateInstruction}
+            onChange={(e) => setUpdateInstruction(e.target.value)}
+            placeholder="e.g. add checkout edge cases"
+          />
+        </label>
       )}
 
-      {/* GENERATING: spinner + streaming events */}
+      {/* Spinner while generating */}
       {isGenerating && (
-        <div style={{ textAlign: "center", display: "grid", gap: "1rem" }}>
-          <div style={{ fontSize: "2rem", color: "var(--forge-fire)", animation: "spin 1.2s linear infinite" }}>
-            *
-          </div>
-          <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-            Generating Scenarios
-          </h2>
-          {generateEvents.length > 0 && (
-            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.3rem", textAlign: "left", fontSize: "0.82rem", color: "var(--forge-muted)" }}>
-              {generateEvents.map((event) => (
-                <li key={event.id} style={{ lineHeight: 1.4 }}>
-                  <span style={{ color: "var(--forge-fire)", marginRight: "0.4rem" }}>*</span>
-                  {event.message}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        <div style={{ textAlign: "center", fontSize: "2rem", color: "var(--forge-fire)", animation: "spin 1.2s linear infinite" }}>*</div>
       )}
 
-      {/* DONE: events + Review link */}
-      {hasGenerated && (
-        <div style={{ textAlign: "center", display: "grid", gap: "1rem" }}>
-          <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-            Scenarios Generated
-          </h2>
-          <p style={{ margin: 0, fontSize: "0.84rem", color: "var(--forge-muted)" }}>
-            {statusMessage}
-          </p>
-          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.3rem", textAlign: "left", fontSize: "0.82rem", color: "var(--forge-muted)" }}>
-            {generateEvents.map((event) => (
-              <li key={event.id} style={{ lineHeight: 1.4 }}>
-                <span style={{ color: "var(--forge-fire)", marginRight: "0.4rem" }}>*</span>
-                {event.message}
-              </li>
-            ))}
-          </ul>
-          <a
-            href={`/projects/${projectId}/review`}
-            style={{
-              display: "inline-block",
-              margin: "0.5rem auto 0",
-              padding: "0.55rem 1.5rem",
-              borderRadius: "7px",
-              border: "1px solid var(--forge-line)",
-              background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
-              color: "var(--forge-ink)",
-              textDecoration: "none",
-              fontWeight: 600,
-              fontSize: "0.9rem",
-            }}
-          >
-            Review
-          </a>
-        </div>
+      {/* Streaming events — scrollable container */}
+      {generateEvents.length > 0 && (
+        <ul style={{
+          margin: 0,
+          padding: 0,
+          listStyle: "none",
+          display: "grid",
+          gap: "0.3rem",
+          textAlign: "left",
+          fontSize: "0.82rem",
+          color: "var(--forge-muted)",
+          maxHeight: "calc(100vh - 320px)",
+          minHeight: "80px",
+          overflowY: "auto",
+        }}>
+          {generateEvents.map((event) => (
+            <li key={event.id} style={{ lineHeight: 1.4 }}>
+              <span style={{ color: "var(--forge-fire)", marginRight: "0.4rem" }}>*</span>
+              {event.message}
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
