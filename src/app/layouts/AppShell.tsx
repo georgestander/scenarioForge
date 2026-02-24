@@ -7,6 +7,7 @@ import {
   getLatestSourceManifestForProject,
   listScenarioPacksForProject,
   listScenarioRunsForProject,
+  getProjectByIdForOwner,
 } from "@/services/store";
 import { SessionProvider } from "@/app/shared/SessionContext";
 import { ProjectProvider } from "@/app/shared/ProjectContext";
@@ -85,6 +86,11 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
   const isDashboard = currentPath === "/dashboard";
 
   const phases = projectId ? buildPhases(projectId, principal.id) : [];
+  const project = projectId ? getProjectByIdForOwner(projectId, principal.id) : null;
+
+  // Progress bar: count done phases
+  const doneCount = phases.filter((p) => p.done).length;
+  const progressPct = phases.length > 0 ? Math.round((doneCount / phases.length) * 100) : 0;
 
   return (
     <SessionProvider initialPrincipal={principal}>
@@ -99,32 +105,67 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
           gridTemplateRows: "auto auto 1fr",
           gap: "0.65rem",
         }}>
-          <section style={{ display: "grid", gap: "0.12rem" }}>
-            <p style={{
-              margin: 0,
-              fontSize: "0.88rem",
-              textTransform: "uppercase",
-              letterSpacing: "0.14em",
-              color: "var(--forge-fire)",
-            }}>
-              ScenarioForge
-            </p>
-            <h1 style={{
-              margin: 0,
-              fontFamily: "'VT323', monospace",
-              fontSize: "clamp(2.05rem, 4.5vw, 3.4rem)",
-              letterSpacing: "0.05em",
-              lineHeight: 1,
-              color: "var(--forge-hot)",
-              textShadow: "0 0 16px rgb(242 138 67 / 0.22)",
-            }}>
-              Mission Control
-            </h1>
-            <p style={{ margin: 0, fontSize: "0.95rem", color: "var(--forge-muted)" }}>
-              {principal.displayName}{principal.email ? ` (${principal.email})` : ""}
-              {" | "}
-              <a href="/dashboard" style={{ color: "var(--forge-fire)", textDecoration: "none" }}>Dashboard</a>
-            </p>
+          {/* Header */}
+          <section style={{ display: "grid", gap: "0.15rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.55rem" }}>
+              <div style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "50%",
+                background: "var(--forge-line)",
+                display: "grid",
+                placeItems: "center",
+                fontSize: "0.85rem",
+                color: "var(--forge-muted)",
+                flexShrink: 0,
+              }}>
+                {principal.displayName?.charAt(0)?.toUpperCase() ?? "?"}
+              </div>
+              <span style={{
+                fontFamily: "'VT323', monospace",
+                fontSize: "1.35rem",
+                color: "var(--forge-hot)",
+                letterSpacing: "0.04em",
+              }}>
+                Scenario Forge
+              </span>
+            </div>
+
+            {/* Progress bar */}
+            {!isDashboard && phases.length > 0 ? (
+              <div style={{
+                height: "8px",
+                borderRadius: "4px",
+                background: "var(--forge-line)",
+                overflow: "hidden",
+                marginTop: "0.3rem",
+              }}>
+                <div style={{
+                  height: "100%",
+                  width: `${progressPct}%`,
+                  borderRadius: "4px",
+                  background: "var(--forge-hot)",
+                  transition: "width 0.3s ease",
+                }} />
+              </div>
+            ) : null}
+
+            {/* Repo / Branch info */}
+            {!isDashboard && project ? (
+              <p style={{ margin: "0.15rem 0 0", fontSize: "0.82rem", color: "var(--forge-muted)" }}>
+                Repo: <strong style={{ color: "var(--forge-ink)" }}>{project.repoUrl ?? "Not set"}</strong>
+                {" | "}
+                Branch: <strong style={{ color: "var(--forge-ink)" }}>{project.defaultBranch}</strong>
+              </p>
+            ) : null}
+
+            {isDashboard ? (
+              <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--forge-muted)" }}>
+                {principal.displayName}{principal.email ? ` (${principal.email})` : ""}
+                {" | "}
+                <a href="/dashboard" style={{ color: "var(--forge-fire)", textDecoration: "none" }}>Dashboard</a>
+              </p>
+            ) : null}
           </section>
 
           {isDashboard ? (
@@ -135,7 +176,7 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
             <section style={{
               minHeight: 0,
               display: "grid",
-              gridTemplateColumns: "240px minmax(0, 1fr)",
+              gridTemplateColumns: "200px minmax(0, 1fr)",
               gap: "0.75rem",
             }}>
               <aside style={{
