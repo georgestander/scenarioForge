@@ -69,6 +69,7 @@ For each scenario shown in board/checklist, UI must render/update these fields f
 - `Connection` = GitHub app connected and active token context
 - `RepoSelection` = project has `repo` + `branch` selected
 - `Sources` = source scan and manifest persisted
+- `CodeBaseline` = code baseline snapshot persisted for selected repo/branch/head
 - `PrReadiness` = latest PR automation readiness check persisted
 - `ScenarioPack` = scenarios JSON + scenarios.md persisted
 - `ReviewReady` = scenario pack has been reviewed/approved for execution
@@ -82,8 +83,9 @@ For each scenario shown in board/checklist, UI must render/update these fields f
 - `/projects/:projectId/sources` : requires `Auth` + `Project` + `Connection` + `RepoSelection`.
   - missing `Connection` or `RepoSelection` -> `/projects/:projectId/connect`
   - missing project -> `/dashboard`
-- `/projects/:projectId/generate` : requires `Auth` + `Project` + `Sources`.
+- `/projects/:projectId/generate` : requires `Auth` + `Project` + `Sources` + `CodeBaseline`.
   - missing `Sources` -> `/projects/:projectId/sources`
+  - missing `CodeBaseline` -> `/projects/:projectId/sources`
 - `/projects/:projectId/review` : requires `Auth` + `Project` + `ScenarioPack`.
   - missing `ScenarioPack` -> `/projects/:projectId/generate`
 - `/projects/:projectId/execute` : requires `Auth` + `Project` + `ScenarioPack` + `ReviewReady`.
@@ -100,16 +102,18 @@ For each scenario shown in board/checklist, UI must render/update these fields f
 
 1. **Auth routing:** signed-in users should not be able to view `/` main flow pages until intended context is set; signed-out users should be re-directed to marketing/root.
 2. **Source gate options:** manifest can be created with selected docs or explicit code-only mode (zero docs selected).
-3. **Checklist render:** generated scenario count equals pack size and each row appears once.
-4. **Live generation updates:** row status transitions at least through `pending -> running -> passed|failed|blocked` while generation stream runs.
-5. **Live execution updates:** row transitions cover `run -> fix -> rerun -> pr` stages where present.
-6. **Attempt tracking:** when rerun happens, attempt increments and row last-updated event is visible.
-7. **Active-row affordance:** current scenario is visually highlighted while running and clears on terminal status.
-8. **Artifact linkage:** artifacts attach as soon as stream emits `artifact` event with persisted URLs.
-9. **Invalid stream shape:** missing scenario identifiers results in visible failure, not synthetic or guessed checklist rows.
-10. **Raw error visibility:** errors retain original message/details in UI and are not reduced to generic placeholders.
-11. **PR readiness gating:** full mode is disabled in UI and rejected server-side until readiness is green.
-12. **Completed handoff:** completed route summarizes pass/fail/blocked counts from authoritative run data and supports markdown export with per-scenario checks plus PR URL or blocked manual handoff details.
+3. **Code baseline required:** source scan must persist code baseline identity/hash before generation.
+4. **Checklist render:** generated scenario count equals pack size and each row appears once.
+5. **Live generation updates:** row status transitions at least through `pending -> running -> passed|failed|blocked` while generation stream runs.
+6. **Live execution updates:** row transitions cover `run -> fix -> rerun -> pr` stages where present.
+7. **Attempt tracking:** when rerun happens, attempt increments and row last-updated event is visible.
+8. **Active-row affordance:** current scenario is visually highlighted while running and clears on terminal status.
+9. **Artifact linkage:** artifacts attach as soon as stream emits `artifact` event with persisted URLs.
+10. **Invalid stream shape:** missing scenario identifiers results in visible failure, not synthetic or guessed checklist rows.
+11. **Raw error visibility:** errors retain original message/details in UI and are not reduced to generic placeholders.
+12. **PR readiness gating:** full mode is disabled in UI and rejected server-side until readiness is green.
+13. **Coverage-first review:** run CTA is blocked while required uncovered coverage gaps remain unresolved.
+14. **Completed handoff:** completed route summarizes pass/fail/blocked counts from authoritative run data and supports markdown export with per-scenario checks plus PR URL or blocked manual handoff details.
 
 ## 4) Out-of-Scope for UI Overhaul
 

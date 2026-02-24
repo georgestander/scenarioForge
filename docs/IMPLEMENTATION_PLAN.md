@@ -75,9 +75,11 @@ Request:
 
 Behavior:
 1. Verify manifest exists and belongs to project owner.
-2. Start Codex turn using selected sources, or code-only mode when no docs are selected.
-3. Apply `$scenario` quality bar.
-4. Persist scenario JSON + `scenarios.md` + audit metadata.
+2. Require a persisted code baseline snapshot (route/API/state/entity/integration/error map) tied to the manifest.
+3. Start Codex turn with code-first priority; selected docs are optional secondary context.
+4. Apply `$scenario` quality bar with coverage-completeness closure (not fixed count targets).
+5. Validate generated output server-side for coverage completeness before persistence.
+6. Persist scenario JSON + `scenarios.md` + audit metadata.
 
 Output:
 - `scenarioPackId`
@@ -142,21 +144,34 @@ Raw passthrough principle:
 Before `generate`:
 1. scan repo planning/spec/task docs,
 2. score `trusted/suspect/stale/excluded`,
-3. let user select/deselect,
-4. allow zero selected docs (code-only mode) with explicit user confirmation,
-5. require explicit confirmation when stale/conflicting docs are selected,
-6. persist manifest hash and selected source IDs.
+3. build required code baseline snapshot from repository behavior (routes, APIs, transitions, entities, integrations, errors),
+4. let user select/deselect docs as optional context,
+5. allow zero selected docs (code-only mode) with explicit user confirmation,
+6. require explicit confirmation when stale/conflicting docs are selected,
+7. persist manifest hash, code baseline identity/hash, and selected source IDs.
 
 ## 8. Scenario Quality Standard
 
 Every generated scenario must include:
 - scenario ID,
 - persona and objective,
+- journey and risk intent,
 - preconditions/test data,
 - realistic end-to-end steps,
 - expected checkpoints,
 - edge variants,
+- code evidence anchors (and optional doc source refs),
 - binary pass criteria.
+
+Generated pack must also include coverage summary:
+- personas,
+- journeys,
+- edge buckets,
+- features,
+- outcomes,
+- assumptions,
+- known unknowns,
+- uncovered gaps.
 
 Group scenarios by:
 - feature area,
@@ -255,6 +270,7 @@ This section is the execution blueprint for the UI overhaul from the reference s
   - line-by-line human-readable stream (not raw protocol event names),
   - generation status transitions (`queued/running/complete/failed/blocked`),
   - generated scenario checklist (one row per scenario) that updates as each item is persisted,
+  - coverage closure summary with unresolved gaps highlighted,
   - emitted artifact notices (`scenarios.md`, scenario JSON pack revision).
 
 5. Scenario Review (`5_Scenario Review`)
@@ -263,8 +279,10 @@ This section is the execution blueprint for the UI overhaul from the reference s
 - Required states:
   - grouped summaries by feature/outcome,
   - scenario count and revision metadata,
+  - coverage panel (covered buckets, assumptions, known unknowns, uncovered gaps),
   - download artifacts (markdown + JSON),
-  - optional `Update scenarios` intent with user instruction.
+  - optional `Update scenarios` intent with user instruction,
+  - `Run` disabled while required coverage gaps remain unresolved.
 
 6. Scenario Run (`6_Scenario Run`)
 - Purpose: run `execute` loop and stream evidence.

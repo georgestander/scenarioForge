@@ -23,14 +23,20 @@
     - top progress bar includes a persistent `Current phase X of Y` label.
   - Execute screen stream log is intentionally narrow to prioritize scenario checklist readability.
   - Execute scenario titles/messages now wrap instead of truncating, avoiding horizontal reading pressure.
+  - Source gate now enforces a required code baseline snapshot while keeping docs optional.
+  - Generation has moved to coverage-first output validation (no fixed 8-scenario floor).
+  - Review now blocks execute progression when uncovered coverage gaps remain unresolved.
 - Current implementation status:
   - `src/app/layouts/AppShell.tsx` now derives and displays current phase text in the top progress area.
   - `src/app/layouts/PhaseRail.tsx` now labels active route rows as `Current` (not `Done`) and marks `aria-current`.
   - `src/app/pages/ExecuteClient.tsx` now uses an asymmetric layout with a constrained stream column and mobile-safe stacking.
+  - `src/services/sourceGate.ts` now emits code-baseline metadata from scan and supports code-only manifests.
+  - `src/services/scenarioGeneration.ts` now validates coverage completeness and rejects unresolved required gaps.
+  - `src/app/pages/ReviewClient.tsx` now renders coverage quality details and blocks run when uncovered gaps exist.
 - Next actions:
-  - Validate execute layout against locked UI screenshots on desktop + mobile.
-  - Tighten phase completion semantics (`Generate`/`Review` and `Execute`/`Completed`) using server-authoritative prerequisites.
-  - Add focused UI regression coverage for phase indicator persistence and execute panel sizing.
+  - Add explicit coverage/conflict traceability rendering in Completed view.
+  - Add dedicated unit coverage for readiness false-negative prevention and coverage validator rule variants.
+  - Validate code-baseline extraction quality against large real-world repositories.
 
 ## Session Update (2026-02-24, Dashboard Run Grouping)
 
@@ -76,7 +82,7 @@
 ### SF-2001 Connected-repo source scanner
 
 - Priority: P0
-- Status: in_progress
+- Status: done
 - Acceptance criteria:
   - Scan planning/spec/task docs from connected repo and selected branch.
   - Classify artifacts by type and include code inventory baseline.
@@ -84,7 +90,7 @@
 ### SF-2002 Relevance and staleness scoring
 
 - Priority: P0
-- Status: in_progress
+- Status: done
 - Acceptance criteria:
   - Assign `trusted/suspect/stale/excluded` using recency + drift signals.
   - Persist warnings and reasons on manifest records.
@@ -92,7 +98,7 @@
 ### SF-2003 Explicit confirmation gate
 
 - Priority: P0
-- Status: in_progress
+- Status: done
 - Acceptance criteria:
   - User can select/deselect sources before generation.
   - Risky selections require explicit confirmation.
@@ -103,7 +109,7 @@
 ### SF-3001 Thin bridge `generate` endpoint
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Add a single generate action endpoint.
   - Inputs: `projectId`, `repo`, `branch`, `sourceManifestId`, `mode`, `userInstruction?`.
@@ -112,7 +118,7 @@
 ### SF-3002 Codex stream passthrough for generation
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Relay real Codex turn events to UI in order.
   - Include action-scoped event envelopes.
@@ -121,7 +127,7 @@
 ### SF-3003 Scenario artifact persistence and revisioning
 
 - Priority: P1
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Persist structured scenario JSON and `scenarios.md`.
   - Preserve revisions for `mode=update`.
@@ -130,7 +136,7 @@
 ### SF-3004 Update-scenarios intent UX
 
 - Priority: P1
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - UI supports `Generate` and `Update` intent paths.
   - `mode=update` includes optional user instruction.
@@ -138,7 +144,7 @@
 ### SF-3005 Scenario build + review screens (locked UX)
 
 - Priority: P0
-- Status: todo
+- Status: in_progress
 - Acceptance criteria:
   - Implement `Scenario Build` and `Scenario Review` screens from locked blueprint.
   - Review shows grouped scenario summaries by feature/outcome.
@@ -150,7 +156,7 @@
 ### SF-4001 Thin bridge `execute` endpoint
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Add a single execute action endpoint.
   - Inputs: `projectId`, `repo`, `branch`, `scenarioPackId`, `executionMode`, `constraints?`.
@@ -159,7 +165,7 @@
 ### SF-4002 Execute loop with evidence capture
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Codex executes run/fix/rerun/PR flow with repo tools.
   - Persist evidence references by scenario/run IDs.
@@ -167,7 +173,7 @@
 ### SF-4003 Live execution stream
 
 - Priority: P1
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - UI displays real queued/running/passed/failed/blocked transitions.
   - Run board shows per-scenario checklist rows with live update of current attempt/run stage and latest Codex stream event.
@@ -176,7 +182,7 @@
 ### SF-4004 Scenario run board integrity
 
 - Priority: P0
-- Status: todo
+- Status: done
 - Acceptance criteria:
   - Per-scenario board uses only real execute output items.
   - No synthetic blocked rows when structured run data is missing.
