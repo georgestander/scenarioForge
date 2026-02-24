@@ -557,6 +557,13 @@ const buildPullRequestInputsFromCodexOutput = (
   const pullRequests = Array.isArray(outputContainer.pullRequests)
     ? outputContainer.pullRequests
     : [];
+  const rerunEvidenceSummary = fixAttempt.rerunSummary
+    ? {
+        passed: fixAttempt.rerunSummary.passed,
+        failed: fixAttempt.rerunSummary.failed,
+        blocked: fixAttempt.rerunSummary.blocked,
+      }
+    : null;
 
   return pullRequests
     .map((record) => {
@@ -589,7 +596,7 @@ const buildPullRequestInputsFromCodexOutput = (
           String(record.rootCauseSummary ?? "").trim() ||
           fixAttempt.probableRootCause,
         rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
-        rerunEvidenceSummary: fixAttempt.rerunSummary ?? null,
+        rerunEvidenceSummary,
         riskNotes,
       };
     })
@@ -1723,7 +1730,7 @@ export default defineApp([
           timestamp: new Date().toISOString(),
         });
 
-        let fixAttempt = null;
+        let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
         if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
           const fixInput = buildFixAttemptInputFromCodexOutput(
             principal.id,
@@ -1731,38 +1738,40 @@ export default defineApp([
             run,
             codexExecution.parsedOutput,
           );
-          fixAttempt = createFixAttempt(fixInput);
-          for (const scenarioId of fixAttempt.failedScenarioIds) {
-            emit("status", {
-              action: "execute",
-              phase: "fix.progress",
-              scenarioId,
-              stage: "fix",
-              status: "running",
-              message: fixAttempt.patchSummary,
-              timestamp: new Date().toISOString(),
-            });
-          }
-          if (fixAttempt.rerunSummary) {
-            const rerunStatus = fixAttempt.rerunSummary.failed > 0 ? "failed" : "passed";
+          if (fixInput) {
+            fixAttempt = createFixAttempt(fixInput);
             for (const scenarioId of fixAttempt.failedScenarioIds) {
               emit("status", {
                 action: "execute",
-                phase: "rerun.result",
+                phase: "fix.progress",
                 scenarioId,
-                stage: "rerun",
-                status: rerunStatus,
-                message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+                stage: "fix",
+                status: "running",
+                message: fixAttempt.patchSummary,
                 timestamp: new Date().toISOString(),
               });
             }
+            if (fixAttempt.rerunSummary) {
+              const rerunStatus = fixAttempt.rerunSummary.failed > 0 ? "failed" : "passed";
+              for (const scenarioId of fixAttempt.failedScenarioIds) {
+                emit("status", {
+                  action: "execute",
+                  phase: "rerun.result",
+                  scenarioId,
+                  stage: "rerun",
+                  status: rerunStatus,
+                  message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            }
+            emit("persisted", {
+              action: "execute",
+              kind: "fixAttempt",
+              fixAttemptId: fixAttempt.id,
+              timestamp: new Date().toISOString(),
+            });
           }
-          emit("persisted", {
-            action: "execute",
-            kind: "fixAttempt",
-            fixAttemptId: fixAttempt.id,
-            timestamp: new Date().toISOString(),
-          });
         }
 
         let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];
@@ -2000,7 +2009,7 @@ export default defineApp([
       );
       const run = createScenarioRun(runInput);
 
-      let fixAttempt = null;
+      let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
       if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
         const fixInput = buildFixAttemptInputFromCodexOutput(
           principal.id,
@@ -2008,7 +2017,9 @@ export default defineApp([
           run,
           codexExecution.parsedOutput,
         );
-        fixAttempt = createFixAttempt(fixInput);
+        if (fixInput) {
+          fixAttempt = createFixAttempt(fixInput);
+        }
       }
 
       let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];

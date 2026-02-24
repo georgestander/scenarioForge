@@ -316,8 +316,11 @@ export const ExecuteClient = ({
         }}>
           {scenarioRows.map((row) => {
             const st = row.status;
-            const icon = STATUS_ICON[st];
             const isRunning = activeScenarioId === row.scenarioId;
+            const displayStatus = isRunning && st === "queued" ? "running" : st;
+            const icon = STATUS_ICON[displayStatus];
+            const detailMessage =
+              isRunning && st === "queued" ? "Executing current scenario..." : row.message;
 
             return (
               <div
@@ -364,18 +367,18 @@ export const ExecuteClient = ({
                     }}>
                       {row.title}
                     </span>
-                    {row.stage && st === "running" && (
+                    {row.stage && displayStatus === "running" && (
                       <span style={{ fontSize: "0.68rem", color: "var(--forge-fire)", flexShrink: 0 }}>
                         {STAGE_LABEL[row.stage] ?? row.stage}
                       </span>
                     )}
-                    {st !== "queued" && st !== "running" && (
+                    {displayStatus !== "queued" && displayStatus !== "running" && (
                       <span style={{ fontSize: "0.68rem", color: icon?.color ?? "var(--forge-muted)", flexShrink: 0 }}>
-                        {st}
+                        {displayStatus}
                       </span>
                     )}
                   </div>
-                  {row.message && (
+                  {detailMessage && (
                     <p style={{
                       margin: 0,
                       fontSize: "0.72rem",
@@ -384,7 +387,7 @@ export const ExecuteClient = ({
                       whiteSpace: "normal",
                       overflowWrap: "anywhere",
                     }}>
-                      {row.message}
+                      {detailMessage}
                     </p>
                   )}
                 </div>

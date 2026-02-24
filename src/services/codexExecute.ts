@@ -233,136 +233,144 @@ const formatScenarioSummary = (pack: ScenarioPack): string =>
     })
     .join("\n");
 
-export const EXECUTE_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["run", "fixAttempt", "pullRequests"],
-  properties: {
-    run: {
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "items", "summary"],
-      properties: {
-        status: { type: "string" },
-        items: {
-          type: "array",
-          minItems: 1,
+const buildExecuteOutputSchema = (scenarioIds: string[]) => {
+  const scenarioIdSchema =
+    scenarioIds.length > 0
+      ? { type: "string", enum: scenarioIds }
+      : { type: "string" };
+
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["run", "fixAttempt", "pullRequests"],
+    properties: {
+      run: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status", "items", "summary"],
+        properties: {
+          status: { type: "string" },
           items: {
-            type: "object",
-            additionalProperties: false,
-            required: [
-              "scenarioId",
-              "status",
-              "observed",
-              "expected",
-              "failureHypothesis",
-              "artifacts",
-            ],
-            properties: {
-              scenarioId: { type: "string" },
-              status: {
-                type: "string",
-                enum: ["passed", "failed", "blocked"],
-              },
-              observed: { type: "string" },
-              expected: { type: "string" },
-              failureHypothesis: { type: ["string", "null"] },
-              artifacts: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["kind", "label", "value"],
-                  properties: {
-                    kind: { type: "string" },
-                    label: { type: "string" },
-                    value: { type: "string" },
+            type: "array",
+            minItems: Math.max(scenarioIds.length, 1),
+            maxItems: Math.max(scenarioIds.length, 1),
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "scenarioId",
+                "status",
+                "observed",
+                "expected",
+                "failureHypothesis",
+                "artifacts",
+              ],
+              properties: {
+                scenarioId: scenarioIdSchema,
+                status: {
+                  type: "string",
+                  enum: ["passed", "failed", "blocked"],
+                },
+                observed: { type: "string" },
+                expected: { type: "string" },
+                failureHypothesis: { type: ["string", "null"] },
+                artifacts: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["kind", "label", "value"],
+                    properties: {
+                      kind: { type: "string" },
+                      label: { type: "string" },
+                      value: { type: "string" },
+                    },
                   },
                 },
               },
             },
           },
-        },
-        summary: {
-          type: "object",
-          additionalProperties: false,
-          required: ["passed", "failed", "blocked"],
-          properties: {
-            passed: { type: "number" },
-            failed: { type: "number" },
-            blocked: { type: "number" },
+          summary: {
+            type: "object",
+            additionalProperties: false,
+            required: ["passed", "failed", "blocked"],
+            properties: {
+              passed: { type: "number" },
+              failed: { type: "number" },
+              blocked: { type: "number" },
+            },
           },
         },
       },
-    },
-    fixAttempt: {
-      type: ["object", "null"],
-      additionalProperties: false,
-      required: [
-        "failedScenarioIds",
-        "probableRootCause",
-        "patchSummary",
-        "impactedFiles",
-        "status",
-        "rerunSummary",
-      ],
-      properties: {
-        failedScenarioIds: {
-          type: "array",
-          items: { type: "string" },
-        },
-        probableRootCause: { type: "string" },
-        patchSummary: { type: "string" },
-        impactedFiles: {
-          type: "array",
-          items: { type: "string" },
-        },
-        status: { type: "string" },
-        rerunSummary: {
-          type: ["object", "null"],
-          additionalProperties: false,
-          required: ["passed", "failed", "blocked"],
-          properties: {
-            passed: { type: "number" },
-            failed: { type: "number" },
-            blocked: { type: "number" },
-          },
-        },
-      },
-    },
-    pullRequests: {
-      type: "array",
-      items: {
-        type: "object",
+      fixAttempt: {
+        type: ["object", "null"],
         additionalProperties: false,
         required: [
-          "title",
-          "url",
+          "failedScenarioIds",
+          "probableRootCause",
+          "patchSummary",
+          "impactedFiles",
           "status",
-          "scenarioIds",
-          "riskNotes",
-          "branchName",
-          "rootCauseSummary",
+          "rerunSummary",
         ],
         properties: {
-          title: { type: "string" },
-          url: { type: "string" },
+          failedScenarioIds: {
+            type: "array",
+            items: { type: "string" },
+          },
+          probableRootCause: { type: "string" },
+          patchSummary: { type: "string" },
+          impactedFiles: {
+            type: "array",
+            items: { type: "string" },
+          },
           status: { type: "string" },
-          scenarioIds: {
-            type: "array",
-            items: { type: "string" },
+          rerunSummary: {
+            type: ["object", "null"],
+            additionalProperties: false,
+            required: ["passed", "failed", "blocked"],
+            properties: {
+              passed: { type: "number" },
+              failed: { type: "number" },
+              blocked: { type: "number" },
+            },
           },
-          riskNotes: {
-            type: "array",
-            items: { type: "string" },
+        },
+      },
+      pullRequests: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "title",
+            "url",
+            "status",
+            "scenarioIds",
+            "riskNotes",
+            "branchName",
+            "rootCauseSummary",
+          ],
+          properties: {
+            title: { type: "string" },
+            url: { type: "string" },
+            status: { type: "string" },
+            scenarioIds: {
+              type: "array",
+              items: { type: "string" },
+            },
+            riskNotes: {
+              type: "array",
+              items: { type: "string" },
+            },
+            branchName: { type: "string" },
+            rootCauseSummary: { type: "string" },
           },
-          branchName: { type: "string" },
-          rootCauseSummary: { type: "string" },
         },
       },
     },
-  },
-} as const;
+  } as const;
+};
 
 const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
   const userInstruction = input.userInstruction?.trim() || "";
@@ -379,6 +387,10 @@ const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
     `- Scenario pack id: ${input.pack.id}`,
     `- Manifest id: ${input.pack.manifestId}`,
     "- Use available repo tools to run validation, apply targeted fixes, rerun impacted scenarios, and prepare PR metadata.",
+    "- Process scenarios sequentially in listed order and continue until every scenario reaches a terminal outcome.",
+    "- Continue after failures: one failed scenario must not stop later scenarios from running.",
+    "- Never leave long-running/watch commands in the foreground; use bounded checks and stop background processes before continuing.",
+    "- If a step times out or cannot be executed, mark that scenario blocked and immediately continue to the next scenario.",
     "- Execute every scenario ID listed under Scenario subset and return one terminal run.items entry per scenario (`passed`/`failed`/`blocked`).",
     "- Do not stop early; if a scenario cannot be completed in this environment, mark it `blocked` with explicit observed reason.",
     "- If a step cannot be executed in this environment, return that limitation in observed output and keep statuses accurate.",
@@ -433,6 +445,7 @@ const executeScenariosViaCodexInternal = async (
 ): Promise<CodexExecutionResult> => {
   const envWithWorkspace = env as unknown as Record<string, string | undefined>;
   const configuredWorkspaceCwd = envWithWorkspace.SCENARIOFORGE_WORKSPACE_CWD?.trim();
+  const scenarioIds = input.pack.scenarios.map((scenario) => scenario.id);
   const requestBody = {
     model: "gpt-5.3-xhigh",
     skillName: "",
@@ -443,7 +456,7 @@ const executeScenariosViaCodexInternal = async (
       type: "workspaceWrite",
       networkAccess: true,
     },
-    outputSchema: EXECUTE_OUTPUT_SCHEMA,
+    outputSchema: buildExecuteOutputSchema(scenarioIds),
     prompt: buildExecutePrompt(input),
   };
 
