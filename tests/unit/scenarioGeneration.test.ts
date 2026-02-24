@@ -148,7 +148,7 @@ test("generateScenarioPack allows fewer than eight scenarios in code-first mode"
   }
 });
 
-test("generateScenarioPack rejects unresolved required coverage gaps in code-first mode", () => {
+test("generateScenarioPack persists coverage diagnostics in code-first mode", () => {
   const previous = process.env.SCENARIO_CODE_FIRST_GENERATION;
   process.env.SCENARIO_CODE_FIRST_GENERATION = "1";
   try {
@@ -176,28 +176,34 @@ test("generateScenarioPack rejects unresolved required coverage gaps in code-fir
       },
     };
 
-    assert.throws(
-      () =>
-        generateScenarioPack({
-          project,
-          ownerId: project.ownerId,
-          manifest: { ...manifest, id: "smf_test_gap", createdAt: "", updatedAt: "" },
-          selectedSources: sources,
-          model: "codex spark",
-          rawOutput,
-          metadata: {
-            transport: "codex-app-server",
-            requestedSkill: "scenario",
-            usedSkill: "scenario",
-            skillAvailable: true,
-            skillPath: "/Users/example/.codex/skills/scenario/SKILL.md",
-            threadId: "thr_test_gap",
-            turnId: "turn_test_gap",
-            turnStatus: "completed",
-            cwd: "/tmp/scenarioforge",
-          },
-        }),
-      /Coverage validation failed/,
+    const pack = generateScenarioPack({
+      project,
+      ownerId: project.ownerId,
+      manifest: { ...manifest, id: "smf_test_gap", createdAt: "", updatedAt: "" },
+      selectedSources: sources,
+      model: "codex spark",
+      rawOutput,
+      metadata: {
+        transport: "codex-app-server",
+        requestedSkill: "scenario",
+        usedSkill: "scenario",
+        skillAvailable: true,
+        skillPath: "/Users/example/.codex/skills/scenario/SKILL.md",
+        threadId: "thr_test_gap",
+        turnId: "turn_test_gap",
+        turnStatus: "completed",
+        cwd: "/tmp/scenarioforge",
+      },
+    });
+    assert.ok(
+      pack.coverage.uncoveredGaps.some((gap) =>
+        gap.includes("required edge bucket unresolved: validation"),
+      ),
+    );
+    assert.ok(
+      pack.coverage.knownUnknowns.some((item) =>
+        item.includes("coverage-validation: Coverage reports unresolved required gaps"),
+      ),
     );
   } finally {
     process.env.SCENARIO_CODE_FIRST_GENERATION = previous ?? "0";

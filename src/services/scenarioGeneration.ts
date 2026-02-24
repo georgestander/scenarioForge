@@ -50,6 +50,8 @@ interface GenerateScenarioPackInput {
 interface CoverageValidationResult {
   ok: boolean;
   errors: string[];
+  requiredGapEntries: string[];
+  knownUnknownEntries: string[];
 }
 
 const isRecord = (value: unknown): value is JsonRecord =>
@@ -473,8 +475,20 @@ const validateCoverageCompleteness = (
   return {
     ok: errors.length === 0,
     errors,
+    requiredGapEntries: [
+      ...missingRequiredRules.map(
+        (rule) => `required edge bucket missing: ${rule.id} (${rule.label})`,
+      ),
+      ...unresolvedRequiredGaps.map(
+        (rule) => `required edge bucket unresolved: ${rule.id} (${rule.label})`,
+      ),
+    ],
+    knownUnknownEntries: errors.map((error) => `coverage-validation: ${error}`),
   };
 };
+
+const dedupeStrings = (values: string[]): string[] =>
+  [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 
 const renderScenarioMarkdown = (scenarios: ScenarioContract[]): string => {
   const lines: string[] = ["# Generated Scenarios", ""];
@@ -512,9 +526,14 @@ export const generateScenarioPack = (
       input.codeBaseline ?? null,
     );
     if (!coverageValidation.ok) {
-      throw new Error(
-        `Coverage validation failed. ${coverageValidation.errors.join(" ")}`,
-      );
+      parsedOutput.coverage.uncoveredGaps = dedupeStrings([
+        ...parsedOutput.coverage.uncoveredGaps,
+        ...coverageValidation.requiredGapEntries,
+      ]);
+      parsedOutput.coverage.knownUnknowns = dedupeStrings([
+        ...parsedOutput.coverage.knownUnknowns,
+        ...coverageValidation.knownUnknownEntries,
+      ]);
     }
   }
 
