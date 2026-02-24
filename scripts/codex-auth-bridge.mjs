@@ -288,6 +288,52 @@ const consumeRpcResponse = (message) => {
   pending.resolve(message.result ?? {});
 };
 
+const replyRpcResult = (id, result) => {
+  writeJson(codexProc.stdin, {
+    id,
+    result,
+  });
+};
+
+const replyRpcError = (id, code, message) => {
+  writeJson(codexProc.stdin, {
+    id,
+    error: {
+      code,
+      message,
+    },
+  });
+};
+
+const consumeRpcRequest = (message) => {
+  const method = readString(message?.method);
+  const id = message?.id;
+
+  if ((typeof id !== "number" && typeof id !== "string") || !method) {
+    return;
+  }
+
+  if (method.endsWith("/requestApproval")) {
+    replyRpcResult(id, "acceptForSession");
+    return;
+  }
+
+  if (method === "tool/requestUserInput") {
+    replyRpcError(
+      id,
+      -32000,
+      "Interactive user input is not supported by codex-auth-bridge. Re-run with a non-interactive flow.",
+    );
+    return;
+  }
+
+  replyRpcError(
+    id,
+    -32601,
+    `Unsupported server request method '${method}' in codex-auth-bridge.`,
+  );
+};
+
 const consumeNotification = (message) => {
   const turnId = extractTurnIdFromNotification(message);
   if (turnId) {
@@ -378,7 +424,17 @@ readlineInterface.on("line", (line) => {
     return;
   }
 
-  if (Object.prototype.hasOwnProperty.call(message, "id")) {
+  const hasId = Object.prototype.hasOwnProperty.call(message, "id");
+  const hasMethod = typeof message?.method === "string";
+  const hasResult = Object.prototype.hasOwnProperty.call(message, "result");
+  const hasError = Object.prototype.hasOwnProperty.call(message, "error");
+
+  if (hasId && hasMethod && !hasResult && !hasError) {
+    consumeRpcRequest(message);
+    return;
+  }
+
+  if (hasId) {
     consumeRpcResponse(message);
     return;
   }
@@ -872,9 +928,11 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
 
   try {
     let completedTurn = null;
+    let timedOutWaitingForCompletion = false;
     try {
       completedTurn = await waitForTurnCompletion(turnId, turnTimeoutMs);
     } catch {
+      timedOutWaitingForCompletion = true;
       completedTurn = null;
     }
 
@@ -891,10 +949,12 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
 
     const completedStatus = readString(completedTurn?.status);
     const readStatus = readString(readTurn?.status);
-    const turnStatus =
-      completedStatus === "failed" || readStatus === "failed"
+    const normalizedCompletedStatus = completedStatus.toLowerCase();
+    const normalizedReadStatus = readStatus.toLowerCase();
+    const normalizedStatus =
+      normalizedCompletedStatus === "failed" || normalizedReadStatus === "failed"
         ? "failed"
-        : completedStatus || readStatus || "completed";
+        : (normalizedCompletedStatus || normalizedReadStatus || "unknown");
     const turnErrorMessage =
       parseTurnErrorMessage(completedTurn?.error?.message) ||
       parseTurnErrorMessage(readTurn?.error?.message);
@@ -905,21 +965,49 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
       responseText = await waitForTurnAgentMessage(turnId);
     }
 
-    if (turnStatus === "failed") {
+    if (timedOutWaitingForCompletion) {
+      const readTurnIsTerminal =
+        normalizedReadStatus === "completed" ||
+        normalizedReadStatus === "succeeded" ||
+        normalizedReadStatus === "done";
+      const completedTurnIsTerminal =
+        normalizedCompletedStatus === "completed" ||
+        normalizedCompletedStatus === "succeeded" ||
+        normalizedCompletedStatus === "done";
+
+      if (!readTurnIsTerminal && !completedTurnIsTerminal) {
+        throw new Error(
+          `turn ${turnId} did not complete within ${turnTimeoutMs}ms.`,
+        );
+      }
+    }
+
+    if (normalizedStatus === "failed") {
       throw new Error(
         turnErrorMessage ||
           `Codex ${action} turn failed without a detailed error message.`,
       );
     }
 
+    const successfulTerminalStatus =
+      normalizedStatus === "completed" ||
+      normalizedStatus === "succeeded" ||
+      normalizedStatus === "done";
+
+    if (!successfulTerminalStatus) {
+      throw new Error(
+        `Codex ${action} turn did not reach terminal completion (status: ${normalizedStatus || "unknown"}).`,
+      );
+    }
+
     onEvent({
       phase: "turn.completed",
       status: "completed",
-      message: `Turn ${turnId} completed with status ${turnStatus}.`,
+      message: `Turn ${turnId} completed with status ${normalizedStatus}.`,
       timestamp: nowIso(),
       threadId,
       turnId,
-      turnStatus,
+      turnStatus: normalizedStatus,
     });
 
     return {
@@ -928,7 +1016,7 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
       cwd,
       threadId,
       turnId,
-      turnStatus,
+      turnStatus: normalizedStatus,
       skillRequested: skillResolution.requested ?? (requestedSkillName || "none"),
       skillAvailable: skillResolution.available,
       skillUsed: skillResolution.available ? requestedSkillName : null,
