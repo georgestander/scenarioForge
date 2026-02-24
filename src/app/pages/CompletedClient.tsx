@@ -196,6 +196,16 @@ export const CompletedClient = ({
         </p>
       ) : null}
 
+      {/* Primary actions */}
+      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "1fr 1fr" }}>
+        <button type="button" onClick={() => void handleRefreshReviewBoard()}>
+          Refresh Review Board
+        </button>
+        <button type="button" onClick={() => void handleExportReport()}>
+          Export Report
+        </button>
+      </div>
+
       {/* PR list */}
       {initialPullRequests.length > 0 ? (
         <div>
@@ -414,16 +424,6 @@ export const CompletedClient = ({
           ) : null}
         </div>
       ) : null}
-
-      {/* Action buttons */}
-      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "1fr 1fr" }}>
-        <button type="button" onClick={() => void handleRefreshReviewBoard()}>
-          Refresh Review Board
-        </button>
-        <button type="button" onClick={() => void handleExportReport()}>
-          Export Report
-        </button>
-      </div>
 
       <div style={{ textAlign: "center" }}>
         <a href="/dashboard" style={{ color: "var(--forge-fire)", fontSize: "0.88rem", textDecoration: "underline" }}>

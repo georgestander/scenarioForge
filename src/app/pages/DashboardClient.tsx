@@ -49,7 +49,7 @@ export const DashboardClient = ({
 }: {
   initialRepoGroups: DashboardRepoGroup[];
 }) => {
-  const { signOut, statusMessage, setStatusMessage } = useSession();
+  const { statusMessage, setStatusMessage } = useSession();
 
   const handleNewProject = async () => {
     const response = await fetch("/api/projects", {
@@ -235,17 +235,6 @@ export const DashboardClient = ({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => void signOut().then(() => { window.location.href = "/"; })}
-        style={{
-          justifySelf: "start",
-          borderColor: "#3f557f",
-          background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
-        }}
-      >
-        Sign Out
-      </button>
     </section>
   );
 };

@@ -12,6 +12,7 @@ import {
 import { SessionProvider } from "@/app/shared/SessionContext";
 import { ProjectProvider } from "@/app/shared/ProjectContext";
 import { PhaseRail } from "./PhaseRail";
+import { SignOutButton } from "./SignOutButton";
 
 type AppRequestInfo = RequestInfo<{ projectId?: string }, AppContext>;
 
@@ -145,26 +146,26 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
                   Scenario Forge
                 </span>
               </div>
-              {!isDashboard ? (
-                <nav aria-label="Project navigation" style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "auto" }}>
-                  {projectId && activePhaseIndex > 0 ? (
-                    <a
-                      href={previousPhasePath}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        padding: "0.42rem 0.72rem",
-                        borderRadius: "7px",
-                        border: "1px solid var(--forge-line)",
-                        color: "var(--forge-ink)",
-                        textDecoration: "none",
-                        fontSize: "0.8rem",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Back
-                    </a>
-                  ) : null}
+              <nav aria-label="Project navigation" style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "auto" }}>
+                {!isDashboard && projectId && activePhaseIndex > 0 ? (
+                  <a
+                    href={previousPhasePath}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "0.42rem 0.72rem",
+                      borderRadius: "7px",
+                      border: "1px solid var(--forge-line)",
+                      color: "var(--forge-ink)",
+                      textDecoration: "none",
+                      fontSize: "0.8rem",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Back
+                  </a>
+                ) : null}
+                {!isDashboard ? (
                   <a
                     href="/dashboard"
                     style={{
@@ -181,8 +182,9 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
                   >
                     Dashboard
                   </a>
-                </nav>
-              ) : null}
+                ) : null}
+                <SignOutButton />
+              </nav>
             </div>
 
             {/* Progress bar */}
