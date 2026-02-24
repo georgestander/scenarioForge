@@ -17,6 +17,7 @@ import { CompletedPage } from "@/app/pages/completed";
 import type {
   AuthPrincipal,
   AuthSession,
+  ExecutionJob,
   GitHubConnection,
   Project,
   ScenarioPack,
@@ -24,6 +25,8 @@ import type {
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import {
   persistCodeBaselineToD1,
+  persistExecutionJobEventToD1,
+  persistExecutionJobToD1,
   persistFixAttemptToD1,
   persistProjectPrReadinessToD1,
   hydrateCoreStateFromD1,
@@ -72,6 +75,8 @@ import {
 } from "@/services/sourceGate";
 import {
   createFixAttempt,
+  createExecutionJob,
+  createExecutionJobEvent,
   createPrincipal,
   createProject,
   createPullRequestRecord,
@@ -80,6 +85,7 @@ import {
   createSourceManifest,
   disconnectGitHubConnectionForPrincipal,
   getCodeBaselineById,
+  getExecutionJobById,
   getFixAttemptById,
   getGitHubConnectionForPrincipal,
   getLatestCodeBaselineForProject,
@@ -87,10 +93,13 @@ import {
   getLatestProjectPrReadinessForProject,
   getLatestSourceManifestForProject,
   getPrincipalById,
+  getPullRequestById,
   getProjectByIdForOwner,
   getScenarioPackById,
   getScenarioRunById,
   getSourceManifestById,
+  listActiveExecutionJobsForOwner,
+  listExecutionJobEvents,
   listFixAttemptsForProject,
   listProjectsForOwner,
   listPullRequestsForProject,
@@ -104,6 +113,7 @@ import {
   upsertProjectPrReadinessCheck,
   upsertProjectRecord,
   upsertProjectSources,
+  updateExecutionJob,
 } from "@/services/store";
 
 interface AuthContext {
@@ -226,6 +236,70 @@ const normalizeExecutionMode = (
   return "full";
 };
 
+const describeCodexExecuteProgress = (eventName: string): string => {
+  const normalized = eventName.trim().toLowerCase();
+  if (normalized.includes("commandexecution") || normalized.includes("exec_command")) {
+    return "Running repository checks and validating behavior...";
+  }
+  if (normalized.includes("task_complete") || normalized.includes("completed")) {
+    return "Summarizing scenario outcome...";
+  }
+  if (normalized.includes("error") || normalized.includes("failed")) {
+    return "Handling an execution issue and collecting details...";
+  }
+  if (normalized.includes("token") || normalized.includes("usage")) {
+    return "Analyzing progress and updating scenario state...";
+  }
+  return "Analyzing repository behavior for this scenario...";
+};
+
+const findMentionedScenarioId = (
+  payload: unknown,
+  scenarioIds: string[],
+): string | null => {
+  const text =
+    typeof payload === "string"
+      ? payload
+      : (() => {
+          try {
+            return JSON.stringify(payload);
+          } catch {
+            return "";
+          }
+        })();
+
+  if (!text) {
+    return null;
+  }
+
+  const normalizedText = text.toLowerCase();
+  for (const scenarioId of scenarioIds) {
+    if (normalizedText.includes(scenarioId.toLowerCase())) {
+      return scenarioId;
+    }
+  }
+  return null;
+};
+
+const summarizeScenarioRunOutcome = (
+  status: "queued" | "running" | "passed" | "failed" | "blocked",
+  observed: string,
+): string => {
+  if (status === "queued") {
+    return "Queued: waiting for execution slot.";
+  }
+  if (status === "running") {
+    return "Running: scenario execution in progress.";
+  }
+  if (status === "passed") {
+    return "Passed: checkpoints matched expected behavior.";
+  }
+  if (status === "failed") {
+    return `Failed: ${observed || "behavior did not match expected checkpoints."}`;
+  }
+  return `Blocked: ${observed || "execution could not continue in this environment."}`;
+};
+
 const normalizeRunItemStatus = (value: unknown): "passed" | "failed" | "blocked" => {
   const status = String(value ?? "")
     .trim()
@@ -296,6 +370,63 @@ const normalizeArtifacts = (value: unknown): Array<{
       };
     })
     .filter((item): item is { kind: "log" | "screenshot" | "trace"; label: string; value: string } => Boolean(item));
+};
+
+const EXECUTION_JOB_MAX_ACTIVE_PER_OWNER = 3;
+const EXECUTION_JOB_EVENT_PAGE_LIMIT = 200;
+
+type ExecutionJobEventStatus =
+  | "queued"
+  | "running"
+  | "passed"
+  | "failed"
+  | "blocked"
+  | "complete";
+
+type ExecutionJobEventStage = "run" | "fix" | "rerun" | "pr" | null;
+
+const normalizeExecutionJobEventStatus = (
+  value: unknown,
+  fallback: ExecutionJobEventStatus = "running",
+): ExecutionJobEventStatus => {
+  const status = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    status === "queued" ||
+    status === "running" ||
+    status === "passed" ||
+    status === "failed" ||
+    status === "blocked" ||
+    status === "complete"
+  ) {
+    return status;
+  }
+  return fallback;
+};
+
+const normalizeExecutionJobEventStage = (
+  value: unknown,
+): ExecutionJobEventStage => {
+  const stage = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (stage === "run" || stage === "fix" || stage === "rerun" || stage === "pr") {
+    return stage;
+  }
+  return null;
+};
+
+const inferExecutionJobStatusFromRun = (
+  run: ReturnType<typeof createScenarioRun>,
+): ExecutionJob["status"] => {
+  if (run.summary.failed > 0) {
+    return "failed";
+  }
+  if (run.summary.blocked > 0) {
+    return "blocked";
+  }
+  return "completed";
 };
 
 type PullRequestCreateInput = Parameters<typeof createPullRequestRecord>[0];
@@ -657,6 +788,591 @@ const buildPullRequestInputsFromCodexOutput = (
   }));
 
   return [...results, ...synthesizedFallbacks];
+};
+
+const resolveExecutionJobArtifacts = (ownerId: string, job: ExecutionJob) => {
+  const run = job.runId ? getScenarioRunById(ownerId, job.runId) : null;
+  const fixAttempt = job.fixAttemptId
+    ? getFixAttemptById(ownerId, job.fixAttemptId)
+    : null;
+  const pullRequests = job.pullRequestIds
+    .map((pullRequestId) => getPullRequestById(ownerId, pullRequestId))
+    .filter(
+      (record): record is NonNullable<ReturnType<typeof getPullRequestById>> =>
+        Boolean(record),
+    );
+
+  return {
+    run,
+    fixAttempt,
+    pullRequests,
+  };
+};
+
+interface PersistExecutionJobEventInput {
+  job: ExecutionJob;
+  event: string;
+  phase: string;
+  status: unknown;
+  message: string;
+  scenarioId?: string | null;
+  stage?: unknown;
+  payload?: unknown;
+  timestamp?: string;
+}
+
+const persistExecutionJobEvent = async (
+  input: PersistExecutionJobEventInput,
+) => {
+  const record = createExecutionJobEvent({
+    jobId: input.job.id,
+    ownerId: input.job.ownerId,
+    projectId: input.job.projectId,
+    event: input.event,
+    phase: input.phase,
+    status: normalizeExecutionJobEventStatus(input.status),
+    message: input.message.trim() || input.event,
+    scenarioId: input.scenarioId ?? null,
+    stage: normalizeExecutionJobEventStage(input.stage),
+    payload: input.payload ?? null,
+    timestamp: input.timestamp ?? new Date().toISOString(),
+  });
+  await persistExecutionJobEventToD1(record);
+  return record;
+};
+
+const readNestedRecord = (value: unknown): Record<string, unknown> | null =>
+  isRecord(value) ? value : null;
+
+const extractExecutionJobEventMessage = (
+  eventName: string,
+  payload: unknown,
+): string => {
+  if (typeof payload === "string" && payload.trim()) {
+    return payload;
+  }
+
+  const record = readNestedRecord(payload);
+  const nested = readNestedRecord(record?.payload);
+  const deep = readNestedRecord(nested?.payload);
+
+  const candidates = [
+    record?.message,
+    nested?.message,
+    deep?.message,
+    record?.error,
+    nested?.error,
+    deep?.error,
+    nested?.event,
+  ];
+  const first = candidates.find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" && candidate.trim().length > 0,
+  );
+  return first ?? eventName;
+};
+
+const extractExecutionJobEventPhase = (
+  eventName: string,
+  payload: unknown,
+): string => {
+  const record = readNestedRecord(payload);
+  const nested = readNestedRecord(record?.payload);
+  const deep = readNestedRecord(nested?.payload);
+
+  const candidates = [
+    record?.phase,
+    nested?.phase,
+    deep?.phase,
+    nested?.event,
+  ];
+  const first = candidates.find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" && candidate.trim().length > 0,
+  );
+  return first ?? eventName;
+};
+
+const extractExecutionJobEventScenarioId = (
+  payload: unknown,
+): string | null => {
+  const record = readNestedRecord(payload);
+  const nested = readNestedRecord(record?.payload);
+  const deep = readNestedRecord(nested?.payload);
+
+  const candidates = [
+    record?.scenarioId,
+    nested?.scenarioId,
+    deep?.scenarioId,
+  ];
+  const first = candidates.find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" && candidate.trim().length > 0,
+  );
+  return first ?? null;
+};
+
+const extractExecutionJobEventStatus = (
+  payload: unknown,
+): ExecutionJobEventStatus => {
+  const record = readNestedRecord(payload);
+  const nested = readNestedRecord(record?.payload);
+  const deep = readNestedRecord(nested?.payload);
+  return normalizeExecutionJobEventStatus(
+    record?.status ?? nested?.status ?? deep?.status,
+    "running",
+  );
+};
+
+const extractExecutionJobEventStage = (
+  payload: unknown,
+): ExecutionJobEventStage => {
+  const record = readNestedRecord(payload);
+  const nested = readNestedRecord(record?.payload);
+  const deep = readNestedRecord(nested?.payload);
+  return normalizeExecutionJobEventStage(
+    record?.stage ?? nested?.stage ?? deep?.stage,
+  );
+};
+
+const updateExecutionJobAndPersist = async (
+  ownerId: string,
+  jobId: string,
+  updater: (job: ExecutionJob) => void,
+): Promise<ExecutionJob | null> => {
+  const next = updateExecutionJob(ownerId, jobId, updater);
+  if (!next) {
+    return null;
+  }
+
+  await persistExecutionJobToD1(next);
+  return next;
+};
+
+interface ExecuteJobRunnerInput {
+  ownerId: string;
+  jobId: string;
+}
+
+const runExecuteJobInBackground = async (
+  input: ExecuteJobRunnerInput,
+): Promise<void> => {
+  const job = getExecutionJobById(input.ownerId, input.jobId);
+  if (!job || job.status !== "queued") {
+    return;
+  }
+
+  const project = getProjectByIdForOwner(job.projectId, input.ownerId);
+  if (!project) {
+    await persistExecutionJobEvent({
+      job,
+      event: "error",
+      phase: "execute.error",
+      status: "failed",
+      message: "Project not found for execution job.",
+      payload: { error: "Project not found." },
+    });
+    await updateExecutionJobAndPersist(input.ownerId, input.jobId, (next) => {
+      next.status = "failed";
+      next.completedAt = new Date().toISOString();
+      next.error = "Project not found for execution job.";
+    });
+    return;
+  }
+
+  const pack = getScenarioPackById(input.ownerId, job.scenarioPackId);
+  if (!pack || pack.projectId !== project.id) {
+    await persistExecutionJobEvent({
+      job,
+      event: "error",
+      phase: "execute.error",
+      status: "failed",
+      message: "Scenario pack not found for execution job.",
+      payload: { error: "Scenario pack not found." },
+    });
+    await updateExecutionJobAndPersist(input.ownerId, input.jobId, (next) => {
+      next.status = "failed";
+      next.completedAt = new Date().toISOString();
+      next.error = "Scenario pack not found for execution job.";
+    });
+    return;
+  }
+
+  const runningJob = await updateExecutionJobAndPersist(
+    input.ownerId,
+    input.jobId,
+    (next) => {
+      next.status = "running";
+      next.startedAt = next.startedAt ?? new Date().toISOString();
+      next.completedAt = null;
+      next.error = null;
+    },
+  );
+
+  if (!runningJob) {
+    return;
+  }
+
+  await persistExecutionJobEvent({
+    job: runningJob,
+    event: "status",
+    phase: "execute.running",
+    status: "running",
+    message: "Execution job is running.",
+  });
+
+  for (const [index, scenario] of pack.scenarios.entries()) {
+    await persistExecutionJobEvent({
+      job: runningJob,
+      event: "status",
+      phase: "run.queue",
+      status: "queued",
+      scenarioId: scenario.id,
+      stage: "run",
+      message: `Queued ${index + 1}/${pack.scenarios.length}: waiting for prior scenarios to finish.`,
+      payload: {
+        action: "execute",
+        phase: "run.queue",
+        scenarioId: scenario.id,
+        stage: "run",
+        status: "queued",
+        message: `Queued ${index + 1}/${pack.scenarios.length}: waiting for prior scenarios to finish.`,
+      },
+    });
+  }
+
+  const scenarioIds = pack.scenarios.map((scenario) => scenario.id);
+  let activeScenarioId = scenarioIds[0] ?? null;
+  let codexProgressCount = 0;
+  if (activeScenarioId) {
+    await persistExecutionJobEvent({
+      job: runningJob,
+      event: "status",
+      phase: "run.progress",
+      status: "running",
+      scenarioId: activeScenarioId,
+      stage: "run",
+      message: "Starting scenario execution and collecting evidence...",
+      payload: {
+        action: "execute",
+        phase: "run.progress",
+        scenarioId: activeScenarioId,
+        stage: "run",
+        status: "running",
+        message: "Starting scenario execution and collecting evidence...",
+      },
+    });
+  }
+
+  let codexEventWrite = Promise.resolve();
+  const enqueueCodexEvent = (eventName: string, payload: unknown) => {
+    codexEventWrite = codexEventWrite
+      .then(async () => {
+        const mentionedScenarioId = findMentionedScenarioId(payload, scenarioIds);
+        if (mentionedScenarioId) {
+          activeScenarioId = mentionedScenarioId;
+        }
+        codexProgressCount += 1;
+
+        await persistExecutionJobEvent({
+          job: runningJob,
+          event: "codex",
+          phase: extractExecutionJobEventPhase(eventName, payload),
+          status: extractExecutionJobEventStatus(payload),
+          message: extractExecutionJobEventMessage(eventName, payload),
+          scenarioId: extractExecutionJobEventScenarioId(payload),
+          stage: extractExecutionJobEventStage(payload),
+          payload: {
+            action: "execute",
+            event: eventName,
+            payload,
+          },
+          timestamp: new Date().toISOString(),
+        });
+
+        if (
+          activeScenarioId &&
+          (codexProgressCount === 1 ||
+            codexProgressCount % 8 === 0 ||
+            eventName.toLowerCase().includes("task_complete"))
+        ) {
+          await persistExecutionJobEvent({
+            job: runningJob,
+            event: "status",
+            phase: "run.progress",
+            status: "running",
+            scenarioId: activeScenarioId,
+            stage: "run",
+            message: describeCodexExecuteProgress(eventName),
+            payload: {
+              action: "execute",
+              phase: "run.progress",
+              scenarioId: activeScenarioId,
+              stage: "run",
+              status: "running",
+              message: describeCodexExecuteProgress(eventName),
+            },
+          });
+        }
+      })
+      .catch(() => {
+        // Keep execution running even if a single event cannot be persisted.
+      });
+  };
+
+  try {
+    const codexExecution = await executeScenariosViaCodexStream(
+      {
+        project,
+        pack,
+        executionMode: runningJob.executionMode,
+        userInstruction: runningJob.userInstruction ?? "",
+        constraints: runningJob.constraints,
+      },
+      (event) => {
+        enqueueCodexEvent(event.event, event.payload);
+      },
+    );
+
+    await codexEventWrite;
+
+    const runInput = buildScenarioRunInputFromCodexOutput(
+      input.ownerId,
+      project.id,
+      pack,
+      codexExecution.parsedOutput,
+    );
+    const run = createScenarioRun(runInput);
+    await persistScenarioRunToD1(run);
+
+    project.activeScenarioPackId = pack.id;
+    project.activeScenarioRunId = run.id;
+    project.updatedAt = new Date().toISOString();
+    upsertProjectRecord(project);
+    await persistProjectToD1(project);
+
+    for (const item of run.items) {
+      await persistExecutionJobEvent({
+        job: runningJob,
+        event: "status",
+        phase: "run.result",
+        status: item.status,
+        scenarioId: item.scenarioId,
+        stage: "run",
+        message: summarizeScenarioRunOutcome(item.status, item.observed),
+        timestamp: item.completedAt ?? new Date().toISOString(),
+        payload: {
+          action: "execute",
+          phase: "run.result",
+          scenarioId: item.scenarioId,
+          stage: "run",
+          status: item.status,
+          message: summarizeScenarioRunOutcome(item.status, item.observed),
+        },
+      });
+    }
+
+    await persistExecutionJobEvent({
+      job: runningJob,
+      event: "persisted",
+      phase: "persisted.run",
+      status: "running",
+      message: "Scenario run persisted.",
+      payload: {
+        action: "execute",
+        kind: "run",
+        runId: run.id,
+        summary: run.summary,
+      },
+    });
+
+    let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
+    if (
+      runningJob.executionMode === "fix" ||
+      runningJob.executionMode === "pr" ||
+      runningJob.executionMode === "full"
+    ) {
+      const fixInput = buildFixAttemptInputFromCodexOutput(
+        input.ownerId,
+        project.id,
+        run,
+        codexExecution.parsedOutput,
+      );
+      if (fixInput) {
+        fixAttempt = createFixAttempt(fixInput);
+        await persistFixAttemptToD1(fixAttempt);
+
+        for (const scenarioId of fixAttempt.failedScenarioIds) {
+          await persistExecutionJobEvent({
+            job: runningJob,
+            event: "status",
+            phase: "fix.progress",
+            status: "running",
+            scenarioId,
+            stage: "fix",
+            message: fixAttempt.patchSummary,
+            payload: {
+              action: "execute",
+              phase: "fix.progress",
+              scenarioId,
+              stage: "fix",
+              status: "running",
+              message: fixAttempt.patchSummary,
+            },
+          });
+        }
+
+        if (fixAttempt.rerunSummary) {
+          const rerunStatus = fixAttempt.rerunSummary.failed > 0 ? "failed" : "passed";
+          for (const scenarioId of fixAttempt.failedScenarioIds) {
+            await persistExecutionJobEvent({
+              job: runningJob,
+              event: "status",
+              phase: "rerun.result",
+              status: rerunStatus,
+              scenarioId,
+              stage: "rerun",
+              message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+              payload: {
+                action: "execute",
+                phase: "rerun.result",
+                scenarioId,
+                stage: "rerun",
+                status: rerunStatus,
+                message: `Rerun summary: ${fixAttempt.rerunSummary.passed} passed, ${fixAttempt.rerunSummary.failed} failed, ${fixAttempt.rerunSummary.blocked} blocked.`,
+              },
+            });
+          }
+        }
+
+        await persistExecutionJobEvent({
+          job: runningJob,
+          event: "persisted",
+          phase: "persisted.fixAttempt",
+          status: "running",
+          message: "Fix attempt persisted.",
+          payload: {
+            action: "execute",
+            kind: "fixAttempt",
+            fixAttemptId: fixAttempt.id,
+          },
+        });
+      }
+    }
+
+    let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];
+    if (
+      (runningJob.executionMode === "pr" || runningJob.executionMode === "full") &&
+      fixAttempt
+    ) {
+      const pullRequestInputs = buildPullRequestInputsFromCodexOutput(
+        input.ownerId,
+        project.id,
+        fixAttempt,
+        codexExecution.parsedOutput,
+      );
+      pullRequests = pullRequestInputs.map((entry) => createPullRequestRecord(entry));
+      await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
+
+      for (const pr of pullRequests) {
+        for (const scenarioId of pr.scenarioIds) {
+          await persistExecutionJobEvent({
+            job: runningJob,
+            event: "status",
+            phase: "pr.result",
+            status: pr.url ? "passed" : "blocked",
+            scenarioId,
+            stage: "pr",
+            message: pr.url ? `PR ready: ${pr.title}` : `PR blocked: ${pr.title}`,
+            payload: {
+              action: "execute",
+              phase: "pr.result",
+              scenarioId,
+              stage: "pr",
+              status: pr.url ? "passed" : "blocked",
+              message: pr.url ? `PR ready: ${pr.title}` : `PR blocked: ${pr.title}`,
+            },
+          });
+        }
+      }
+
+      await persistExecutionJobEvent({
+        job: runningJob,
+        event: "persisted",
+        phase: "persisted.pullRequests",
+        status: "running",
+        message: `${pullRequests.length} pull request records persisted.`,
+        payload: {
+          action: "execute",
+          kind: "pullRequests",
+          count: pullRequests.length,
+        },
+      });
+    }
+
+    const completionStatus = inferExecutionJobStatusFromRun(run);
+    const completedAt = new Date().toISOString();
+    const finalJob = await updateExecutionJobAndPersist(
+      input.ownerId,
+      input.jobId,
+      (next) => {
+        next.status = completionStatus;
+        next.completedAt = completedAt;
+        next.runId = run.id;
+        next.fixAttemptId = fixAttempt?.id ?? null;
+        next.pullRequestIds = pullRequests.map((record) => record.id);
+        next.summary = run.summary;
+        next.executionAudit = {
+          model: codexExecution.model,
+          threadId: codexExecution.threadId,
+          turnId: codexExecution.turnId,
+          turnStatus: codexExecution.turnStatus,
+          completedAt: codexExecution.completedAt,
+        };
+        next.error = null;
+      },
+    );
+
+    const jobForCompletion = finalJob ?? runningJob;
+    await persistExecutionJobEvent({
+      job: jobForCompletion,
+      event: "completed",
+      phase: "execute.complete",
+      status: "complete",
+      message: "Execution job completed.",
+      payload: {
+        runId: run.id,
+        fixAttemptId: fixAttempt?.id ?? null,
+        pullRequestIds: pullRequests.map((record) => record.id),
+        summary: run.summary,
+        executionAudit: {
+          model: codexExecution.model,
+          threadId: codexExecution.threadId,
+          turnId: codexExecution.turnId,
+          turnStatus: codexExecution.turnStatus,
+          completedAt: codexExecution.completedAt,
+        },
+      },
+    });
+  } catch (error) {
+    await codexEventWrite.catch(() => undefined);
+
+    const message =
+      error instanceof Error ? error.message : "Failed to execute scenarios through Codex app-server.";
+    await persistExecutionJobEvent({
+      job: runningJob,
+      event: "error",
+      phase: "execute.error",
+      status: "failed",
+      message,
+      payload: { error: message },
+    });
+    await updateExecutionJobAndPersist(input.ownerId, input.jobId, (next) => {
+      next.status = "failed";
+      next.completedAt = new Date().toISOString();
+      next.error = message;
+    });
+  }
 };
 
 const getPrincipalFromContext = (ctx: AppContext): AuthPrincipal | null =>
@@ -1835,6 +2551,112 @@ export default defineApp([
       });
     },
   ]),
+  route("/api/projects/:projectId/actions/execute/start", [
+    requireAuth,
+    async ({ request, ctx, params, cf }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      const activeJobs = listActiveExecutionJobsForOwner(principal.id);
+      if (activeJobs.length >= EXECUTION_JOB_MAX_ACTIVE_PER_OWNER) {
+        return json(
+          {
+            error: `Active execution cap reached (${EXECUTION_JOB_MAX_ACTIVE_PER_OWNER}). Wait for a running job to finish before starting another.`,
+          },
+          429,
+        );
+      }
+
+      const payload = await parseJsonBody(request);
+      const scenarioPackId = String(payload?.scenarioPackId ?? "").trim();
+      const defaultPack =
+        (project.activeScenarioPackId
+          ? getScenarioPackById(principal.id, project.activeScenarioPackId)
+          : null) ?? listScenarioPacksForProject(principal.id, project.id)[0] ?? null;
+      const pack =
+        (scenarioPackId
+          ? getScenarioPackById(principal.id, scenarioPackId)
+          : defaultPack) ?? null;
+
+      if (!pack || pack.projectId !== project.id) {
+        return json({ error: "Scenario pack not found." }, 404);
+      }
+
+      const executionMode = normalizeExecutionMode(payload?.executionMode);
+      const userInstruction = String(payload?.userInstruction ?? "").trim();
+      const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+
+      const job = createExecutionJob({
+        projectId: project.id,
+        ownerId: principal.id,
+        scenarioPackId: pack.id,
+        executionMode,
+        status: "queued",
+        userInstruction: userInstruction || null,
+        constraints,
+        startedAt: null,
+        completedAt: null,
+        runId: null,
+        fixAttemptId: null,
+        pullRequestIds: [],
+        summary: null,
+        executionAudit: {
+          model: null,
+          threadId: null,
+          turnId: null,
+          turnStatus: null,
+          completedAt: null,
+        },
+        error: null,
+      });
+      await persistExecutionJobToD1(job);
+
+      await persistExecutionJobEvent({
+        job,
+        event: "started",
+        phase: "execute.queued",
+        status: "queued",
+        message: "Execution job queued.",
+        payload: {
+          action: "execute",
+          executionMode,
+          scenarioPackId: pack.id,
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      const runPromise = runExecuteJobInBackground({
+        ownerId: principal.id,
+        jobId: job.id,
+      });
+      if (cf && typeof cf.waitUntil === "function") {
+        cf.waitUntil(runPromise);
+      } else {
+        void runPromise;
+      }
+
+      return json(
+        {
+          job,
+          activeCount: activeJobs.length + 1,
+          activeLimit: EXECUTION_JOB_MAX_ACTIVE_PER_OWNER,
+        },
+        202,
+      );
+    },
+  ]),
   route("/api/projects/:projectId/actions/execute/stream", [
     requireAuth,
     async ({ request, ctx, params }) => {
@@ -1878,14 +2700,29 @@ export default defineApp([
           executionMode,
           timestamp: new Date().toISOString(),
         });
-        for (const scenario of pack.scenarios) {
+        for (const [index, scenario] of pack.scenarios.entries()) {
           emit("status", {
             action: "execute",
             phase: "run.queue",
             scenarioId: scenario.id,
             stage: "run",
             status: "queued",
-            message: `${scenario.id} queued`,
+            message: `Queued ${index + 1}/${pack.scenarios.length}: waiting for prior scenarios to finish.`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        const scenarioIds = pack.scenarios.map((scenario) => scenario.id);
+        let activeScenarioId = scenarioIds[0] ?? null;
+        let codexProgressCount = 0;
+        if (activeScenarioId) {
+          emit("status", {
+            action: "execute",
+            phase: "run.progress",
+            scenarioId: activeScenarioId,
+            stage: "run",
+            status: "running",
+            message: "Starting scenario execution and collecting evidence...",
             timestamp: new Date().toISOString(),
           });
         }
@@ -1905,6 +2742,32 @@ export default defineApp([
               payload: event.payload,
               timestamp: new Date().toISOString(),
             });
+
+            const mentionedScenarioId = findMentionedScenarioId(
+              event.payload,
+              scenarioIds,
+            );
+            if (mentionedScenarioId) {
+              activeScenarioId = mentionedScenarioId;
+            }
+            codexProgressCount += 1;
+
+            if (
+              activeScenarioId &&
+              (codexProgressCount === 1 ||
+                codexProgressCount % 8 === 0 ||
+                event.event.toLowerCase().includes("task_complete"))
+            ) {
+              emit("status", {
+                action: "execute",
+                phase: "run.progress",
+                scenarioId: activeScenarioId,
+                stage: "run",
+                status: "running",
+                message: describeCodexExecuteProgress(event.event),
+                timestamp: new Date().toISOString(),
+              });
+            }
           },
         );
 
@@ -1928,7 +2791,7 @@ export default defineApp([
             scenarioId: item.scenarioId,
             stage: "run",
             status: item.status,
-            message: item.observed,
+            message: summarizeScenarioRunOutcome(item.status, item.observed),
             timestamp: item.completedAt,
           });
         }
@@ -2289,6 +3152,110 @@ export default defineApp([
         },
         201,
       );
+    },
+  ]),
+  route("/api/jobs/active", [
+    requireAuth,
+    ({ request, ctx }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projects = listProjectsForOwner(principal.id);
+      const projectsById = new Map(projects.map((project) => [project.id, project]));
+
+      const jobs = listActiveExecutionJobsForOwner(principal.id).map((job) => {
+        const project = projectsById.get(job.projectId) ?? null;
+        const artifacts = resolveExecutionJobArtifacts(principal.id, job);
+        return {
+          job,
+          project: project
+            ? {
+                id: project.id,
+                name: project.name,
+                repoUrl: project.repoUrl,
+                defaultBranch: project.defaultBranch,
+              }
+            : null,
+          run: artifacts.run,
+          fixAttempt: artifacts.fixAttempt,
+          pullRequests: artifacts.pullRequests,
+        };
+      });
+
+      return json({
+        data: jobs,
+        activeLimit: EXECUTION_JOB_MAX_ACTIVE_PER_OWNER,
+      });
+    },
+  ]),
+  route("/api/jobs/:jobId/events", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const jobId = String(params?.jobId ?? "").trim();
+      const job = getExecutionJobById(principal.id, jobId);
+      if (!job) {
+        return json({ error: "Execution job not found." }, 404);
+      }
+
+      const url = new URL(request.url);
+      const cursor = readNumber(url.searchParams.get("cursor"), 0);
+      const limit = Math.min(
+        Math.max(readNumber(url.searchParams.get("limit"), 100), 1),
+        EXECUTION_JOB_EVENT_PAGE_LIMIT,
+      );
+      const rows = listExecutionJobEvents(principal.id, job.id, cursor, limit + 1);
+      const hasMore = rows.length > limit;
+      const data = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = data[data.length - 1]?.sequence ?? cursor;
+
+      return json({
+        data,
+        cursor,
+        nextCursor,
+        hasMore,
+      });
+    },
+  ]),
+  route("/api/jobs/:jobId", [
+    requireAuth,
+    ({ request, ctx, params }) => {
+      if (request.method !== "GET") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const jobId = String(params?.jobId ?? "").trim();
+      const job = getExecutionJobById(principal.id, jobId);
+      if (!job) {
+        return json({ error: "Execution job not found." }, 404);
+      }
+
+      const artifacts = resolveExecutionJobArtifacts(principal.id, job);
+      return json({
+        job,
+        run: artifacts.run,
+        fixAttempt: artifacts.fixAttempt,
+        pullRequests: artifacts.pullRequests,
+      });
     },
   ]),
   route("/api/projects/:projectId/scenario-packs", [

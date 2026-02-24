@@ -1,9 +1,12 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { Project } from "@/domain/models";
 import { readError } from "@/app/shared/api";
 import { useSession } from "@/app/shared/SessionContext";
+import type { ActiveExecutionJobsPayload } from "@/app/shared/types";
 import type {
+  DashboardActiveRunSummary,
   DashboardLatestRunOutcome,
   DashboardRepoGroup,
 } from "./dashboardModels";
@@ -50,12 +53,112 @@ const OUTCOME_STYLES: Record<
   },
 };
 
+const ACTIVE_RUN_STYLES: Record<
+  DashboardActiveRunSummary["status"],
+  { label: string; color: string; borderColor: string; background: string }
+> = {
+  queued: {
+    label: "Queued",
+    color: "#d0d7ea",
+    borderColor: "#4b5a78",
+    background: "rgba(75, 90, 120, 0.22)",
+  },
+  running: {
+    label: "Running",
+    color: "#8fc0ff",
+    borderColor: "#2f6ba5",
+    background: "rgba(47, 107, 165, 0.22)",
+  },
+  completed: {
+    label: "Completed",
+    color: "#8fe3a4",
+    borderColor: "#2a8a47",
+    background: "rgba(42, 138, 71, 0.22)",
+  },
+  failed: {
+    label: "Failed",
+    color: "#ffaba7",
+    borderColor: "#a14745",
+    background: "rgba(161, 71, 69, 0.22)",
+  },
+  blocked: {
+    label: "Blocked",
+    color: "#ffd8a6",
+    borderColor: "#a5692f",
+    background: "rgba(165, 105, 47, 0.22)",
+  },
+};
+
+const formatUtcTimestamp = (isoTimestamp: string): string => {
+  const parsed = Date.parse(isoTimestamp);
+  if (Number.isNaN(parsed)) {
+    return isoTimestamp;
+  }
+
+  const normalized = new Date(parsed).toISOString();
+  return `${normalized.slice(0, 10)} ${normalized.slice(11, 16)} UTC`;
+};
+
 export const DashboardClient = ({
   initialRepoGroups,
+  initialActiveRuns,
 }: {
   initialRepoGroups: DashboardRepoGroup[];
+  initialActiveRuns: DashboardActiveRunSummary[];
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
+  const [activeRuns, setActiveRuns] =
+    useState<DashboardActiveRunSummary[]>(initialActiveRuns);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const pollActiveRuns = async () => {
+      try {
+        const response = await fetch("/api/jobs/active");
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = (await response.json()) as ActiveExecutionJobsPayload;
+        if (cancelled) {
+          return;
+        }
+
+        const rows = payload.data
+          .map((item) => {
+            if (!item.project) {
+              return null;
+            }
+            return {
+              jobId: item.job.id,
+              projectId: item.job.projectId,
+              projectName: item.project.name,
+              repoUrl: item.project.repoUrl,
+              branch: item.project.defaultBranch,
+              executionMode: item.job.executionMode,
+              status: item.job.status,
+              startedAt: item.job.startedAt,
+              updatedAt: item.job.updatedAt,
+            };
+          })
+          .filter((row): row is DashboardActiveRunSummary => Boolean(row))
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        setActiveRuns(rows);
+      } catch {
+        // Keep existing data when transient polling failures happen.
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void pollActiveRuns();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const handleNewProject = async () => {
     const response = await fetch("/api/projects", {
@@ -156,6 +259,122 @@ export const DashboardClient = ({
       >
         New Project
       </button>
+
+      <section
+        style={{
+          display: "grid",
+          gap: "0.45rem",
+          border: "1px solid var(--forge-line)",
+          borderRadius: "9px",
+          background: "#0f1628",
+          padding: "0.62rem",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto",
+            gap: "0.5rem",
+            alignItems: "center",
+          }}
+        >
+          <strong style={{ fontSize: "0.9rem", color: "var(--forge-ink)" }}>
+            Active Runs
+          </strong>
+          <span style={{ fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+            {activeRuns.length} active
+          </span>
+        </div>
+
+        {activeRuns.length === 0 ? (
+          <p
+            style={{
+              margin: 0,
+              fontSize: "0.8rem",
+              color: "var(--forge-muted)",
+            }}
+          >
+            No active runs right now.
+          </p>
+        ) : (
+          <div style={{ display: "grid", gap: "0.4rem" }}>
+            {activeRuns.map((run) => {
+              const status = ACTIVE_RUN_STYLES[run.status];
+              return (
+                <div
+                  key={run.jobId}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: "0.55rem",
+                    alignItems: "center",
+                    border: "1px solid var(--forge-line)",
+                    borderRadius: "8px",
+                    padding: "0.5rem 0.55rem",
+                    background: "#101a30",
+                  }}
+                >
+                  <div style={{ display: "grid", gap: "0.15rem" }}>
+                    <strong style={{ fontSize: "0.84rem" }}>
+                      {run.projectName}
+                    </strong>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: "0.74rem",
+                        color: "var(--forge-muted)",
+                      }}
+                    >
+                      mode={run.executionMode} · {run.branch} · job {run.jobId}
+                    </p>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: "0.73rem",
+                        color: "var(--forge-muted)",
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "inline-block",
+                          padding: "0.08rem 0.35rem",
+                          borderRadius: "999px",
+                          border: `1px solid ${status.borderColor}`,
+                          background: status.background,
+                          color: status.color,
+                          marginRight: "0.35rem",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {status.label}
+                      </span>
+                      Updated: {formatUtcTimestamp(run.updatedAt)}
+                    </p>
+                  </div>
+                  <a
+                    href={`/projects/${run.projectId}/execute?jobId=${run.jobId}`}
+                    style={{
+                      display: "inline-block",
+                      padding: "0.34rem 0.6rem",
+                      borderRadius: "7px",
+                      border: "1px solid #7f482b",
+                      background:
+                        "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
+                      color: "var(--forge-ink)",
+                      textDecoration: "none",
+                      fontWeight: 600,
+                      fontSize: "0.8rem",
+                      textAlign: "center",
+                    }}
+                  >
+                    Open run
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {initialRepoGroups.length === 0 ? (
         <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.84rem" }}>

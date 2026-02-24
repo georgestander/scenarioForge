@@ -117,6 +117,34 @@ Output:
 - PR records (if produced)
 - stream events
 
+## 4.3 `execute` Background Job Surface (MVP)
+
+Purpose:
+- decouple execution lifecycle from a single live page request.
+- allow fire-and-forget run launch, tab close/switch, and later resume.
+
+Job launch request:
+- `POST /api/projects/:projectId/actions/execute/start`
+- body: `scenarioPackId`, `executionMode`, `userInstruction?`, `constraints?`
+
+Job read surfaces:
+- `GET /api/jobs/:jobId`
+- `GET /api/jobs/:jobId/events?cursor=...&limit=...`
+- `GET /api/jobs/active`
+
+Behavior:
+1. `start` validates project/pack ownership and active-job cap per owner.
+2. `start` persists a queued execution job record and returns immediately with `jobId`.
+3. server-side runner uses `waitUntil` to execute Codex in the background.
+4. every status/progress/codex event is persisted to job-event storage.
+5. final run/fix/pr artifacts are linked back to the job record.
+6. job record captures execution audit (`threadId`, `turnId`, model, turn status).
+
+Output:
+- `start`: queued `job` + active count metadata.
+- `job`: execution status + linked run/fix/pr artifacts.
+- `events`: ordered event rows + resumable cursor.
+
 ## 5. Streaming Contract
 
 Use server-sent events (or equivalent stream) from bridge to UI.

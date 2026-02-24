@@ -53,6 +53,24 @@
   - Add the project detail history panel (scenario revisions + run history) to complete `SF-7002`.
   - Backfill durable persistence for run/pack/fix/pr records so historical dashboard data survives runtime restart.
 
+## Session Update (2026-02-24, Background Execute Jobs)
+
+- Decisions made:
+  - Execute is now launched via a persisted job record and detached from a live page-owned SSE request.
+  - Job/event persistence is first-class: every queued/running/status/codex/completion transition is stored and resumable.
+  - Per-owner concurrent execution cap is enforced at job start (`max 3` active queued/running jobs).
+  - Dashboard now exposes a dedicated Active Runs panel with direct `Open run` deep-links.
+- Current implementation status:
+  - Added background execute launch endpoint: `POST /api/projects/:projectId/actions/execute/start`.
+  - Added resumable monitor surfaces: `GET /api/jobs/:jobId`, `GET /api/jobs/:jobId/events`, `GET /api/jobs/active`.
+  - Added durable + in-memory job stores (`sf_execution_jobs`, `sf_execution_job_events`) with hydration/persistence.
+  - Execute page converted to launcher + monitor model backed by persisted job/event polling.
+  - Job audit now records Codex execution identity (`threadId`, `turnId`, model, turn status).
+- Next actions:
+  - Add explicit stale-queued job recovery/retry policy for runtime restarts.
+  - Add job cancellation semantics and UI controls.
+  - Add focused unit coverage for job event cursor pagination and active-cap enforcement edge cases.
+
 ## Phase 1 - Auth and Repo Connect (Done)
 
 ### SF-1001 ChatGPT auth integration
@@ -187,6 +205,16 @@
   - Per-scenario board uses only real execute output items.
   - No synthetic blocked rows when structured run data is missing.
   - Missing execute shape produces explicit action failure diagnostics.
+
+### SF-4005 Background execution jobs + resumable monitoring
+
+- Priority: P0
+- Status: done
+- Acceptance criteria:
+  - Execute can be launched asynchronously with immediate `jobId` response.
+  - Execution progress/events are persisted and retrievable by cursor.
+  - User can leave the page and later resume monitoring by job ID.
+  - Dashboard surfaces active runs across projects with deep-link open actions.
 
 ## Phase 5 - Reliability and UX Hardening
 

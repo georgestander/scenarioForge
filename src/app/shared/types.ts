@@ -1,6 +1,8 @@
 import type {
   AuthPrincipal,
   CodeBaseline,
+  ExecutionJob,
+  ExecutionJobEvent,
   FixAttempt,
   GitHubRepository,
   ProjectPrReadiness,
@@ -100,6 +102,42 @@ export interface ScenarioActionExecutePayload {
     turnStatus: string;
     completedAt: string;
   };
+}
+
+export interface ExecutionJobStartPayload {
+  job: ExecutionJob;
+  activeCount: number;
+  activeLimit: number;
+}
+
+export interface ExecutionJobDetailPayload {
+  job: ExecutionJob;
+  run: ScenarioRun | null;
+  fixAttempt: FixAttempt | null;
+  pullRequests: PullRequestRecord[];
+}
+
+export interface ExecutionJobEventsPayload {
+  data: ExecutionJobEvent[];
+  cursor: number;
+  nextCursor: number;
+  hasMore: boolean;
+}
+
+export interface ActiveExecutionJobsPayload {
+  data: Array<{
+    job: ExecutionJob;
+    project: {
+      id: string;
+      name: string;
+      repoUrl: string | null;
+      defaultBranch: string;
+    } | null;
+    run: ScenarioRun | null;
+    fixAttempt: FixAttempt | null;
+    pullRequests: PullRequestRecord[];
+  }>;
+  activeLimit: number;
 }
 
 export interface CodexStreamEventLog {

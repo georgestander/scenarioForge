@@ -2,9 +2,14 @@ import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
 import type { ScenarioRun } from "@/domain/models";
 import { redirect } from "@/app/shared/api";
-import { listProjectsForOwner, listScenarioRunsForProject } from "@/services/store";
+import {
+  listActiveExecutionJobsForOwner,
+  listProjectsForOwner,
+  listScenarioRunsForProject,
+} from "@/services/store";
 import { DashboardClient } from "./DashboardClient";
 import type {
+  DashboardActiveRunSummary,
   DashboardLatestRunOutcome,
   DashboardProjectSummary,
   DashboardRepoGroup,
@@ -155,6 +160,33 @@ const buildDashboardGroups = (ownerId: string): DashboardRepoGroup[] => {
   return groups;
 };
 
+const buildActiveRunSummaries = (ownerId: string): DashboardActiveRunSummary[] => {
+  const projects = listProjectsForOwner(ownerId);
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
+
+  return listActiveExecutionJobsForOwner(ownerId)
+    .map((job) => {
+      const project = projectsById.get(job.projectId);
+      if (!project) {
+        return null;
+      }
+
+      return {
+        jobId: job.id,
+        projectId: job.projectId,
+        projectName: project.name,
+        repoUrl: project.repoUrl,
+        branch: project.defaultBranch,
+        executionMode: job.executionMode,
+        status: job.status,
+        startedAt: job.startedAt,
+        updatedAt: job.updatedAt,
+      };
+    })
+    .filter((item): item is DashboardActiveRunSummary => Boolean(item))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+};
+
 export const DashboardPage = ({ ctx }: AppRequestInfo) => {
   const principal = ctx?.auth?.principal ?? null;
 
@@ -163,6 +195,12 @@ export const DashboardPage = ({ ctx }: AppRequestInfo) => {
   }
 
   const repoGroups = buildDashboardGroups(principal.id);
+  const activeRuns = buildActiveRunSummaries(principal.id);
 
-  return <DashboardClient initialRepoGroups={repoGroups} />;
+  return (
+    <DashboardClient
+      initialRepoGroups={repoGroups}
+      initialActiveRuns={activeRuns}
+    />
+  );
 };

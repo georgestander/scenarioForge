@@ -266,6 +266,70 @@ export interface ScenarioRun {
   updatedAt: string;
 }
 
+export type ExecutionJobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked";
+
+export type ExecutionJobEventStatus =
+  | "queued"
+  | "running"
+  | "passed"
+  | "failed"
+  | "blocked"
+  | "complete";
+
+export interface ExecutionJob {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  scenarioPackId: string;
+  executionMode: "run" | "fix" | "pr" | "full";
+  status: ExecutionJobStatus;
+  userInstruction: string | null;
+  constraints: Record<string, unknown>;
+  startedAt: string | null;
+  completedAt: string | null;
+  runId: string | null;
+  fixAttemptId: string | null;
+  pullRequestIds: string[];
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    blocked: number;
+  } | null;
+  executionAudit: {
+    model: string | null;
+    threadId: string | null;
+    turnId: string | null;
+    turnStatus: string | null;
+    completedAt: string | null;
+  };
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExecutionJobEvent {
+  id: string;
+  jobId: string;
+  ownerId: string;
+  projectId: string;
+  sequence: number;
+  event: string;
+  phase: string;
+  status: ExecutionJobEventStatus;
+  message: string;
+  scenarioId: string | null;
+  stage: "run" | "fix" | "rerun" | "pr" | null;
+  payload: unknown;
+  timestamp: string;
+  createdAt: string;
+}
+
 export type FixAttemptStatus = "planned" | "in_progress" | "validated" | "failed";
 
 export interface FixAttempt {

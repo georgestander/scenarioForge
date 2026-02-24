@@ -25,3 +25,15 @@ export interface DashboardRepoGroup {
   runCount: number;
   projects: DashboardProjectSummary[];
 }
+
+export interface DashboardActiveRunSummary {
+  jobId: string;
+  projectId: string;
+  projectName: string;
+  repoUrl: string | null;
+  branch: string;
+  executionMode: "run" | "fix" | "pr" | "full";
+  status: "queued" | "running" | "completed" | "failed" | "blocked";
+  startedAt: string | null;
+  updatedAt: string;
+}

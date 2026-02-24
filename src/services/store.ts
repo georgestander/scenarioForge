@@ -3,6 +3,8 @@ import type {
   AuthProvider,
   CodeBaseline,
   CodexSession,
+  ExecutionJob,
+  ExecutionJobEvent,
   FixAttempt,
   GitHubConnection,
   ProjectPrReadiness,
@@ -28,6 +30,8 @@ interface AppState {
   codeBaselines: CodeBaseline[];
   scenarioPacks: ScenarioPack[];
   scenarioRuns: ScenarioRun[];
+  executionJobs: ExecutionJob[];
+  executionJobEvents: ExecutionJobEvent[];
   fixAttempts: FixAttempt[];
   pullRequests: PullRequestRecord[];
   projectPrReadinessChecks: ProjectPrReadiness[];
@@ -52,6 +56,8 @@ const getState = (): AppState => {
       codeBaselines: [],
       scenarioPacks: [],
       scenarioRuns: [],
+      executionJobs: [],
+      executionJobEvents: [],
       fixAttempts: [],
       pullRequests: [],
       projectPrReadinessChecks: [],
@@ -682,6 +688,135 @@ export const getScenarioRunById = (
   );
 };
 
+export const createExecutionJob = (
+  input: Omit<ExecutionJob, "id" | "createdAt" | "updatedAt">,
+): ExecutionJob => {
+  const state = getState();
+  const timestamp = nowIso();
+
+  const job: ExecutionJob = {
+    ...input,
+    id: newId("job"),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  state.executionJobs.push(job);
+  return job;
+};
+
+export const updateExecutionJob = (
+  ownerId: string,
+  jobId: string,
+  updater: (job: ExecutionJob) => void,
+): ExecutionJob | null => {
+  const state = getState();
+  const job = state.executionJobs.find(
+    (record) => record.id === jobId && record.ownerId === ownerId,
+  );
+
+  if (!job) {
+    return null;
+  }
+
+  updater(job);
+  job.updatedAt = nowIso();
+  return job;
+};
+
+export const listExecutionJobsForOwner = (ownerId: string): ExecutionJob[] => {
+  const state = getState();
+  return sortByUpdatedDesc(
+    state.executionJobs.filter((job) => job.ownerId === ownerId),
+  );
+};
+
+export const listExecutionJobsForProject = (
+  ownerId: string,
+  projectId: string,
+): ExecutionJob[] => {
+  const state = getState();
+  return sortByUpdatedDesc(
+    state.executionJobs.filter(
+      (job) => job.ownerId === ownerId && job.projectId === projectId,
+    ),
+  );
+};
+
+const isExecutionJobActive = (status: ExecutionJob["status"]): boolean =>
+  status === "queued" || status === "running";
+
+export const listActiveExecutionJobsForOwner = (
+  ownerId: string,
+): ExecutionJob[] =>
+  listExecutionJobsForOwner(ownerId).filter((job) =>
+    isExecutionJobActive(job.status),
+  );
+
+export const listActiveExecutionJobsForProject = (
+  ownerId: string,
+  projectId: string,
+): ExecutionJob[] =>
+  listExecutionJobsForProject(ownerId, projectId).filter((job) =>
+    isExecutionJobActive(job.status),
+  );
+
+export const getExecutionJobById = (
+  ownerId: string,
+  jobId: string,
+): ExecutionJob | null => {
+  const state = getState();
+  return (
+    state.executionJobs.find((job) => job.ownerId === ownerId && job.id === jobId) ??
+    null
+  );
+};
+
+export const createExecutionJobEvent = (
+  input: Omit<ExecutionJobEvent, "id" | "sequence" | "createdAt">,
+): ExecutionJobEvent => {
+  const state = getState();
+  const timestamp = nowIso();
+  const existingEvents = state.executionJobEvents.filter(
+    (event) =>
+      event.ownerId === input.ownerId &&
+      event.projectId === input.projectId &&
+      event.jobId === input.jobId,
+  );
+  const lastSequence = existingEvents.reduce(
+    (max, item) => Math.max(max, item.sequence),
+    0,
+  );
+
+  const event: ExecutionJobEvent = {
+    ...input,
+    id: newId("jev"),
+    sequence: lastSequence + 1,
+    createdAt: timestamp,
+  };
+
+  state.executionJobEvents.push(event);
+  return event;
+};
+
+export const listExecutionJobEvents = (
+  ownerId: string,
+  jobId: string,
+  afterSequence = 0,
+  limit = 200,
+): ExecutionJobEvent[] => {
+  const state = getState();
+  return state.executionJobEvents
+    .filter(
+      (event) =>
+        event.ownerId === ownerId &&
+        event.jobId === jobId &&
+        event.sequence > afterSequence,
+    )
+    .sort((a, b) => a.sequence - b.sequence)
+    .slice(0, Math.max(1, limit));
+};
+
 export const createFixAttempt = (
   input: Omit<FixAttempt, "id" | "createdAt" | "updatedAt">,
 ): FixAttempt => {
@@ -768,6 +903,18 @@ export const listPullRequestsForProject = (
     state.pullRequests.filter(
       (record) => record.ownerId === ownerId && record.projectId === projectId,
     ),
+  );
+};
+
+export const getPullRequestById = (
+  ownerId: string,
+  pullRequestId: string,
+): PullRequestRecord | null => {
+  const state = getState();
+  return (
+    state.pullRequests.find(
+      (record) => record.ownerId === ownerId && record.id === pullRequestId,
+    ) ?? null
   );
 };
 
@@ -885,6 +1032,8 @@ interface HydrateCoreStateInput {
   codeBaselines?: CodeBaseline[];
   scenarioPacks?: ScenarioPack[];
   scenarioRuns?: ScenarioRun[];
+  executionJobs?: ExecutionJob[];
+  executionJobEvents?: ExecutionJobEvent[];
   fixAttempts?: FixAttempt[];
   pullRequests?: PullRequestRecord[];
   projectPrReadinessChecks?: ProjectPrReadiness[];
@@ -906,6 +1055,8 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
     state.codeBaselines = [...(input.codeBaselines ?? [])];
     state.scenarioPacks = [...(input.scenarioPacks ?? [])];
     state.scenarioRuns = [...(input.scenarioRuns ?? [])];
+    state.executionJobs = [...(input.executionJobs ?? [])];
+    state.executionJobEvents = [...(input.executionJobEvents ?? [])];
     state.fixAttempts = [...(input.fixAttempts ?? [])];
     state.pullRequests = [...(input.pullRequests ?? [])];
     state.projectPrReadinessChecks = [...(input.projectPrReadinessChecks ?? [])];
@@ -957,6 +1108,14 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
 
   (input.scenarioRuns ?? []).forEach((run) => {
     replaceById(state.scenarioRuns, run);
+  });
+
+  (input.executionJobs ?? []).forEach((job) => {
+    replaceById(state.executionJobs, job);
+  });
+
+  (input.executionJobEvents ?? []).forEach((event) => {
+    replaceById(state.executionJobEvents, event);
   });
 
   (input.fixAttempts ?? []).forEach((attempt) => {

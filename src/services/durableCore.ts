@@ -3,6 +3,8 @@ import type {
   AuthPrincipal,
   CodeBaseline,
   CodexSession,
+  ExecutionJob,
+  ExecutionJobEvent,
   FixAttempt,
   GitHubConnection,
   Project,
@@ -302,6 +304,65 @@ const ensureTables = async (db: D1Database): Promise<void> => {
   await db
     .prepare(
       `
+      CREATE TABLE IF NOT EXISTS sf_execution_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        scenario_pack_id TEXT NOT NULL,
+        execution_mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        user_instruction TEXT,
+        constraints_json TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        run_id TEXT,
+        fix_attempt_id TEXT,
+        pull_request_ids_json TEXT NOT NULL,
+        summary_json TEXT,
+        execution_audit_json TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_execution_job_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT NOT NULL,
+        scenario_id TEXT,
+        stage TEXT,
+        payload_json TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE INDEX IF NOT EXISTS idx_sf_execution_job_events_job_seq
+      ON sf_execution_job_events (job_id, sequence)
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
       CREATE TABLE IF NOT EXISTS sf_fix_attempts (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -576,6 +637,54 @@ export const hydrateCoreStateFromD1 = async (
         created_at,
         updated_at
       FROM sf_scenario_runs
+    `,
+    )
+    .all();
+  const executionJobRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        scenario_pack_id,
+        execution_mode,
+        status,
+        user_instruction,
+        constraints_json,
+        started_at,
+        completed_at,
+        run_id,
+        fix_attempt_id,
+        pull_request_ids_json,
+        summary_json,
+        execution_audit_json,
+        error,
+        created_at,
+        updated_at
+      FROM sf_execution_jobs
+    `,
+    )
+    .all();
+  const executionJobEventRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        job_id,
+        owner_id,
+        project_id,
+        sequence,
+        event,
+        phase,
+        status,
+        message,
+        scenario_id,
+        stage,
+        payload_json,
+        timestamp,
+        created_at
+      FROM sf_execution_job_events
     `,
     )
     .all();
@@ -864,6 +973,56 @@ export const hydrateCoreStateFromD1 = async (
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }));
+  const executionJobs: ExecutionJob[] = (
+    executionJobRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    scenarioPackId: String(row.scenario_pack_id),
+    executionMode: String(row.execution_mode) as ExecutionJob["executionMode"],
+    status: String(row.status) as ExecutionJob["status"],
+    userInstruction: row.user_instruction ? String(row.user_instruction) : null,
+    constraints: safeParseJson(String(row.constraints_json ?? "{}"), {}),
+    startedAt: row.started_at ? String(row.started_at) : null,
+    completedAt: row.completed_at ? String(row.completed_at) : null,
+    runId: row.run_id ? String(row.run_id) : null,
+    fixAttemptId: row.fix_attempt_id ? String(row.fix_attempt_id) : null,
+    pullRequestIds: safeParseJson(String(row.pull_request_ids_json), []),
+    summary: row.summary_json
+      ? safeParseJson(String(row.summary_json), null)
+      : null,
+    executionAudit: safeParseJson(String(row.execution_audit_json ?? "{}"), {
+      model: null,
+      threadId: null,
+      turnId: null,
+      turnStatus: null,
+      completedAt: null,
+    }),
+    error: row.error ? String(row.error) : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const executionJobEvents: ExecutionJobEvent[] = (
+    executionJobEventRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    jobId: String(row.job_id),
+    ownerId: String(row.owner_id),
+    projectId: String(row.project_id),
+    sequence: Number(row.sequence ?? 0),
+    event: String(row.event ?? ""),
+    phase: String(row.phase ?? ""),
+    status: String(row.status ?? "running") as ExecutionJobEvent["status"],
+    message: String(row.message ?? ""),
+    scenarioId: row.scenario_id ? String(row.scenario_id) : null,
+    stage: row.stage
+      ? (String(row.stage) as ExecutionJobEvent["stage"])
+      : null,
+    payload: safeParseJson(String(row.payload_json ?? "null"), null),
+    timestamp: String(row.timestamp ?? row.created_at ?? nowIso()),
+    createdAt: String(row.created_at),
+  }));
   const fixAttempts: FixAttempt[] = (
     fixAttemptRows.results as Array<Record<string, unknown>>
   ).map((row) => ({
@@ -944,6 +1103,8 @@ export const hydrateCoreStateFromD1 = async (
     codeBaselines,
     scenarioPacks,
     scenarioRuns,
+    executionJobs,
+    executionJobEvents,
     fixAttempts,
     pullRequests,
     projectPrReadinessChecks,
@@ -1219,6 +1380,28 @@ export const reconcilePrincipalIdentityInD1 = async (
       .prepare(
         `
         UPDATE sf_scenario_runs
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_execution_jobs
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_execution_job_events
         SET owner_id = ?
         WHERE owner_id = ?
       `,
@@ -1873,6 +2056,145 @@ export const persistScenarioRunToD1 = async (
       JSON.stringify(run.events),
       run.createdAt,
       run.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistExecutionJobToD1 = async (
+  job: ExecutionJob,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_execution_jobs (
+        id,
+        project_id,
+        owner_id,
+        scenario_pack_id,
+        execution_mode,
+        status,
+        user_instruction,
+        constraints_json,
+        started_at,
+        completed_at,
+        run_id,
+        fix_attempt_id,
+        pull_request_ids_json,
+        summary_json,
+        execution_audit_json,
+        error,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        scenario_pack_id = excluded.scenario_pack_id,
+        execution_mode = excluded.execution_mode,
+        status = excluded.status,
+        user_instruction = excluded.user_instruction,
+        constraints_json = excluded.constraints_json,
+        started_at = excluded.started_at,
+        completed_at = excluded.completed_at,
+        run_id = excluded.run_id,
+        fix_attempt_id = excluded.fix_attempt_id,
+        pull_request_ids_json = excluded.pull_request_ids_json,
+        summary_json = excluded.summary_json,
+        execution_audit_json = excluded.execution_audit_json,
+        error = excluded.error,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      job.id,
+      job.projectId,
+      job.ownerId,
+      job.scenarioPackId,
+      job.executionMode,
+      job.status,
+      job.userInstruction,
+      JSON.stringify(job.constraints ?? {}),
+      job.startedAt,
+      job.completedAt,
+      job.runId,
+      job.fixAttemptId,
+      JSON.stringify(job.pullRequestIds ?? []),
+      job.summary ? JSON.stringify(job.summary) : null,
+      JSON.stringify(job.executionAudit ?? {}),
+      job.error,
+      job.createdAt,
+      job.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistExecutionJobEventToD1 = async (
+  event: ExecutionJobEvent,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_execution_job_events (
+        id,
+        job_id,
+        owner_id,
+        project_id,
+        sequence,
+        event,
+        phase,
+        status,
+        message,
+        scenario_id,
+        stage,
+        payload_json,
+        timestamp,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        job_id = excluded.job_id,
+        owner_id = excluded.owner_id,
+        project_id = excluded.project_id,
+        sequence = excluded.sequence,
+        event = excluded.event,
+        phase = excluded.phase,
+        status = excluded.status,
+        message = excluded.message,
+        scenario_id = excluded.scenario_id,
+        stage = excluded.stage,
+        payload_json = excluded.payload_json,
+        timestamp = excluded.timestamp,
+        created_at = excluded.created_at
+    `,
+    )
+    .bind(
+      event.id,
+      event.jobId,
+      event.ownerId,
+      event.projectId,
+      event.sequence,
+      event.event,
+      event.phase,
+      event.status,
+      event.message,
+      event.scenarioId,
+      event.stage,
+      JSON.stringify(event.payload),
+      event.timestamp,
+      event.createdAt,
     )
     .run();
 };
