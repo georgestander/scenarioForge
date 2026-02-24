@@ -92,6 +92,13 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
   const doneCount = phases.filter((p) => p.done).length;
   const activePhaseIndex = phases.findIndex((p) => p.path === currentPath);
   const activePhase = activePhaseIndex >= 0 ? phases[activePhaseIndex] : null;
+  const previousPhasePath =
+    activePhaseIndex > 0
+      ? phases
+          .slice(0, activePhaseIndex)
+          .reverse()
+          .find((phase) => phase.unlocked)?.path ?? "/dashboard"
+      : "/dashboard";
   const progressCount =
     phases.length > 0
       ? Math.max(doneCount, activePhaseIndex >= 0 ? activePhaseIndex + 1 : doneCount)
@@ -113,28 +120,66 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
         }}>
           {/* Header */}
           <section style={{ display: "grid", gap: "0.15rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.55rem" }}>
-              <div style={{
-                width: "32px",
-                height: "32px",
-                borderRadius: "50%",
-                background: "var(--forge-line)",
-                display: "grid",
-                placeItems: "center",
-                fontSize: "0.85rem",
-                color: "var(--forge-muted)",
-                flexShrink: 0,
-              }}>
-                {principal.displayName?.charAt(0)?.toUpperCase() ?? "?"}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.55rem" }}>
+                <div style={{
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  background: "var(--forge-line)",
+                  display: "grid",
+                  placeItems: "center",
+                  fontSize: "0.85rem",
+                  color: "var(--forge-muted)",
+                  flexShrink: 0,
+                }}>
+                  {principal.displayName?.charAt(0)?.toUpperCase() ?? "?"}
+                </div>
+                <span style={{
+                  fontFamily: "'VT323', monospace",
+                  fontSize: "1.35rem",
+                  color: "var(--forge-hot)",
+                  letterSpacing: "0.04em",
+                }}>
+                  Scenario Forge
+                </span>
               </div>
-              <span style={{
-                fontFamily: "'VT323', monospace",
-                fontSize: "1.35rem",
-                color: "var(--forge-hot)",
-                letterSpacing: "0.04em",
-              }}>
-                Scenario Forge
-              </span>
+              {!isDashboard ? (
+                <nav aria-label="Project navigation" style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "auto" }}>
+                  <a
+                    href={previousPhasePath}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "0.42rem 0.72rem",
+                      borderRadius: "7px",
+                      border: "1px solid var(--forge-line)",
+                      color: "var(--forge-ink)",
+                      textDecoration: "none",
+                      fontSize: "0.8rem",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Back
+                  </a>
+                  <a
+                    href="/dashboard"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "0.42rem 0.72rem",
+                      borderRadius: "7px",
+                      border: "1px solid var(--forge-line)",
+                      color: "var(--forge-fire)",
+                      textDecoration: "none",
+                      fontSize: "0.8rem",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Dashboard
+                  </a>
+                </nav>
+              ) : null}
             </div>
 
             {/* Progress bar */}
