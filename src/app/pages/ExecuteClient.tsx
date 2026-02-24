@@ -43,14 +43,22 @@ export const ExecuteClient = ({
   const [latestFix, setLatestFix] = useState<FixAttempt | null>(null);
   const [pullRequests, setPullRequests] = useState<PullRequestRecord[]>([]);
   const logRef = useRef<HTMLUListElement>(null);
+  const [traceMode, setTraceMode] = useState(false);
 
   const executeEvents = useMemo(
     () => codexStreamEvents.filter((e) => e.action === "execute"),
     [codexStreamEvents],
   );
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    setTraceMode(new URLSearchParams(window.location.search).get("trace") === "1");
+  }, []);
+
   // Filter out raw protocol noise (e.g. "codex/event/agent_message_content_delta")
-  const displayEvents = useMemo(
+  const filteredEvents = useMemo(
     () => executeEvents.filter((e) => {
       const msg = e.message;
       if (msg === e.event) return false;
@@ -59,6 +67,17 @@ export const ExecuteClient = ({
     }),
     [executeEvents],
   );
+  const displayEvents = useMemo(() => {
+    if (traceMode) {
+      return executeEvents;
+    }
+    if (filteredEvents.length > 0) {
+      return filteredEvents;
+    }
+    // If every event looks "noisy", still show raw events so UI never appears frozen.
+    return executeEvents;
+  }, [traceMode, filteredEvents, executeEvents]);
+  const hiddenEventCount = Math.max(executeEvents.length - filteredEvents.length, 0);
 
   // Build per-scenario status map from stream events (last event per scenario wins)
   const scenarioStatuses = useMemo(() => {
@@ -138,6 +157,39 @@ export const ExecuteClient = ({
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .execute-panels {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 220px;
+          gap: 0.75rem;
+          align-items: start;
+        }
+        .execute-scenario-list {
+          overflow-x: hidden;
+        }
+        .execute-stream-log {
+          width: 220px;
+          max-width: 220px;
+          justify-self: end;
+          overflow-x: hidden;
+        }
+        .execute-stream-log li {
+          white-space: normal;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        @media (max-width: 960px) {
+          .execute-panels {
+            grid-template-columns: 1fr;
+          }
+          .execute-stream-log {
+            width: 100%;
+            max-width: none;
+            justify-self: stretch;
+            border-left: none !important;
+            border-top: 1px solid var(--forge-line);
+            padding-top: 0.65rem;
+          }
+        }
       `}</style>
 
       {/* Heading */}
@@ -147,6 +199,11 @@ export const ExecuteClient = ({
       {statusMessage ? (
         <p style={{ textAlign: "center", margin: 0, fontSize: "0.84rem", color: "var(--forge-muted)" }}>
           {statusMessage}
+        </p>
+      ) : null}
+      {!traceMode && hiddenEventCount > 0 && filteredEvents.length > 0 ? (
+        <p style={{ textAlign: "center", margin: 0, fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+          {hiddenEventCount} low-level events hidden. Add <code>?trace=1</code> for raw stream debugging.
         </p>
       ) : null}
 
@@ -201,10 +258,10 @@ export const ExecuteClient = ({
       </div>
 
       {/* Side-by-side: checklist (left) + stream log (right) */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem", alignItems: "start" }}>
+      <div className="execute-panels">
 
         {/* Scenario checklist */}
-        <div style={{
+        <div className="execute-scenario-list" style={{
           maxHeight: panelHeight,
           minHeight: "120px",
           overflowY: "auto",
@@ -244,14 +301,13 @@ export const ExecuteClient = ({
                 </span>
 
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: "0.4rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
                     <span style={{
                       fontSize: "0.82rem",
                       fontWeight: 600,
                       color: "var(--forge-ink)",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
                     }}>
                       {scenario.title}
                     </span>
@@ -272,9 +328,8 @@ export const ExecuteClient = ({
                       fontSize: "0.72rem",
                       color: "var(--forge-muted)",
                       lineHeight: 1.35,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
                     }}>
                       {info.message}
                     </p>
@@ -288,6 +343,7 @@ export const ExecuteClient = ({
         {/* Stream log — right column */}
         <ul
           ref={logRef}
+          className="execute-stream-log"
           style={{
             margin: 0,
             padding: "0.5rem",
@@ -308,6 +364,12 @@ export const ExecuteClient = ({
               <li key={event.id} style={{ lineHeight: 1.3 }}>
                 <span style={{ color: "var(--forge-fire)" }}>*</span>{" "}
                 {event.message}
+                {traceMode && (event.scenarioId || event.status || event.stage) ? (
+                  <span style={{ color: "var(--forge-muted)" }}>
+                    {" "}
+                    [{event.scenarioId ?? "-"} | {event.stage ?? "-"} | {event.status ?? "-"}]
+                  </span>
+                ) : null}
               </li>
             ))
           ) : (

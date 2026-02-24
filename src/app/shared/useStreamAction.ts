@@ -17,33 +17,46 @@ export const useStreamAction = () => {
         record?.payload && typeof record.payload === "object"
           ? (record.payload as Record<string, unknown>)
           : null;
+      const deep =
+        nested?.payload && typeof nested.payload === "object"
+          ? (nested.payload as Record<string, unknown>)
+          : null;
 
       const phase =
         (typeof record?.phase === "string" && record.phase.trim()) ||
         (typeof nested?.phase === "string" && nested.phase.trim()) ||
+        (typeof deep?.phase === "string" && deep.phase.trim()) ||
+        (typeof nested?.event === "string" && nested.event.trim()) ||
         event;
       const message =
         (typeof record?.message === "string" && record.message.trim()) ||
         (typeof nested?.message === "string" && nested.message.trim()) ||
+        (typeof deep?.message === "string" && deep.message.trim()) ||
         (typeof record?.error === "string" && record.error.trim()) ||
         (typeof nested?.error === "string" && nested.error.trim()) ||
+        (typeof deep?.error === "string" && deep.error.trim()) ||
+        (typeof nested?.event === "string" && nested.event.trim()) ||
         event;
       const timestamp =
         (typeof record?.timestamp === "string" && record.timestamp.trim()) ||
         (typeof nested?.timestamp === "string" && nested.timestamp.trim()) ||
+        (typeof deep?.timestamp === "string" && deep.timestamp.trim()) ||
         new Date().toISOString();
 
       const scenarioId =
         (typeof record?.scenarioId === "string" && record.scenarioId.trim()) ||
         (typeof nested?.scenarioId === "string" && nested.scenarioId.trim()) ||
+        (typeof deep?.scenarioId === "string" && deep.scenarioId.trim()) ||
         undefined;
       const stage =
         (typeof record?.stage === "string" && record.stage.trim()) ||
         (typeof nested?.stage === "string" && nested.stage.trim()) ||
+        (typeof deep?.stage === "string" && deep.stage.trim()) ||
         undefined;
       const status =
         (typeof record?.status === "string" && record.status.trim()) ||
         (typeof nested?.status === "string" && nested.status.trim()) ||
+        (typeof deep?.status === "string" && deep.status.trim()) ||
         undefined;
 
       setCodexStreamEvents((current) => [
