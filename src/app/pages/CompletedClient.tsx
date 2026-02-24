@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   FixAttempt,
   Project,
@@ -10,7 +10,39 @@ import type {
 } from "@/domain/models";
 import { readError } from "@/app/shared/api";
 import { useSession } from "@/app/shared/SessionContext";
-import type { ReviewBoardPayload, ReviewReportPayload } from "@/app/shared/types";
+import type { ReviewBoardPayload } from "@/app/shared/types";
+
+const STATUS_COLORS: Record<string, string> = {
+  passed: "var(--forge-ok)",
+  failed: "#e25555",
+  blocked: "var(--forge-muted)",
+  running: "var(--forge-fire)",
+  queued: "var(--forge-muted)",
+};
+
+const isLikelyUrl = (value: string): boolean =>
+  /^https?:\/\//i.test(value) || value.startsWith("/");
+
+const parseDownloadFilename = (
+  contentDisposition: string | null,
+  fallback: string,
+): string => {
+  if (!contentDisposition) {
+    return fallback;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const filenameMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  if (filenameMatch?.[1]) {
+    return filenameMatch[1];
+  }
+
+  return fallback;
+};
 
 export const CompletedClient = ({
   projectId,
@@ -29,9 +61,22 @@ export const CompletedClient = ({
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [reviewBoard, setReviewBoard] = useState<ReviewBoard | null>(initialReviewBoard);
-  const [reviewReport, setReviewReport] = useState("");
 
   const latestRun = initialRuns[0] ?? null;
+  const latestFixAttempt = initialFixAttempts[0] ?? null;
+  const pullRequestsByScenarioId = useMemo(() => {
+    return initialPullRequests.reduce(
+      (acc, pullRequest) => {
+        for (const scenarioId of pullRequest.scenarioIds) {
+          const existing = acc.get(scenarioId) ?? [];
+          existing.push(pullRequest);
+          acc.set(scenarioId, existing);
+        }
+        return acc;
+      },
+      new Map<string, PullRequestRecord[]>(),
+    );
+  }, [initialPullRequests]);
 
   const handleRefreshReviewBoard = async () => {
     const response = await fetch(`/api/projects/${projectId}/review-board`);
@@ -45,14 +90,29 @@ export const CompletedClient = ({
   };
 
   const handleExportReport = async () => {
-    const response = await fetch(`/api/projects/${projectId}/review-report`);
+    const response = await fetch(`/api/projects/${projectId}/review-report?format=markdown`);
     if (!response.ok) {
       setStatusMessage(await readError(response, "Failed to export report."));
       return;
     }
-    const payload = (await response.json()) as ReviewReportPayload;
-    setReviewReport(payload.markdown);
-    setStatusMessage("Challenge report exported.");
+
+    const blob = await response.blob();
+    const fallbackName = `${project.id}-challenge-report.md`;
+    const filename = parseDownloadFilename(
+      response.headers.get("content-disposition"),
+      fallbackName,
+    );
+    const downloadUrl = URL.createObjectURL(blob);
+
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(downloadUrl);
+
+    setStatusMessage("Challenge report downloaded.");
   };
 
   const totalPassed = latestRun?.summary.passed ?? 0;
@@ -61,7 +121,7 @@ export const CompletedClient = ({
   const totalScenarios = totalPassed + totalFailed + totalBlocked;
 
   return (
-    <section style={{ maxWidth: "560px", margin: "0 auto", display: "grid", gap: "1.2rem" }}>
+    <section style={{ maxWidth: "900px", margin: "0 auto", display: "grid", gap: "1.2rem" }}>
 
       {/* Checkmark + Heading */}
       <div style={{ textAlign: "center" }}>
@@ -90,6 +150,37 @@ export const CompletedClient = ({
           : null
         }
       </p>
+
+      {latestRun ? (
+        <div
+          style={{
+            display: "grid",
+            gap: "0.35rem",
+            border: "1px solid var(--forge-line)",
+            borderRadius: "8px",
+            padding: "0.55rem 0.7rem",
+            background: "rgba(42, 52, 84, 0.24)",
+          }}
+        >
+          <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--forge-muted)" }}>
+            Run ID: <strong style={{ color: "var(--forge-ink)" }}>{latestRun.id}</strong>
+          </p>
+          <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--forge-muted)" }}>
+            Completed:{" "}
+            <strong style={{ color: "var(--forge-ink)" }}>
+              {latestRun.completedAt ?? "in progress"}
+            </strong>
+          </p>
+          {latestFixAttempt ? (
+            <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--forge-muted)" }}>
+              Latest fix attempt:{" "}
+              <strong style={{ color: "var(--forge-ink)" }}>{latestFixAttempt.status}</strong> (
+              {latestFixAttempt.failedScenarioIds.length} failed scenario
+              {latestFixAttempt.failedScenarioIds.length === 1 ? "" : "s"} targeted)
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {statusMessage ? (
         <p style={{
@@ -154,6 +245,115 @@ export const CompletedClient = ({
         </div>
       ) : null}
 
+      {latestRun ? (
+        <div style={{ display: "grid", gap: "0.5rem" }}>
+          <h3
+            style={{
+              margin: 0,
+              fontFamily: "'VT323', monospace",
+              fontSize: "1.2rem",
+              color: "var(--forge-ink)",
+              textAlign: "center",
+            }}
+          >
+            Scenario Checks
+          </h3>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.45rem" }}>
+            {latestRun.items.map((item) => {
+              const scenarioPullRequests = pullRequestsByScenarioId.get(item.scenarioId) ?? [];
+              const statusColor = STATUS_COLORS[item.status] ?? "var(--forge-muted)";
+
+              return (
+                <li
+                  key={item.scenarioId}
+                  style={{
+                    border: "1px solid var(--forge-line)",
+                    borderRadius: "8px",
+                    padding: "0.5rem 0.6rem",
+                    background: "rgba(18, 24, 43, 0.6)",
+                    display: "grid",
+                    gap: "0.3rem",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "0.45rem", alignItems: "center", flexWrap: "wrap" }}>
+                    <strong style={{ color: "var(--forge-ink)", fontSize: "0.88rem" }}>
+                      {item.scenarioId}
+                    </strong>
+                    <span
+                      style={{
+                        fontSize: "0.72rem",
+                        fontWeight: 600,
+                        color: statusColor,
+                        border: `1px solid ${statusColor}`,
+                        borderRadius: "999px",
+                        padding: "0.05rem 0.38rem",
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {item.status}
+                    </span>
+                  </div>
+
+                  <p style={{ margin: 0, fontSize: "0.79rem", color: "var(--forge-muted)" }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Expected:</strong> {item.expected}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.79rem", color: "var(--forge-muted)" }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Observed:</strong> {item.observed}
+                  </p>
+
+                  {item.failureHypothesis ? (
+                    <p style={{ margin: 0, fontSize: "0.79rem", color: "var(--forge-muted)" }}>
+                      <strong style={{ color: "var(--forge-ink)" }}>Failure hypothesis:</strong>{" "}
+                      {item.failureHypothesis}
+                    </p>
+                  ) : null}
+
+                  {item.artifacts.length > 0 ? (
+                    <div style={{ display: "grid", gap: "0.2rem" }}>
+                      <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-ink)" }}>
+                        Artifacts
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: "1rem", color: "var(--forge-muted)", fontSize: "0.75rem", display: "grid", gap: "0.15rem" }}>
+                        {item.artifacts.map((artifact) => (
+                          <li key={`${item.scenarioId}_${artifact.kind}_${artifact.label}`}>
+                            {isLikelyUrl(artifact.value) ? (
+                              <a href={artifact.value} target="_blank" rel="noopener noreferrer" style={{ color: "var(--forge-fire)" }}>
+                                {artifact.label}
+                              </a>
+                            ) : (
+                              <span>{artifact.label}</span>
+                            )}{" "}
+                            ({artifact.kind})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {scenarioPullRequests.length > 0 ? (
+                    <div style={{ display: "grid", gap: "0.2rem" }}>
+                      <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-ink)" }}>
+                        Related PRs
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: "1rem", color: "var(--forge-muted)", fontSize: "0.75rem", display: "grid", gap: "0.15rem" }}>
+                        {scenarioPullRequests.map((pullRequest) => (
+                          <li key={`${item.scenarioId}_${pullRequest.id}`}>
+                            <a href={pullRequest.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--forge-fire)" }}>
+                              {pullRequest.title}
+                            </a>{" "}
+                            ({pullRequest.status})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
       {reviewBoard ? (
         <div style={{ display: "grid", gap: "0.45rem" }}>
           <h3 style={{
@@ -191,25 +391,6 @@ export const CompletedClient = ({
             </ul>
           ) : null}
         </div>
-      ) : null}
-
-      {/* Exported report */}
-      {reviewReport ? (
-        <pre style={{
-          margin: 0,
-          maxHeight: "200px",
-          overflow: "auto",
-          border: "1px solid var(--forge-line)",
-          borderRadius: "7px",
-          background: "#0c101b",
-          color: "#d8d4c7",
-          padding: "0.52rem",
-          fontSize: "0.72rem",
-          lineHeight: 1.3,
-          textAlign: "left",
-        }}>
-          {reviewReport}
-        </pre>
       ) : null}
 
       {/* Action buttons */}

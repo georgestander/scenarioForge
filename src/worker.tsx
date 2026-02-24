@@ -2431,7 +2431,24 @@ export default defineApp([
       const pullRequests = listPullRequestsForProject(principal.id, project.id);
       const manifest = getLatestSourceManifestForProject(principal.id, project.id);
       const board = buildReviewBoard(project, packs, runs, pullRequests);
-      const markdown = buildChallengeReport(project, manifest, board, runs[0] ?? null);
+      const markdown = buildChallengeReport(
+        project,
+        manifest,
+        board,
+        runs[0] ?? null,
+        pullRequests,
+      );
+      const requestedFormat = new URL(request.url).searchParams.get("format");
+      const format = String(requestedFormat ?? "").trim().toLowerCase();
+      if (format === "md" || format === "markdown") {
+        return new Response(markdown, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Content-Disposition": `attachment; filename=\"${project.id}-challenge-report.md\"`,
+          },
+        });
+      }
 
       return json({
         markdown,

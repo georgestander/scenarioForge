@@ -99,6 +99,7 @@ export const buildChallengeReport = (
   manifest: SourceManifest | null,
   board: ReviewBoard,
   latestRun: ScenarioRun | null,
+  pullRequests: PullRequestRecord[] = [],
 ): string => {
   const lines: string[] = [];
 
@@ -136,6 +137,69 @@ export const buildChallengeReport = (
     lines.push(`- Blocked: ${latestRun.summary.blocked}`);
   }
   lines.push("");
+
+  lines.push("## Pull Requests");
+  if (pullRequests.length === 0) {
+    lines.push("- No pull requests recorded.");
+  } else {
+    pullRequests.forEach((pullRequest) => {
+      lines.push(
+        `- [${pullRequest.title}](${pullRequest.url})`,
+      );
+      lines.push(`  - Status: ${pullRequest.status}`);
+      lines.push(
+        `  - Scenarios: ${
+          pullRequest.scenarioIds.length > 0
+            ? pullRequest.scenarioIds.join(", ")
+            : "none"
+        }`,
+      );
+      if (pullRequest.riskNotes.length > 0) {
+        lines.push(`  - Risk notes: ${pullRequest.riskNotes.join(" | ")}`);
+      }
+    });
+  }
+  lines.push("");
+
+  lines.push("## Scenario Checks");
+  if (!latestRun || latestRun.items.length === 0) {
+    lines.push("- No scenario checks captured.");
+  } else {
+    const pullRequestsByScenarioId = pullRequests.reduce(
+      (acc, pullRequest) => {
+        for (const scenarioId of pullRequest.scenarioIds) {
+          const existing = acc.get(scenarioId) ?? [];
+          existing.push(pullRequest);
+          acc.set(scenarioId, existing);
+        }
+        return acc;
+      },
+      new Map<string, PullRequestRecord[]>(),
+    );
+
+    latestRun.items.forEach((item) => {
+      lines.push(`### ${item.scenarioId} — ${item.status}`);
+      lines.push(`- Expected: ${item.expected}`);
+      lines.push(`- Observed: ${item.observed}`);
+      if (item.failureHypothesis) {
+        lines.push(`- Failure hypothesis: ${item.failureHypothesis}`);
+      }
+      if (item.artifacts.length > 0) {
+        lines.push("- Artifacts:");
+        item.artifacts.forEach((artifact) => {
+          lines.push(`  - [${artifact.label}](${artifact.value}) (${artifact.kind})`);
+        });
+      }
+      const scenarioPullRequests = pullRequestsByScenarioId.get(item.scenarioId) ?? [];
+      if (scenarioPullRequests.length > 0) {
+        lines.push("- Related PRs:");
+        scenarioPullRequests.forEach((pullRequest) => {
+          lines.push(`  - [${pullRequest.title}](${pullRequest.url}) (${pullRequest.status})`);
+        });
+      }
+      lines.push("");
+    });
+  }
 
   lines.push("## Review Board");
   lines.push(`- Coverage pass rate: ${board.coverage.passRate}%`);
