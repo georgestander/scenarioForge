@@ -24,11 +24,22 @@ export const ConnectClient = ({
   initialConnection: GitHubConnectionView | null;
   initialRepos: GitHubRepository[];
 }) => {
-  const { setStatusMessage, statusMessage } = useSession();
+  const { authPrincipal, setStatusMessage, statusMessage } = useSession();
   const [connection, setConnection] = useState<GitHubConnectionView | null>(initialConnection);
   const [repos, setRepos] = useState<GitHubRepository[]>(initialRepos);
-  const [manualInstallationId, setManualInstallationId] = useState("");
+  const [selectedRepo, setSelectedRepo] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState(project.defaultBranch || "main");
+  const [projectName, setProjectName] = useState(project.name || "");
+  const [isSaving, setIsSaving] = useState(false);
   const isConnected = Boolean(connection);
+
+  // Auto-select first repo if repos available
+  useEffect(() => {
+    if (repos.length > 0 && !selectedRepo) {
+      setSelectedRepo(repos[0].fullName);
+      setSelectedBranch(repos[0].defaultBranch);
+    }
+  }, [repos]);
 
   const refreshConnection = async () => {
     const [connRes, reposRes] = await Promise.all([
@@ -60,7 +71,7 @@ export const ConnectClient = ({
 
     if (payload.repositories.length === 0) {
       setStatusMessage(
-        "GitHub connected, but no repositories are granted. Open installation settings and grant repo access, then click Sync Repositories.",
+        "GitHub connected, but no repositories are granted. Open installation settings and grant repo access, then click Sync.",
       );
       return true;
     }
@@ -72,11 +83,10 @@ export const ConnectClient = ({
   };
 
   const handleManualConnect = async (overrideId?: string): Promise<boolean> => {
-    const rawId = overrideId?.trim() ?? manualInstallationId.trim();
+    const rawId = overrideId?.trim() ?? "";
     const installationId = Number(rawId);
 
     if (!Number.isInteger(installationId) || installationId <= 0) {
-      setStatusMessage("Installation ID is required.");
       return false;
     }
 
@@ -95,11 +105,11 @@ export const ConnectClient = ({
     await refreshConnection();
 
     if (payload.repositories.length === 0) {
-      setStatusMessage("Connected, but no repositories granted. Update access in GitHub settings, then Sync.");
+      setStatusMessage("Connected, but no repositories granted. Update access in GitHub settings, then reconnect.");
       return true;
     }
 
-    setStatusMessage(`Connected installation ${installationId}. ${payload.repositories.length} repo(s) available.`);
+    setStatusMessage(`Connected. ${payload.repositories.length} repo(s) available.`);
     return true;
   };
 
@@ -118,15 +128,14 @@ export const ConnectClient = ({
       if (attempts < 30) {
         window.setTimeout(run, 2000);
       } else {
-        setStatusMessage("If install finished, click Sync Repositories.");
+        setStatusMessage("If install finished, reload the page.");
       }
     };
     window.setTimeout(run, 2500);
   };
 
-  const handleInstallApp = async (forceReconnect = false) => {
-    const suffix = forceReconnect ? "?force=1" : "";
-    const response = await fetch(`/api/github/connect/start${suffix}`);
+  const handleConnectGitHub = async () => {
+    const response = await fetch("/api/github/connect/start");
     if (!response.ok) {
       setStatusMessage(await readError(response, "Failed to start GitHub connect."));
       return;
@@ -155,18 +164,42 @@ export const ConnectClient = ({
       return;
     }
 
-    setStatusMessage("Opened GitHub install in a new tab. This tab will auto-sync when done.");
+    setStatusMessage("Opened GitHub install in a new tab. This page will auto-sync when done.");
     pollForConnection();
   };
 
-  const handleDisconnect = async () => {
-    const response = await fetch("/api/github/disconnect", { method: "POST" });
-    if (!response.ok) {
-      setStatusMessage(await readError(response, "Failed to disconnect GitHub."));
+  const handleNext = async () => {
+    if (!selectedRepo) {
+      setStatusMessage("Select a repository.");
       return;
     }
-    await refreshConnection();
-    setStatusMessage("GitHub App disconnected.");
+    if (!projectName.trim()) {
+      setStatusMessage("Enter a project name.");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const repo = repos.find((r) => r.fullName === selectedRepo);
+      const response = await fetch(`/api/projects/${projectId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: projectName.trim(),
+          repoUrl: repo?.url ?? selectedRepo,
+          defaultBranch: selectedBranch || "main",
+        }),
+      });
+
+      if (!response.ok) {
+        setStatusMessage(await readError(response, "Failed to save project."));
+        return;
+      }
+
+      window.location.href = `/projects/${projectId}/sources`;
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Auto-connect from URL query param
@@ -180,117 +213,93 @@ export const ConnectClient = ({
     }
   }, []);
 
+  // Update branch when repo changes
+  const handleRepoChange = (fullName: string) => {
+    setSelectedRepo(fullName);
+    const repo = repos.find((r) => r.fullName === fullName);
+    if (repo) {
+      setSelectedBranch(repo.defaultBranch);
+    }
+  };
+
+  const displayName = authPrincipal?.displayName ?? "there";
+
   return (
-    <section style={{ display: "grid", gap: "0.55rem" }}>
-      <h2 style={{ margin: 0, fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-        Connect GitHub
-      </h2>
-      <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-        Project: <strong>{project.name}</strong> | {project.repoUrl ?? "No repo URL"} | {project.defaultBranch}
+    <section style={{ maxWidth: "420px", margin: "0 auto", padding: "2rem 0", display: "grid", gap: "1.2rem", textAlign: "center" }}>
+
+      <p style={{ margin: 0, fontSize: "1rem", color: "var(--forge-ink)", lineHeight: 1.6 }}>
+        Hi <strong>{displayName}</strong>, welcome to Scenario Forge.
+        {isConnected
+          ? " Select your repo and branch below."
+          : " Let's get you started right away by connecting your GitHub account."}
       </p>
 
-      <p style={{
-        margin: 0,
-        border: "1px solid #6a452f",
-        borderRadius: "10px",
-        background: "linear-gradient(180deg, rgb(163 87 46 / 0.22) 0%, rgb(97 53 29 / 0.18) 100%)",
-        padding: "0.6rem 0.75rem",
-        color: "var(--forge-ink)",
-        fontSize: "0.9rem",
-      }}>
-        {statusMessage}
-      </p>
-
-      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-        <button type="button" onClick={() => handleInstallApp(false)}>
-          {isConnected ? "Sync Repositories" : "Connect GitHub"}
-        </button>
-        <button
-          type="button"
-          onClick={handleDisconnect}
-          disabled={!isConnected}
-          style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-        >
-          Disconnect GitHub
-        </button>
-      </div>
-
-      <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-        Fallback: connect by installation ID if app is already installed.
-      </p>
-      <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)" }}>
-        Installation ID
-        <input
-          value={manualInstallationId}
-          onChange={(e) => setManualInstallationId(e.target.value)}
-          placeholder="e.g. 12345678"
-        />
-      </label>
-      <div style={{ display: "grid", gap: "0.45rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-        <button
-          type="button"
-          onClick={() => void handleManualConnect()}
-          style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-        >
-          Connect by ID
-        </button>
-        <button
-          type="button"
-          onClick={() => handleInstallApp(true)}
-          disabled={!isConnected}
-          style={{ borderColor: "#3f557f", background: "linear-gradient(180deg, #20304f 0%, #162542 100%)" }}
-        >
-          Reconnect GitHub App
-        </button>
-      </div>
-
-      {isConnected && connection ? (
-        <p style={{ color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-          Connected as <strong>{connection.accountLogin ?? "unknown"}</strong> (installation #{connection.installationId}).
-          {repos.length > 0 ? ` ${repos.length} repo(s) available.` : " No repos granted."}
+      {statusMessage ? (
+        <p style={{
+          margin: 0,
+          fontSize: "0.85rem",
+          color: "var(--forge-muted)",
+          padding: "0.45rem 0.6rem",
+          borderRadius: "6px",
+          background: "rgba(42, 52, 84, 0.4)",
+        }}>
+          {statusMessage}
         </p>
       ) : null}
 
-      {repos.length > 0 ? (
-        <div style={{ display: "grid", gap: "0.42rem" }}>
-          {repos.map((repo) => (
-            <div
-              key={repo.id}
-              style={{
-                border: "1px solid var(--forge-line)",
-                borderRadius: "9px",
-                padding: "0.48rem 0.55rem",
-                background: "#0f1628",
-                fontSize: "0.83rem",
-                color: "var(--forge-muted)",
-              }}
-            >
-              <strong style={{ color: "var(--forge-ink)" }}>{repo.fullName}</strong>
-              {" | "}{repo.defaultBranch}{repo.private ? " | private" : ""}
-            </div>
-          ))}
-        </div>
+      {!isConnected ? (
+        <button type="button" onClick={() => void handleConnectGitHub()} style={{ justifySelf: "center", padding: "0.6rem 1.4rem", fontSize: "0.95rem" }}>
+          Connect with GitHub
+        </button>
       ) : null}
 
-      <a
-        href={`/projects/${projectId}/sources`}
-        style={{
-          display: "inline-block",
-          padding: "0.52rem 0.62rem",
-          borderRadius: "7px",
-          border: "1px solid #7f482b",
-          background: "linear-gradient(180deg, #ad5a33 0%, #874423 100%)",
-          color: "var(--forge-ink)",
-          textDecoration: "none",
-          fontWeight: 600,
-          fontSize: "0.89rem",
-          textAlign: "center",
-          opacity: isConnected ? 1 : 0.55,
-          pointerEvents: isConnected ? "auto" : "none",
-        }}
-      >
-        Next: Select Sources →
-      </a>
+      {isConnected ? (
+        <>
+          <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)", textAlign: "left" }}>
+            Select repo
+            <select
+              value={selectedRepo}
+              onChange={(e) => handleRepoChange(e.target.value)}
+            >
+              <option value="">Select repo</option>
+              {repos.map((repo) => (
+                <option key={repo.id} value={repo.fullName}>
+                  {repo.fullName}{repo.private ? " (private)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)", textAlign: "left" }}>
+            Select branch
+            <input
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              placeholder="main"
+            />
+          </label>
+
+          <label style={{ display: "grid", gap: "0.24rem", fontSize: "0.88rem", color: "var(--forge-muted)", textAlign: "left" }}>
+            Project Name
+            <input
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="My Project"
+            />
+          </label>
+        </>
+      ) : null}
+
+      <div style={{ justifySelf: "end" }}>
+        <button
+          type="button"
+          onClick={() => void handleNext()}
+          disabled={!isConnected || !selectedRepo || !projectName.trim() || isSaving}
+          style={{ padding: "0.55rem 1.4rem" }}
+        >
+          {isSaving ? "Saving..." : "next"}
+        </button>
+      </div>
     </section>
   );
 };
