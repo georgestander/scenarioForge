@@ -284,7 +284,7 @@ export const ConnectClient = ({
             background: "rgba(173, 90, 51, 0.15)",
           }}
         >
-          {tokenHealthMessage ?? "GitHub token is stale. ScenarioForge is refreshing in the background."}
+          {tokenHealthMessage ?? "GitHub token is stale. Scenario Forge is refreshing in the background."}
         </p>
       ) : null}
 
