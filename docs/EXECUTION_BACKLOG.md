@@ -71,6 +71,46 @@
   - Add job cancellation semantics and UI controls.
   - Add focused unit coverage for job event cursor pagination and active-cap enforcement edge cases.
 
+## Session Update (2026-02-24, Scenario Contract Hardening)
+
+- Decisions made:
+  - Code-baseline precondition is now enforced unconditionally for manifest creation and generation endpoints.
+  - Review now exposes machine-readable scenario export directly in the UI (`Download JSON`).
+  - Review scenario cards now render full contract content (feature/outcome/priority, preconditions, test data, expected checkpoints, evidence refs) to support execute/no-execute decisions.
+- Current implementation status:
+  - `src/worker.tsx` now rejects missing baseline for:
+    - `POST /api/projects/:projectId/source-manifests`
+    - `POST /api/projects/:projectId/actions/generate/stream`
+    - `POST /api/projects/:projectId/actions/generate`
+    - `POST /api/projects/:projectId/scenario-packs`
+  - `src/app/pages/ReviewClient.tsx` now includes `Download JSON` and complete scenario contract rendering.
+  - Validation rerun evidence: `pnpm test:unit`, `pnpm test:regression`, and `pnpm types` all pass.
+- Next actions:
+  - Add route/API tests that assert baseline precondition failures at the HTTP layer.
+  - Add UI test coverage for review contract completeness and JSON export affordance.
+  - Run live bridge/GitHub end-to-end validation for generate/execute/PR flows in an authenticated environment.
+
+## Session Update (2026-02-24, Root Auth Redirect Hardening)
+
+- Decisions made:
+  - Root (`/`) is now an intent-only entrypoint that redirects immediately based on auth state.
+  - Anonymous users are redirected to a dedicated auth route (`/sign-in`) before any app/project flow route.
+  - Sign-in experience content moved to its own route to keep redirect semantics explicit and testable.
+- Current implementation status:
+  - `src/app/pages/home.tsx` now always redirects:
+    - authenticated -> `/dashboard`
+    - unauthenticated -> `/sign-in`
+  - Added `src/app/pages/signIn.tsx` with existing sign-in UX content and authenticated redirect back to dashboard.
+  - `src/worker.tsx` now registers `route("/sign-in", SignInPage)` in addition to root route.
+  - Validation evidence captured with bounded local runtime probes:
+    - before fix: `GET /` -> `200 OK` (no redirect)
+    - after fix: `GET /` -> `302 Found` with `Location: /sign-in`
+    - `GET /api/auth/session` remained `{"authenticated":false,"principal":null}` during anonymous probe.
+  - Verification reruns: `pnpm test:unit` and `pnpm types` pass.
+- Next actions:
+  - Add regression coverage for anonymous root redirect in automated HTTP route tests.
+  - Evaluate replacing legacy `redirect("/")` guards on protected pages with explicit `redirect("/sign-in")` for single-hop UX consistency.
+
 ## Phase 1 - Auth and Repo Connect (Done)
 
 ### SF-1001 ChatGPT auth integration
