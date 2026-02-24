@@ -13,6 +13,36 @@ import type {
   CollectionPayload,
 } from "@/app/shared/types";
 
+const deriveRepoSelectionFromProject = (repoUrl: string | null): string => {
+  const normalized = String(repoUrl ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) {
+    return normalized;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.replace(/\/+$/g, "");
+    const githubMatch = path.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
+    if ((host === "github.com" || host === "www.github.com") && githubMatch) {
+      return `${githubMatch[1]}/${githubMatch[2]}`;
+    }
+
+    const apiMatch = path.match(/^\/repos\/([^/]+)\/([^/]+)$/i);
+    if (host === "api.github.com" && apiMatch) {
+      return `${apiMatch[1]}/${apiMatch[2]}`;
+    }
+  } catch {
+    // Fallback below.
+  }
+
+  return "";
+};
+
 export const ConnectClient = ({
   projectId,
   project,
@@ -27,7 +57,9 @@ export const ConnectClient = ({
   const { authPrincipal, setStatusMessage, statusMessage } = useSession();
   const [connection, setConnection] = useState<GitHubConnectionView | null>(initialConnection);
   const [repos, setRepos] = useState<GitHubRepository[]>(initialRepos);
-  const [selectedRepo, setSelectedRepo] = useState("");
+  const [selectedRepo, setSelectedRepo] = useState(
+    deriveRepoSelectionFromProject(project.repoUrl),
+  );
   const [selectedBranch, setSelectedBranch] = useState(project.defaultBranch || "main");
   const [projectName, setProjectName] = useState(project.name || "");
   const [isSaving, setIsSaving] = useState(false);
@@ -35,13 +67,30 @@ export const ConnectClient = ({
   const tokenHealth = connection?.tokenHealth ?? "fresh";
   const tokenHealthMessage = connection?.tokenHealthMessage ?? null;
 
-  // Auto-select first repo if repos available
+  // If a project repo is already configured, keep select state in sync when repos refresh.
   useEffect(() => {
-    if (repos.length > 0 && !selectedRepo) {
-      setSelectedRepo(repos[0].fullName);
-      setSelectedBranch(repos[0].defaultBranch);
+    if (repos.length === 0) {
+      return;
     }
-  }, [repos]);
+
+    const derived = deriveRepoSelectionFromProject(project.repoUrl);
+    if (!derived) {
+      return;
+    }
+
+    const match = repos.find((repo) => repo.fullName === derived);
+    if (match) {
+      setSelectedRepo(match.fullName);
+      if (!selectedBranch.trim()) {
+        setSelectedBranch(match.defaultBranch || "main");
+      }
+      return;
+    }
+
+    if (!selectedRepo) {
+      setSelectedRepo("");
+    }
+  }, [repos, project.repoUrl, selectedRepo, selectedBranch]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -180,6 +229,19 @@ export const ConnectClient = ({
     pollForConnection();
   };
 
+  const handleDisconnectGitHub = async () => {
+    const response = await fetch("/api/github/disconnect", { method: "POST" });
+    if (!response.ok) {
+      setStatusMessage(await readError(response, "Failed to disconnect GitHub."));
+      return;
+    }
+
+    setConnection(null);
+    setRepos([]);
+    setSelectedRepo("");
+    setStatusMessage("GitHub disconnected. You can reconnect any installation.");
+  };
+
   const handleNext = async () => {
     if (!selectedRepo) {
       setStatusMessage("Select a repository.");
@@ -193,12 +255,18 @@ export const ConnectClient = ({
     setIsSaving(true);
     try {
       const repo = repos.find((r) => r.fullName === selectedRepo);
+      if (!repo) {
+        setStatusMessage(
+          "Select a repository from your connected GitHub installation.",
+        );
+        return;
+      }
       const response = await fetch(`/api/projects/${projectId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: projectName.trim(),
-          repoUrl: repo?.url ?? selectedRepo,
+          repoUrl: repo.url,
           defaultBranch: selectedBranch || "main",
         }),
       });
@@ -292,6 +360,31 @@ export const ConnectClient = ({
         <button type="button" onClick={() => void handleConnectGitHub()} style={{ justifySelf: "center", padding: "0.6rem 1.4rem", fontSize: "0.95rem" }}>
           Connect with GitHub
         </button>
+      ) : null}
+
+      {isConnected ? (
+        <div style={{ display: "flex", justifyContent: "center", gap: "0.45rem", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => void handleSyncConnection()}
+            style={{
+              borderColor: "#3f557f",
+              background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+            }}
+          >
+            Sync Repos
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDisconnectGitHub()}
+            style={{
+              borderColor: "#3f557f",
+              background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+            }}
+          >
+            Disconnect
+          </button>
+        </div>
       ) : null}
 
       {isConnected ? (

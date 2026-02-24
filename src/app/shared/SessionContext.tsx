@@ -14,6 +14,9 @@ interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
+export const DEFAULT_STATUS_MESSAGE =
+  "Follow the mission sequence: connect -> select -> generate/update -> execute -> review.";
+
 export const useSession = (): SessionContextValue => {
   const ctx = useContext(SessionContext);
   if (!ctx) {
@@ -33,7 +36,7 @@ export const SessionProvider = ({
     initialPrincipal ?? null,
   );
   const [statusMessage, setStatusMessage] = useState(
-    "Follow the mission sequence: connect -> select -> generate/update -> execute -> review.",
+    DEFAULT_STATUS_MESSAGE,
   );
 
   const signOut = useCallback(async () => {
