@@ -226,27 +226,6 @@ const normalizeExecutionMode = (
   return "full";
 };
 
-const COVERAGE_VALIDATION_PREFIX = "Coverage validation failed.";
-
-const buildCoverageRepairInstruction = (errorMessage: string): string | null => {
-  if (!errorMessage.includes(COVERAGE_VALIDATION_PREFIX)) {
-    return null;
-  }
-
-  const diagnostics = errorMessage.replace(COVERAGE_VALIDATION_PREFIX, "").trim();
-  const lines = [
-    "Repair this scenario pack to satisfy strict coverage validation.",
-    diagnostics ? `Validation diagnostics: ${diagnostics}` : "",
-    "Requirements:",
-    "- Resolve all missing required edge buckets by adding or updating scenarios and edgeVariants.",
-    "- Do not leave required buckets in coverage.uncoveredGaps.",
-    "- Keep groupedByFeature/groupedByOutcome consistent with the final scenario IDs.",
-    "- Return strict JSON only.",
-  ].filter((line) => line.length > 0);
-
-  return lines.join("\n");
-};
-
 const normalizeRunItemStatus = (value: unknown): "passed" | "failed" | "blocked" => {
   const status = String(value ?? "")
     .trim()
@@ -1771,121 +1750,63 @@ export default defineApp([
           timestamp: new Date().toISOString(),
         });
 
-        const attemptErrors: string[] = [];
+        emit("status", {
+          action: "generate",
+          phase: "running",
+          timestamp: new Date().toISOString(),
+        });
+
         let scenarioPackInput: ReturnType<typeof generateScenarioPack> | null = null;
-        let lastCoverageError: string | null = null;
-        const attemptPlan: Array<{
-          attempt: string;
-          useSkill: boolean;
-          repairFromCoverageError: boolean;
-        }> = [
-          { attempt: "skill-first", useSkill: true, repairFromCoverageError: false },
-          { attempt: "skill-repair", useSkill: true, repairFromCoverageError: true },
-          { attempt: "fallback", useSkill: false, repairFromCoverageError: false },
-          { attempt: "fallback-repair", useSkill: false, repairFromCoverageError: true },
-        ];
-
-        for (const plan of attemptPlan) {
-          const { attempt, useSkill, repairFromCoverageError } = plan;
-          if (repairFromCoverageError && !lastCoverageError) {
-            continue;
-          }
-
-          const repairInstruction =
-            repairFromCoverageError && lastCoverageError
-              ? buildCoverageRepairInstruction(lastCoverageError)
-              : null;
-          const effectiveUserInstruction = [userInstruction, repairInstruction]
-            .map((part) => part?.trim() ?? "")
-            .filter((part) => part.length > 0)
-            .join("\n\n");
-
-          emit("status", {
-            action: "generate",
-            phase: "attempt.start",
-            attempt,
-            repairFromCoverageError,
-            timestamp: new Date().toISOString(),
-          });
-
-          try {
-            const codexGeneration = await generateScenariosViaCodexStream(
-              {
-                project,
-                manifest,
-                selectedSources,
-                codeBaseline,
-                githubToken: githubConnection.accessToken,
-                mode,
-                userInstruction: effectiveUserInstruction,
-                existingPack,
-                useSkill,
-              },
-              (event) => {
-                emit("codex", {
-                  action: "generate",
-                  attempt,
-                  event: event.event,
-                  payload: event.payload,
-                  timestamp: new Date().toISOString(),
-                });
-              },
-            );
-
-            scenarioPackInput = generateScenarioPack({
+        try {
+          const codexGeneration = await generateScenariosViaCodexStream(
+            {
               project,
-              ownerId: principal.id,
               manifest,
               selectedSources,
               codeBaseline,
-              model: codexGeneration.model,
-              rawOutput: codexGeneration.responseText,
-              metadata: {
-                transport: "codex-app-server",
-                requestedSkill: codexGeneration.skillRequested,
-                usedSkill: codexGeneration.skillUsed,
-                skillAvailable: codexGeneration.skillAvailable,
-                skillPath: codexGeneration.skillPath,
-                threadId: codexGeneration.threadId,
-                turnId: codexGeneration.turnId,
-                turnStatus: codexGeneration.turnStatus,
-                cwd: codexGeneration.cwd,
-                generatedAt: codexGeneration.completedAt,
-              },
-            });
+              githubToken: githubConnection.accessToken,
+              mode,
+              userInstruction,
+              existingPack,
+              useSkill: true,
+            },
+            (event) => {
+              emit("codex", {
+                action: "generate",
+                event: event.event,
+                payload: event.payload,
+                timestamp: new Date().toISOString(),
+              });
+            },
+          );
 
-            emit("status", {
-              action: "generate",
-              phase: "attempt.success",
-              attempt,
-              timestamp: new Date().toISOString(),
-            });
-            lastCoverageError = null;
-            break;
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : "generation failed";
-            attemptErrors.push(`[${attempt}] ${message}`);
-            lastCoverageError = message.includes(COVERAGE_VALIDATION_PREFIX)
-              ? message
-              : null;
-            emit("status", {
-              action: "generate",
-              phase: "attempt.error",
-              attempt,
-              error: message,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        }
-
-        if (!scenarioPackInput) {
+          scenarioPackInput = generateScenarioPack({
+            project,
+            ownerId: principal.id,
+            manifest,
+            selectedSources,
+            codeBaseline,
+            model: codexGeneration.model,
+            rawOutput: codexGeneration.responseText,
+            metadata: {
+              transport: "codex-app-server",
+              requestedSkill: codexGeneration.skillRequested,
+              usedSkill: codexGeneration.skillUsed,
+              skillAvailable: codexGeneration.skillAvailable,
+              skillPath: codexGeneration.skillPath,
+              threadId: codexGeneration.threadId,
+              turnId: codexGeneration.turnId,
+              turnStatus: codexGeneration.turnStatus,
+              cwd: codexGeneration.cwd,
+              generatedAt: codexGeneration.completedAt,
+            },
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "generation failed";
           emit("error", {
             action: "generate",
-            error: [
-              "Failed to generate scenarios through Codex app-server.",
-              ...attemptErrors,
-            ].join(" "),
+            error: `Failed to generate scenarios through Codex app-server. ${message}`.trim(),
             timestamp: new Date().toISOString(),
           });
           return;
@@ -1950,17 +1871,6 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
-      const readiness = await refreshProjectPrReadiness(principal.id, project);
-
-      if (executionMode === "full" && readiness.status !== "ready") {
-        return json(
-          {
-            error: `PR automation readiness is required for executionMode=full. ${readiness.reasons.join(" ")}`.trim(),
-            readiness,
-          },
-          409,
-        );
-      }
 
       return createSseResponse(async (emit) => {
         emit("started", {
@@ -2195,61 +2105,54 @@ export default defineApp([
       let scenarioPackInput:
         | ReturnType<typeof generateScenarioPack>
         | null = null;
-      const attemptErrors: string[] = [];
+      try {
+        const codexGeneration = await generateScenariosViaCodex({
+          project,
+          manifest,
+          selectedSources,
+          codeBaseline,
+          githubToken: githubConnection.accessToken,
+          mode,
+          userInstruction,
+          existingPack,
+          useSkill: true,
+        });
 
-      for (const useSkill of [true, false]) {
-        try {
-          const codexGeneration = await generateScenariosViaCodex({
-            project,
-            manifest,
-            selectedSources,
-            codeBaseline,
-            githubToken: githubConnection.accessToken,
-            mode,
-            userInstruction,
-            existingPack,
-            useSkill,
-          });
-
-          scenarioPackInput = generateScenarioPack({
-            project,
-            ownerId: principal.id,
-            manifest,
-            selectedSources,
-            codeBaseline,
-            model: codexGeneration.model,
-            rawOutput: codexGeneration.responseText,
-            metadata: {
-              transport: "codex-app-server",
-              requestedSkill: codexGeneration.skillRequested,
-              usedSkill: codexGeneration.skillUsed,
-              skillAvailable: codexGeneration.skillAvailable,
-              skillPath: codexGeneration.skillPath,
-              threadId: codexGeneration.threadId,
-              turnId: codexGeneration.turnId,
-              turnStatus: codexGeneration.turnStatus,
-              cwd: codexGeneration.cwd,
-              generatedAt: codexGeneration.completedAt,
-            },
-          });
-          break;
-        } catch (error) {
-          attemptErrors.push(
-            error instanceof Error
-              ? `[${useSkill ? "skill-first" : "fallback"}] ${error.message}`
-              : `[${useSkill ? "skill-first" : "fallback"}] generation failed`,
-          );
-        }
+        scenarioPackInput = generateScenarioPack({
+          project,
+          ownerId: principal.id,
+          manifest,
+          selectedSources,
+          codeBaseline,
+          model: codexGeneration.model,
+          rawOutput: codexGeneration.responseText,
+          metadata: {
+            transport: "codex-app-server",
+            requestedSkill: codexGeneration.skillRequested,
+            usedSkill: codexGeneration.skillUsed,
+            skillAvailable: codexGeneration.skillAvailable,
+            skillPath: codexGeneration.skillPath,
+            threadId: codexGeneration.threadId,
+            turnId: codexGeneration.turnId,
+            turnStatus: codexGeneration.turnStatus,
+            cwd: codexGeneration.cwd,
+            generatedAt: codexGeneration.completedAt,
+          },
+        });
+      } catch (error) {
+        return json(
+          {
+            error: `Failed to generate scenarios through Codex app-server. ${
+              error instanceof Error ? error.message : "generation failed"
+            }`.trim(),
+          },
+          502,
+        );
       }
 
       if (!scenarioPackInput) {
         return json(
-          {
-            error: [
-              "Failed to generate scenarios through Codex app-server.",
-              ...attemptErrors,
-            ].join(" "),
-          },
+          { error: "Failed to generate scenarios through Codex app-server." },
           502,
         );
       }
@@ -2308,17 +2211,6 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
-      const readiness = await refreshProjectPrReadiness(principal.id, project);
-
-      if (executionMode === "full" && readiness.status !== "ready") {
-        return json(
-          {
-            error: `PR automation readiness is required for executionMode=full. ${readiness.reasons.join(" ")}`.trim(),
-            readiness,
-          },
-          409,
-        );
-      }
 
       let codexExecution;
       try {
@@ -2459,61 +2351,54 @@ export default defineApp([
           );
         }
 
-        const attemptErrors: string[] = [];
         let scenarioPackInput:
           | ReturnType<typeof generateScenarioPack>
           | null = null;
+        try {
+          const codexGeneration = await generateScenariosViaCodex({
+            project,
+            manifest,
+            selectedSources: sources,
+            codeBaseline,
+            githubToken: githubConnection.accessToken,
+            useSkill: true,
+          });
 
-        for (const useSkill of [true, false]) {
-          try {
-            const codexGeneration = await generateScenariosViaCodex({
-              project,
-              manifest,
-              selectedSources: sources,
-              codeBaseline,
-              githubToken: githubConnection.accessToken,
-              useSkill,
-            });
-
-            scenarioPackInput = generateScenarioPack({
-              project,
-              ownerId: principal.id,
-              manifest,
-              selectedSources: sources,
-              codeBaseline,
-              model: codexGeneration.model,
-              rawOutput: codexGeneration.responseText,
-              metadata: {
-                transport: "codex-app-server",
-                requestedSkill: codexGeneration.skillRequested,
-                usedSkill: codexGeneration.skillUsed,
-                skillAvailable: codexGeneration.skillAvailable,
-                skillPath: codexGeneration.skillPath,
-                threadId: codexGeneration.threadId,
-                turnId: codexGeneration.turnId,
-                turnStatus: codexGeneration.turnStatus,
-                cwd: codexGeneration.cwd,
-                generatedAt: codexGeneration.completedAt,
-              },
-            });
-            break;
-          } catch (error) {
-            attemptErrors.push(
-              error instanceof Error
-                ? `[${useSkill ? "skill-first" : "fallback"}] ${error.message}`
-                : `[${useSkill ? "skill-first" : "fallback"}] generation failed`,
-            );
-          }
+          scenarioPackInput = generateScenarioPack({
+            project,
+            ownerId: principal.id,
+            manifest,
+            selectedSources: sources,
+            codeBaseline,
+            model: codexGeneration.model,
+            rawOutput: codexGeneration.responseText,
+            metadata: {
+              transport: "codex-app-server",
+              requestedSkill: codexGeneration.skillRequested,
+              usedSkill: codexGeneration.skillUsed,
+              skillAvailable: codexGeneration.skillAvailable,
+              skillPath: codexGeneration.skillPath,
+              threadId: codexGeneration.threadId,
+              turnId: codexGeneration.turnId,
+              turnStatus: codexGeneration.turnStatus,
+              cwd: codexGeneration.cwd,
+              generatedAt: codexGeneration.completedAt,
+            },
+          });
+        } catch (error) {
+          return json(
+            {
+              error: `Failed to generate scenarios through Codex app-server. ${
+                error instanceof Error ? error.message : "generation failed"
+              }`.trim(),
+            },
+            502,
+          );
         }
 
         if (!scenarioPackInput) {
           return json(
-            {
-              error: [
-                "Failed to generate scenarios through Codex app-server.",
-                ...attemptErrors,
-              ].join(" "),
-            },
+            { error: "Failed to generate scenarios through Codex app-server." },
             502,
           );
         }

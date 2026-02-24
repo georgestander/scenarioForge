@@ -34,8 +34,6 @@ export const ReviewClient = ({
     knownUnknowns: [],
     uncoveredGaps: [],
   };
-  const hasBlockingCoverageGaps =
-    coverage.uncoveredGaps.length > 0;
 
   const updateEvents = useMemo(
     () => codexStreamEvents.filter((e) => e.action === "generate"),
@@ -114,7 +112,7 @@ export const ReviewClient = ({
         >
           download
         </button>
-        {selectedPack && !hasBlockingCoverageGaps ? (
+        {selectedPack ? (
           <a
             href={`/projects/${projectId}/execute?packId=${encodeURIComponent(selectedPack.id)}`}
             style={{
@@ -132,11 +130,7 @@ export const ReviewClient = ({
           >
             Run
           </a>
-        ) : (
-          <button type="button" disabled style={{ opacity: 0.65 }}>
-            Resolve coverage gaps
-          </button>
-        )}
+        ) : null}
       </div>
 
       {selectedPack ? (
@@ -151,7 +145,7 @@ export const ReviewClient = ({
           }}
         >
           <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
-            Coverage quality
+            Scenario quality notes
           </strong>
           <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.76rem" }}>
             personas {coverage.personas.length} | journeys{" "}
@@ -160,33 +154,23 @@ export const ReviewClient = ({
             {coverage.assumptions.length}
           </p>
           {coverage.knownUnknowns.length > 0 ? (
-            <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.75rem" }}>
-              Known unknowns: {coverage.knownUnknowns.join("; ")}
-            </p>
-          ) : null}
-          {coverage.uncoveredGaps.length > 0 ? (
-            <div style={{ display: "grid", gap: "0.25rem" }}>
-              <p style={{ margin: 0, color: "#f2a96a", fontSize: "0.75rem" }}>
-                Uncovered gaps must be resolved before run.
-              </p>
-              <ul
-                style={{
-                  margin: 0,
-                  paddingLeft: "1rem",
-                  color: "var(--forge-muted)",
-                  fontSize: "0.74rem",
-                  display: "grid",
-                  gap: "0.15rem",
-                }}
-              >
-                {coverage.uncoveredGaps.map((gap) => (
-                  <li key={gap}>{gap}</li>
-                ))}
-              </ul>
-            </div>
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: "1rem",
+                color: "var(--forge-muted)",
+                fontSize: "0.74rem",
+                display: "grid",
+                gap: "0.15rem",
+              }}
+            >
+              {coverage.knownUnknowns.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
           ) : (
             <p style={{ margin: 0, color: "var(--forge-ok)", fontSize: "0.75rem" }}>
-              Coverage gaps resolved for execution.
+              Scenarios are ready for execution.
             </p>
           )}
         </div>

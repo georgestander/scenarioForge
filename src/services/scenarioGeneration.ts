@@ -8,7 +8,6 @@ import type {
   SourceManifest,
   SourceRecord,
 } from "@/domain/models";
-import { isCodeFirstGenerationEnabled } from "@/services/featureFlags";
 
 const PRIORITIES: readonly ScenarioPriority[] = ["critical", "high", "medium"];
 
@@ -45,13 +44,6 @@ interface GenerateScenarioPackInput {
   model: string;
   rawOutput: unknown;
   metadata: ScenarioGenerationMetadata;
-}
-
-interface CoverageValidationResult {
-  ok: boolean;
-  errors: string[];
-  requiredGapEntries: string[];
-  knownUnknownEntries: string[];
 }
 
 const isRecord = (value: unknown): value is JsonRecord =>
@@ -361,135 +353,6 @@ const parseScenarioOutput = (rawOutput: unknown): ParsedScenarioOutput => {
   };
 };
 
-const textIncludesKeyword = (value: string, keywords: string[]): boolean => {
-  const normalized = value.toLowerCase();
-  return keywords.some((keyword) => normalized.includes(keyword));
-};
-
-const EDGE_BUCKET_RULES: Array<{
-  id: string;
-  label: string;
-  keywords: string[];
-  requiredWhen: (baseline: CodeBaseline | null | undefined) => boolean;
-}> = [
-  {
-    id: "validation",
-    label: "input validation and malformed payload handling",
-    keywords: ["invalid", "malformed", "validation", "required field", "schema"],
-    requiredWhen: () => true,
-  },
-  {
-    id: "permissions",
-    label: "permission or access-control edge handling",
-    keywords: ["permission", "forbidden", "unauthorized", "access denied", "auth"],
-    requiredWhen: (baseline) =>
-      Boolean(
-        baseline?.routeMap.some((route) => route.includes("/dashboard") || route.includes("/projects/")),
-      ),
-  },
-  {
-    id: "interruptions",
-    label: "interruption/resume/recovery handling",
-    keywords: ["interrupt", "resume", "recovery", "restart", "retry"],
-    requiredWhen: () => true,
-  },
-  {
-    id: "integration-failure",
-    label: "external integration/network failure handling",
-    keywords: ["timeout", "network", "rate limit", "api failure", "unavailable", "integration"],
-    requiredWhen: (baseline) => Boolean(baseline?.integrations.length),
-  },
-];
-
-const validateCoverageCompleteness = (
-  parsed: ParsedScenarioOutput,
-  baseline: CodeBaseline | null | undefined,
-): CoverageValidationResult => {
-  const errors: string[] = [];
-  const scenarios = parsed.scenarios;
-  const coverage = parsed.coverage;
-  const requiredRules = EDGE_BUCKET_RULES.filter((rule) => rule.requiredWhen(baseline));
-  const edgeEvidence = [
-    ...coverage.edgeBuckets,
-    ...coverage.uncoveredGaps,
-    ...scenarios.flatMap((scenario) => scenario.edgeVariants),
-  ].join("\n");
-
-  const missingRequiredRules = requiredRules.filter(
-    (rule) => !textIncludesKeyword(edgeEvidence, rule.keywords),
-  );
-  if (missingRequiredRules.length > 0) {
-    errors.push(
-      `Coverage missing required edge buckets: ${missingRequiredRules
-        .map((rule) => `${rule.id} (${rule.label})`)
-        .join(", ")}.`,
-    );
-  }
-
-  const unresolvedRequiredGaps = requiredRules.filter((rule) =>
-    coverage.uncoveredGaps.some((gap) => textIncludesKeyword(gap, rule.keywords)),
-  );
-  if (unresolvedRequiredGaps.length > 0) {
-    errors.push(
-      `Coverage reports unresolved required gaps: ${unresolvedRequiredGaps
-        .map((rule) => rule.id)
-        .join(", ")}. Resolve these before execution.`,
-    );
-  }
-
-  const duplicateIntentKeys = new Set<string>();
-  const seenIntentKeys = new Set<string>();
-  scenarios.forEach((scenario) => {
-    const key = [
-      scenario.persona.trim().toLowerCase(),
-      (scenario.journey ?? scenario.title).trim().toLowerCase(),
-      (scenario.riskIntent ?? "").trim().toLowerCase(),
-    ].join("|");
-    if (seenIntentKeys.has(key)) {
-      duplicateIntentKeys.add(key);
-    } else {
-      seenIntentKeys.add(key);
-    }
-  });
-  if (duplicateIntentKeys.size > 0) {
-    errors.push(
-      `Duplicate scenario intent detected for persona+journey+risk: ${[
-        ...duplicateIntentKeys,
-      ]
-        .slice(0, 5)
-        .join("; ")}.`,
-    );
-  }
-
-  const scenariosMissingEvidence = scenarios.filter(
-    (scenario) => (scenario.codeEvidenceAnchors?.length ?? 0) === 0,
-  );
-  if (scenariosMissingEvidence.length > 0) {
-    errors.push(
-      `Scenarios missing code evidence anchors: ${scenariosMissingEvidence
-        .map((scenario) => scenario.id)
-        .join(", ")}.`,
-    );
-  }
-
-  return {
-    ok: errors.length === 0,
-    errors,
-    requiredGapEntries: [
-      ...missingRequiredRules.map(
-        (rule) => `required edge bucket missing: ${rule.id} (${rule.label})`,
-      ),
-      ...unresolvedRequiredGaps.map(
-        (rule) => `required edge bucket unresolved: ${rule.id} (${rule.label})`,
-      ),
-    ],
-    knownUnknownEntries: errors.map((error) => `coverage-validation: ${error}`),
-  };
-};
-
-const dedupeStrings = (values: string[]): string[] =>
-  [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
-
 const renderScenarioMarkdown = (scenarios: ScenarioContract[]): string => {
   const lines: string[] = ["# Generated Scenarios", ""];
 
@@ -520,22 +383,6 @@ export const generateScenarioPack = (
   input: GenerateScenarioPackInput,
 ): Omit<ScenarioPack, "id" | "createdAt" | "updatedAt"> => {
   const parsedOutput = parseScenarioOutput(input.rawOutput);
-  if (isCodeFirstGenerationEnabled()) {
-    const coverageValidation = validateCoverageCompleteness(
-      parsedOutput,
-      input.codeBaseline ?? null,
-    );
-    if (!coverageValidation.ok) {
-      parsedOutput.coverage.uncoveredGaps = dedupeStrings([
-        ...parsedOutput.coverage.uncoveredGaps,
-        ...coverageValidation.requiredGapEntries,
-      ]);
-      parsedOutput.coverage.knownUnknowns = dedupeStrings([
-        ...parsedOutput.coverage.knownUnknowns,
-        ...coverageValidation.knownUnknownEntries,
-      ]);
-    }
-  }
 
   return {
     ownerId: input.ownerId,

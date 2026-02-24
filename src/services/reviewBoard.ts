@@ -39,17 +39,6 @@ export const buildReviewBoard = (
     });
   }
 
-  if ((latestPack?.coverage.uncoveredGaps.length ?? 0) > 0) {
-    recommendations.push({
-      id: `rec_${project.id}_coverage`,
-      priority: "high",
-      title: "Resolve uncovered required coverage gaps",
-      detail:
-        "Review coverage gaps surfaced during generation and close them before running execute loop.",
-      scenarioIds: latestPack?.scenarios.map((scenario) => scenario.id) ?? [],
-    });
-  }
-
   if (pullRequests.some((record) => record.status === "blocked")) {
     recommendations.push({
       id: `rec_${project.id}_pr`,
@@ -102,11 +91,6 @@ export const buildReviewBoard = (
           item.failureHypothesis ??
           "Scenario did not pass and requires investigation before merge.",
       })),
-      ...((latestPack?.coverage.uncoveredGaps ?? []).map((gap) => ({
-        scenarioId: "COVERAGE",
-        severity: "high" as const,
-        reason: `Uncovered gap: ${gap}`,
-      })) ?? []),
     ],
     recommendations,
   };

@@ -148,7 +148,7 @@ test("generateScenarioPack allows fewer than eight scenarios in code-first mode"
   }
 });
 
-test("generateScenarioPack persists coverage diagnostics in code-first mode", () => {
+test("generateScenarioPack accepts coverage notes without blocking generation", () => {
   const previous = process.env.SCENARIO_CODE_FIRST_GENERATION;
   process.env.SCENARIO_CODE_FIRST_GENERATION = "1";
   try {
@@ -197,12 +197,7 @@ test("generateScenarioPack persists coverage diagnostics in code-first mode", ()
     });
     assert.ok(
       pack.coverage.uncoveredGaps.some((gap) =>
-        gap.includes("required edge bucket unresolved: validation"),
-      ),
-    );
-    assert.ok(
-      pack.coverage.knownUnknowns.some((item) =>
-        item.includes("coverage-validation: Coverage reports unresolved required gaps"),
+        gap.includes("validation gap for malformed payload behavior remains unresolved"),
       ),
     );
   } finally {
