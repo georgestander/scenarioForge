@@ -1717,6 +1717,7 @@ export default defineApp([
               ownerId: principal.id,
               manifest,
               selectedSources,
+              codeBaseline,
               model: codexGeneration.model,
               rawOutput: codexGeneration.responseText,
               metadata: {
@@ -2067,6 +2068,7 @@ export default defineApp([
             ownerId: principal.id,
             manifest,
             selectedSources,
+            codeBaseline,
             model: codexGeneration.model,
             rawOutput: codexGeneration.responseText,
             metadata: {
@@ -2310,6 +2312,7 @@ export default defineApp([
               ownerId: principal.id,
               manifest,
               selectedSources: sources,
+              codeBaseline,
               model: codexGeneration.model,
               rawOutput: codexGeneration.responseText,
               metadata: {
