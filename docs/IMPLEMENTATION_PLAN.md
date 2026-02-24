@@ -417,3 +417,31 @@ Detailed implementation and patch order are defined in:
 6. UI matches locked screen flow with readable stream feedback.
 7. Signed-in dashboard supports historical project recovery, artifact download, and rerun intents.
 8. Phase 3/4 checklist and route behavior satisfies `docs/STREAM_EXECUTION_UI_CONTRACT.md`.
+
+## 14. Session Update (2026-02-24)
+
+Decisions made:
+1. Bridge JSON-RPC dispatch is fail-safe and protocol-correct:
+- server requests (`id + method`) are handled separately from responses (`id + result/error`),
+- approval requests are auto-accepted for the session in non-interactive bridge mode,
+- unsupported interactive user-input requests fail explicitly instead of deadlocking.
+2. Turn timeout handling is fail-closed:
+- turns that do not reach terminal completion now return explicit errors,
+- partial/in-flight turn reads are no longer treated as successful completions.
+3. Execute controller now runs scenario-by-scenario in background jobs:
+- each selected scenario is executed in sequence with its own bounded Codex turn,
+- one scenario failure no longer blocks later scenarios from running,
+- final scenario run is aggregated from real per-scenario terminal outcomes.
+4. User-facing outcome policy was tightened:
+- scenario terminal states are surfaced as `passed` or `failed`,
+- prior `blocked` display state is normalized into explicit failed limitations.
+
+Current implementation status:
+1. Milestone 1 (bridge protocol correctness) is implemented.
+2. Milestone 3 core controller behavior (per-scenario loop progression) is implemented without changing the public API surface.
+3. UI status affordance now aligns with terminal `passed|failed` expectations and keeps background-run resume semantics.
+
+Next actions:
+1. Implement repository/worktree isolation layer from `docs/APP_SERVER_CONTROLLER_WORKTREE_PLAN.md` Milestone 2.
+2. Add deterministic controller-owned commit/push/PR operations (Milestone 4), then tighten PR-readiness messaging around actionable remediation.
+3. Expand regression coverage for per-scenario controller retries and rerun-failed subset determinism.

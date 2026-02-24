@@ -238,6 +238,20 @@ Files:
 
 ### C3. Review direct landing, no meaningless interstitial
 
+---
+
+## 6. Session Progress (2026-02-24)
+
+Completed in this session:
+1. Bridge JSON-RPC request/response dispatch corrected; approval requests are now handled instead of dropped.
+2. Turn timeout behavior changed to fail-closed so partial turn output cannot be persisted as success.
+3. Execute background job now runs selected scenarios sequentially with bounded per-scenario Codex turns and aggregates real terminal outcomes.
+4. User-facing status normalization now treats prior `blocked` flows as explicit failed limitations (`passed|failed` visibility).
+
+Still open:
+1. Worktree isolation and per-scenario branch management from controller plan.
+2. Deterministic controller-owned commit/push/PR operations and stronger PR-readiness remediation UX.
+
 Action:
 
 - Review page reads `packId` query param and selects that pack.
