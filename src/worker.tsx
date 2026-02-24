@@ -51,6 +51,7 @@ import {
   getGitHubInstallUrl,
   issueGitHubConnectState,
 } from "@/services/githubApp";
+import { evaluateProjectPrReadiness } from "@/services/prReadiness";
 import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
 import { createScenarioRunRecord } from "@/services/runEngine";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
@@ -71,6 +72,7 @@ import {
   getFixAttemptById,
   getGitHubConnectionForPrincipal,
   getLatestGitHubConnectionForPrincipal,
+  getLatestProjectPrReadinessForProject,
   getLatestSourceManifestForProject,
   getPrincipalById,
   getProjectByIdForOwner,
@@ -86,6 +88,7 @@ import {
   listSourcesForProject,
   updateSourceSelections,
   upsertGitHubConnection,
+  upsertProjectPrReadinessCheck,
   upsertProjectRecord,
   upsertProjectSources,
 } from "@/services/store";
@@ -1067,6 +1070,41 @@ export default defineApp([
       await persistProjectToD1(project);
 
       return json({ project });
+    },
+  ]),
+  route("/api/projects/:projectId/pr-readiness", [
+    requireAuth,
+    async ({ request, ctx, params }) => {
+      const principal = getPrincipalFromContext(ctx);
+
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const projectId = getProjectId(params);
+      const project = getProjectByIdForOwner(projectId, principal.id);
+      if (!project) {
+        return json({ error: "Project not found." }, 404);
+      }
+
+      if (request.method === "GET") {
+        return json({
+          readiness: getLatestProjectPrReadinessForProject(principal.id, project.id),
+        });
+      }
+
+      if (request.method === "POST") {
+        const connection = await ensureGitHubConnectionForPrincipal(principal.id);
+        const readinessInput = await evaluateProjectPrReadiness({
+          ownerId: principal.id,
+          project,
+          githubConnection: connection,
+        });
+        const readiness = upsertProjectPrReadinessCheck(readinessInput);
+        return json({ readiness });
+      }
+
+      return json({ error: "Method not allowed." }, 405);
     },
   ]),
   route("/api/github/connect/start", [

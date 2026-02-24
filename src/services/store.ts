@@ -4,6 +4,7 @@ import type {
   CodexSession,
   FixAttempt,
   GitHubConnection,
+  ProjectPrReadiness,
   Project,
   PullRequestRecord,
   ScenarioPack,
@@ -27,6 +28,7 @@ interface AppState {
   scenarioRuns: ScenarioRun[];
   fixAttempts: FixAttempt[];
   pullRequests: PullRequestRecord[];
+  projectPrReadinessChecks: ProjectPrReadiness[];
 }
 
 const nowIso = () => new Date().toISOString();
@@ -49,6 +51,7 @@ const getState = (): AppState => {
       scenarioRuns: [],
       fixAttempts: [],
       pullRequests: [],
+      projectPrReadinessChecks: [],
     };
   }
 
@@ -700,6 +703,61 @@ export const updatePullRequestRecord = (
   updater(record);
   record.updatedAt = nowIso();
   return record;
+};
+
+export const upsertProjectPrReadinessCheck = (
+  input: Omit<ProjectPrReadiness, "id" | "createdAt" | "updatedAt">,
+): ProjectPrReadiness => {
+  const state = getState();
+  const timestamp = nowIso();
+  const existing = state.projectPrReadinessChecks.find(
+    (record) =>
+      record.ownerId === input.ownerId &&
+      record.projectId === input.projectId,
+  );
+
+  if (existing) {
+    existing.repositoryFullName = input.repositoryFullName;
+    existing.branch = input.branch;
+    existing.status = input.status;
+    existing.capabilities = input.capabilities;
+    existing.reasons = [...input.reasons];
+    existing.recommendedActions = [...input.recommendedActions];
+    existing.checkedAt = input.checkedAt;
+    existing.updatedAt = timestamp;
+    return existing;
+  }
+
+  const readiness: ProjectPrReadiness = {
+    ...input,
+    id: newId("ready"),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  state.projectPrReadinessChecks.push(readiness);
+  return readiness;
+};
+
+export const listProjectPrReadinessChecksForProject = (
+  ownerId: string,
+  projectId: string,
+): ProjectPrReadiness[] => {
+  const state = getState();
+  return sortByUpdatedDesc(
+    state.projectPrReadinessChecks.filter(
+      (record) =>
+        record.ownerId === ownerId &&
+        record.projectId === projectId,
+    ),
+  );
+};
+
+export const getLatestProjectPrReadinessForProject = (
+  ownerId: string,
+  projectId: string,
+): ProjectPrReadiness | null => {
+  const records = listProjectPrReadinessChecksForProject(ownerId, projectId);
+  return records[0] ?? null;
 };
 
 const replaceById = <T extends { id: string }>(

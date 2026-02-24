@@ -2,6 +2,7 @@ import type {
   AuthPrincipal,
   FixAttempt,
   GitHubRepository,
+  ProjectPrReadiness,
   PullRequestRecord,
   ScenarioPack,
   ScenarioRun,
@@ -110,6 +111,10 @@ export interface ReviewBoardPayload {
 
 export interface ReviewReportPayload {
   markdown: string;
+}
+
+export interface ProjectPrReadinessPayload {
+  readiness: ProjectPrReadiness | null;
 }
 
 export interface GitHubSyncPayload {

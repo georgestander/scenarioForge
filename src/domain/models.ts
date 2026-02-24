@@ -269,6 +269,32 @@ export interface PullRequestRecord {
   updatedAt: string;
 }
 
+export type ProjectPrReadinessStatus = "ready" | "needs_attention";
+
+export interface ProjectPrReadiness {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  repositoryFullName: string | null;
+  branch: string;
+  status: ProjectPrReadinessStatus;
+  capabilities: {
+    hasGitHubConnection: boolean;
+    repositoryConfigured: boolean;
+    repositoryAccessible: boolean;
+    branchExists: boolean;
+    canPush: boolean;
+    canCreateBranch: boolean;
+    canOpenPr: boolean;
+    codexBridgeConfigured: boolean;
+  };
+  reasons: string[];
+  recommendedActions: string[];
+  checkedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ReviewRiskItem {
   scenarioId: string;
   severity: "high" | "medium" | "low";
