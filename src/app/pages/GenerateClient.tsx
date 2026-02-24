@@ -31,6 +31,18 @@ export const GenerateClient = ({
     () => codexStreamEvents.filter((e) => e.action === "generate"),
     [codexStreamEvents],
   );
+  const scenarioStatuses = useMemo(() => {
+    const byScenarioId = new Map<string, { status: string; message: string }>();
+    for (const event of generateEvents) {
+      if (event.scenarioId) {
+        byScenarioId.set(event.scenarioId, {
+          status: event.status ?? "running",
+          message: event.message,
+        });
+      }
+    }
+    return byScenarioId;
+  }, [generateEvents]);
 
   const handleGenerate = async (mode: "initial" | "update") => {
     if (isGenerating) return;
@@ -65,7 +77,7 @@ export const GenerateClient = ({
     }
   };
 
-  const hasGenerated = !isGenerating && generateEvents.length > 0;
+  const hasReviewablePack = selectedPack !== null;
 
   return (
     <section style={{ maxWidth: "520px", margin: "0 auto", padding: "2rem 1rem", display: "grid", gap: "1rem" }}>
@@ -73,10 +85,10 @@ export const GenerateClient = ({
 
       {/* Heading */}
       <h2 style={{ margin: 0, textAlign: "center", fontFamily: "'VT323', monospace", fontSize: "1.65rem", color: "var(--forge-hot)" }}>
-        {isGenerating ? "Generating Scenarios" : hasGenerated ? "Scenarios Generated" : "Generate Scenarios"}
+        {isGenerating ? "Generating Scenarios" : hasReviewablePack ? "Scenarios Ready" : "Generate Scenarios"}
       </h2>
 
-      {hasGenerated && statusMessage && (
+      {statusMessage && (
         <p style={{ margin: 0, textAlign: "center", fontSize: "0.84rem", color: "var(--forge-muted)" }}>
           {statusMessage}
         </p>
@@ -99,7 +111,7 @@ export const GenerateClient = ({
                 Update Scenarios
               </button>
             )}
-            {hasGenerated && (
+            {hasReviewablePack && (
               <a
                 href={`/projects/${projectId}/review`}
                 style={{
@@ -161,6 +173,62 @@ export const GenerateClient = ({
             </li>
           ))}
         </ul>
+      )}
+
+      {selectedPack && (
+        <>
+          <h3 style={{ margin: 0, textAlign: "center", fontFamily: "'VT323', monospace", fontSize: "1.35rem", color: "var(--forge-hot)" }}>
+            Scenario Checklist
+          </h3>
+          <ul style={{
+            margin: 0,
+            padding: 0,
+            listStyle: "none",
+            display: "grid",
+            gap: "0.3rem",
+            maxHeight: "220px",
+            overflowY: "auto",
+          }}>
+            {selectedPack.scenarios.map((scenario) => {
+              const event = scenarioStatuses.get(scenario.id);
+              const status = event?.status ?? "passed";
+              const color =
+                status === "passed"
+                  ? "var(--forge-ok)"
+                  : status === "failed"
+                    ? "#e25555"
+                    : status === "blocked"
+                      ? "var(--forge-muted)"
+                      : "var(--forge-fire)";
+
+              return (
+                <li
+                  key={scenario.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "auto 1fr auto",
+                    gap: "0.5rem",
+                    alignItems: "center",
+                    border: "1px solid var(--forge-line)",
+                    borderRadius: "7px",
+                    padding: "0.42rem 0.55rem",
+                    background: "rgba(20, 26, 46, 0.6)",
+                  }}
+                >
+                  <span style={{ color }}>
+                    {status === "passed" ? "\u2713" : status === "failed" ? "\u2717" : status === "blocked" ? "\u2014" : "\u21BB"}
+                  </span>
+                  <span style={{ fontSize: "0.82rem", color: "var(--forge-ink)" }}>
+                    {scenario.title}
+                  </span>
+                  <span style={{ fontSize: "0.72rem", color }}>
+                    {status}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
     </section>
   );
