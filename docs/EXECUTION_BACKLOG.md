@@ -32,6 +32,21 @@
   - Tighten phase completion semantics (`Generate`/`Review` and `Execute`/`Completed`) using server-authoritative prerequisites.
   - Add focused UI regression coverage for phase indicator persistence and execute panel sizing.
 
+## Session Update (2026-02-24, Dashboard Run Grouping)
+
+- Decisions made:
+  - Dashboard now prioritizes historical execution signal by showing only projects with at least one persisted scenario run.
+  - Historical projects are grouped by repository identity using collapsible repo sections with aggregate counts.
+  - Group headers show project/run totals to reduce scanning noise for accounts with many project shells.
+- Current implementation status:
+  - `src/app/pages/dashboard.tsx` now derives repo-grouped run-backed summaries from project + run records.
+  - `src/app/pages/DashboardClient.tsx` now renders repo dropdown groups, per-project run counts, latest run outcome badge, and last activity timestamp.
+  - Dashboard empty state now reflects lack of run history rather than lack of project records.
+- Next actions:
+  - Add dashboard quick actions required by the locked contract (artifact download, rerun generate, rerun execute).
+  - Add the project detail history panel (scenario revisions + run history) to complete `SF-7002`.
+  - Backfill durable persistence for run/pack/fix/pr records so historical dashboard data survives runtime restart.
+
 ## Phase 1 - Auth and Repo Connect (Done)
 
 ### SF-1001 ChatGPT auth integration
