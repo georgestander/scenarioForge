@@ -83,14 +83,15 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
 
   const projectId = requestInfo?.params?.projectId ?? "";
   const currentPath = requestInfo?.path ?? "";
-  const isDashboard = currentPath === "/dashboard";
+  const normalizedPath = currentPath.replace(/\/+$/g, "") || "/";
+  const isDashboard = normalizedPath === "/dashboard";
 
   const phases = projectId ? buildPhases(projectId, principal.id) : [];
   const project = projectId ? getProjectByIdForOwner(projectId, principal.id) : null;
 
   // Progress bar: count done phases
   const doneCount = phases.filter((p) => p.done).length;
-  const activePhaseIndex = phases.findIndex((p) => p.path === currentPath);
+  const activePhaseIndex = phases.findIndex((p) => p.path === normalizedPath);
   const activePhase = activePhaseIndex >= 0 ? phases[activePhaseIndex] : null;
   const previousPhasePath =
     activePhaseIndex > 0
@@ -146,22 +147,24 @@ export const AppShell = ({ children, requestInfo }: LayoutProps<AppRequestInfo>)
               </div>
               {!isDashboard ? (
                 <nav aria-label="Project navigation" style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "auto" }}>
-                  <a
-                    href={previousPhasePath}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      padding: "0.42rem 0.72rem",
-                      borderRadius: "7px",
-                      border: "1px solid var(--forge-line)",
-                      color: "var(--forge-ink)",
-                      textDecoration: "none",
-                      fontSize: "0.8rem",
-                      fontWeight: 600,
-                    }}
-                  >
-                    Back
-                  </a>
+                  {projectId && activePhaseIndex > 0 ? (
+                    <a
+                      href={previousPhasePath}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        padding: "0.42rem 0.72rem",
+                        borderRadius: "7px",
+                        border: "1px solid var(--forge-line)",
+                        color: "var(--forge-ink)",
+                        textDecoration: "none",
+                        fontSize: "0.8rem",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Back
+                    </a>
+                  ) : null}
                   <a
                     href="/dashboard"
                     style={{

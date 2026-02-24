@@ -70,6 +70,40 @@ export const DashboardClient = ({
 
   return (
     <section style={{ display: "grid", gap: "0.75rem" }}>
+      <div
+        style={{
+          border: "1px solid var(--forge-line)",
+          borderRadius: "10px",
+          background: "linear-gradient(180deg, rgba(18, 24, 43, 0.7) 0%, rgba(12, 18, 34, 0.8) 100%)",
+          padding: "0.6rem",
+          display: "grid",
+          gridTemplateColumns: "120px minmax(0, 1fr)",
+          gap: "0.75rem",
+          alignItems: "center",
+        }}
+      >
+        <img
+          src="/scenarioForge.png"
+          alt="ScenarioForge mission control"
+          style={{
+            width: "120px",
+            height: "78px",
+            objectFit: "cover",
+            borderRadius: "7px",
+            border: "1px solid var(--forge-line)",
+            display: "block",
+          }}
+        />
+        <div style={{ display: "grid", gap: "0.18rem" }}>
+          <strong style={{ color: "var(--forge-ink)", fontSize: "0.93rem" }}>
+            ScenarioForge Mission Control
+          </strong>
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.78rem", lineHeight: 1.45 }}>
+            Select a project, continue the wizard, and stream scenario execution evidence through to final report and PR handoff.
+          </p>
+        </div>
+      </div>
+
       <h2 style={{
         margin: 0,
         fontFamily: "'VT323', monospace",
