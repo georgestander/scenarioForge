@@ -23,8 +23,16 @@ import type {
 } from "@/domain/models";
 import { createAuthSession, clearAuthSession, loadAuthSession, saveAuthSession } from "@/services/auth";
 import {
+  persistCodeBaselineToD1,
+  persistFixAttemptToD1,
+  persistProjectPrReadinessToD1,
   hydrateCoreStateFromD1,
+  persistPullRequestToD1,
   persistPrincipalToD1,
+  persistScenarioPackToD1,
+  persistScenarioRunToD1,
+  persistSourceManifestToD1,
+  persistSourceRecordToD1,
   persistGitHubConnectionToD1,
   persistProjectToD1,
   reconcilePrincipalIdentityInD1,
@@ -216,6 +224,27 @@ const normalizeExecutionMode = (
     return mode;
   }
   return "full";
+};
+
+const COVERAGE_VALIDATION_PREFIX = "Coverage validation failed.";
+
+const buildCoverageRepairInstruction = (errorMessage: string): string | null => {
+  if (!errorMessage.includes(COVERAGE_VALIDATION_PREFIX)) {
+    return null;
+  }
+
+  const diagnostics = errorMessage.replace(COVERAGE_VALIDATION_PREFIX, "").trim();
+  const lines = [
+    "Repair this scenario pack to satisfy strict coverage validation.",
+    diagnostics ? `Validation diagnostics: ${diagnostics}` : "",
+    "Requirements:",
+    "- Resolve all missing required edge buckets by adding or updating scenarios and edgeVariants.",
+    "- Do not leave required buckets in coverage.uncoveredGaps.",
+    "- Keep groupedByFeature/groupedByOutcome consistent with the final scenario IDs.",
+    "- Return strict JSON only.",
+  ].filter((line) => line.length > 0);
+
+  return lines.join("\n");
 };
 
 const normalizeRunItemStatus = (value: unknown): "passed" | "failed" | "blocked" => {
@@ -832,7 +861,9 @@ const refreshProjectPrReadiness = async (
     project,
     githubConnection: connection,
   });
-  return upsertProjectPrReadinessCheck(readinessInput);
+  const readiness = upsertProjectPrReadinessCheck(readinessInput);
+  await persistProjectPrReadinessToD1(readiness);
+  return readiness;
 };
 
 const withAuthContext: RouteMiddleware<AppRequestInfo> = async ({
@@ -1481,6 +1512,10 @@ export default defineApp([
         sources: scanned.sources,
       });
       const codeBaseline = upsertProjectCodeBaseline(scanned.codeBaseline);
+      await Promise.all([
+        ...data.map((source) => persistSourceRecordToD1(source)),
+        persistCodeBaselineToD1(codeBaseline),
+      ]);
 
       return json({ data, codeBaseline });
     },
@@ -1509,6 +1544,7 @@ export default defineApp([
         const payload = await parseJsonBody(request);
         const sourceIds = readStringArray(payload?.sourceIds);
         const data = updateSourceSelections(principal.id, project.id, sourceIds);
+        await Promise.all(data.map((source) => persistSourceRecordToD1(source)));
         return json({ data });
       }
 
@@ -1564,6 +1600,7 @@ export default defineApp([
           project.id,
           sourceIds,
         );
+        await Promise.all(updatedSources.map((source) => persistSourceRecordToD1(source)));
         const finalSelectedSources = updatedSources.filter((source) =>
           selectedSet.has(source.id),
         );
@@ -1592,6 +1629,7 @@ export default defineApp([
         });
 
         const manifest = createSourceManifest(manifestInput);
+        await persistSourceManifestToD1(manifest);
 
         return json({
           manifest,
@@ -1678,13 +1716,38 @@ export default defineApp([
 
         const attemptErrors: string[] = [];
         let scenarioPackInput: ReturnType<typeof generateScenarioPack> | null = null;
+        let lastCoverageError: string | null = null;
+        const attemptPlan: Array<{
+          attempt: string;
+          useSkill: boolean;
+          repairFromCoverageError: boolean;
+        }> = [
+          { attempt: "skill-first", useSkill: true, repairFromCoverageError: false },
+          { attempt: "skill-repair", useSkill: true, repairFromCoverageError: true },
+          { attempt: "fallback", useSkill: false, repairFromCoverageError: false },
+          { attempt: "fallback-repair", useSkill: false, repairFromCoverageError: true },
+        ];
 
-        for (const useSkill of [true, false]) {
-          const attempt = useSkill ? "skill-first" : "fallback";
+        for (const plan of attemptPlan) {
+          const { attempt, useSkill, repairFromCoverageError } = plan;
+          if (repairFromCoverageError && !lastCoverageError) {
+            continue;
+          }
+
+          const repairInstruction =
+            repairFromCoverageError && lastCoverageError
+              ? buildCoverageRepairInstruction(lastCoverageError)
+              : null;
+          const effectiveUserInstruction = [userInstruction, repairInstruction]
+            .map((part) => part?.trim() ?? "")
+            .filter((part) => part.length > 0)
+            .join("\n\n");
+
           emit("status", {
             action: "generate",
             phase: "attempt.start",
             attempt,
+            repairFromCoverageError,
             timestamp: new Date().toISOString(),
           });
 
@@ -1697,7 +1760,7 @@ export default defineApp([
                 codeBaseline,
                 githubToken: githubConnection.accessToken,
                 mode,
-                userInstruction,
+                userInstruction: effectiveUserInstruction,
                 existingPack,
                 useSkill,
               },
@@ -1740,11 +1803,15 @@ export default defineApp([
               attempt,
               timestamp: new Date().toISOString(),
             });
+            lastCoverageError = null;
             break;
           } catch (error) {
             const message =
               error instanceof Error ? error.message : "generation failed";
             attemptErrors.push(`[${attempt}] ${message}`);
+            lastCoverageError = message.includes(COVERAGE_VALIDATION_PREFIX)
+              ? message
+              : null;
             emit("status", {
               action: "generate",
               phase: "attempt.error",
@@ -1768,6 +1835,7 @@ export default defineApp([
         }
 
         const pack = createScenarioPack(scenarioPackInput);
+        await persistScenarioPackToD1(pack);
         emit("persisted", {
           action: "generate",
           packId: pack.id,
@@ -1870,6 +1938,7 @@ export default defineApp([
           codexExecution.parsedOutput,
         );
         const run = createScenarioRun(runInput);
+        await persistScenarioRunToD1(run);
         for (const item of run.items) {
           emit("status", {
             action: "execute",
@@ -1899,6 +1968,7 @@ export default defineApp([
           );
           if (fixInput) {
             fixAttempt = createFixAttempt(fixInput);
+            await persistFixAttemptToD1(fixAttempt);
             for (const scenarioId of fixAttempt.failedScenarioIds) {
               emit("status", {
                 action: "execute",
@@ -1942,6 +2012,7 @@ export default defineApp([
             codexExecution.parsedOutput,
           );
           pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
+          await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
           for (const pr of pullRequests) {
             for (const scenarioId of pr.scenarioIds) {
               emit("status", {
@@ -2107,6 +2178,7 @@ export default defineApp([
       }
 
       const pack = createScenarioPack(scenarioPackInput);
+      await persistScenarioPackToD1(pack);
       return json(
         {
           pack,
@@ -2189,6 +2261,7 @@ export default defineApp([
         codexExecution.parsedOutput,
       );
       const run = createScenarioRun(runInput);
+      await persistScenarioRunToD1(run);
 
       let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
       if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
@@ -2200,6 +2273,7 @@ export default defineApp([
         );
         if (fixInput) {
           fixAttempt = createFixAttempt(fixInput);
+          await persistFixAttemptToD1(fixAttempt);
         }
       }
 
@@ -2212,6 +2286,7 @@ export default defineApp([
           codexExecution.parsedOutput,
         );
         pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
+        await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
       }
 
       return json(
@@ -2351,6 +2426,7 @@ export default defineApp([
         }
 
         const pack = createScenarioPack(scenarioPackInput);
+        await persistScenarioPackToD1(pack);
         return json({ pack }, 201);
       }
 
@@ -2452,6 +2528,7 @@ export default defineApp([
           selectedScenarioIds: scenarioIds,
         });
         const run = createScenarioRun(runInput);
+        await persistScenarioRunToD1(run);
 
         return json({ run }, 201);
       }
@@ -2516,6 +2593,7 @@ export default defineApp([
           run,
         });
         const fixAttempt = createFixAttempt(fixAttemptInput);
+        await persistFixAttemptToD1(fixAttempt);
         return json({ fixAttempt }, 201);
       }
 
@@ -2564,6 +2642,7 @@ export default defineApp([
           fixAttempt,
         });
         const pullRequest = createPullRequestRecord(pullRequestInput);
+        await persistPullRequestToD1(pullRequest);
         return json({ pullRequest }, 201);
       }
 

@@ -877,6 +877,14 @@ interface HydrateCoreStateInput {
   projects: Project[];
   sessions: CodexSession[];
   githubConnections?: GitHubConnection[];
+  sources?: SourceRecord[];
+  sourceManifests?: SourceManifest[];
+  codeBaselines?: CodeBaseline[];
+  scenarioPacks?: ScenarioPack[];
+  scenarioRuns?: ScenarioRun[];
+  fixAttempts?: FixAttempt[];
+  pullRequests?: PullRequestRecord[];
+  projectPrReadinessChecks?: ProjectPrReadiness[];
   mode?: "merge" | "replacePersisted";
 }
 
@@ -890,6 +898,14 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
       normalizeSessionModel({ ...session }),
     );
     state.githubConnections = [...(input.githubConnections ?? [])];
+    state.sources = [...(input.sources ?? [])];
+    state.sourceManifests = [...(input.sourceManifests ?? [])];
+    state.codeBaselines = [...(input.codeBaselines ?? [])];
+    state.scenarioPacks = [...(input.scenarioPacks ?? [])];
+    state.scenarioRuns = [...(input.scenarioRuns ?? [])];
+    state.fixAttempts = [...(input.fixAttempts ?? [])];
+    state.pullRequests = [...(input.pullRequests ?? [])];
+    state.projectPrReadinessChecks = [...(input.projectPrReadinessChecks ?? [])];
     return;
   }
 
@@ -918,5 +934,37 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
     }
 
     state.githubConnections[existingIndex] = connection;
+  });
+
+  (input.sources ?? []).forEach((source) => {
+    replaceById(state.sources, source);
+  });
+
+  (input.sourceManifests ?? []).forEach((manifest) => {
+    replaceById(state.sourceManifests, manifest);
+  });
+
+  (input.codeBaselines ?? []).forEach((baseline) => {
+    replaceById(state.codeBaselines, baseline);
+  });
+
+  (input.scenarioPacks ?? []).forEach((pack) => {
+    replaceById(state.scenarioPacks, pack);
+  });
+
+  (input.scenarioRuns ?? []).forEach((run) => {
+    replaceById(state.scenarioRuns, run);
+  });
+
+  (input.fixAttempts ?? []).forEach((attempt) => {
+    replaceById(state.fixAttempts, attempt);
+  });
+
+  (input.pullRequests ?? []).forEach((record) => {
+    replaceById(state.pullRequests, record);
+  });
+
+  (input.projectPrReadinessChecks ?? []).forEach((readiness) => {
+    replaceById(state.projectPrReadinessChecks, readiness);
   });
 };

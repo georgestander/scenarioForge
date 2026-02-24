@@ -1,9 +1,17 @@
 import { env } from "cloudflare:workers";
 import type {
   AuthPrincipal,
+  CodeBaseline,
   CodexSession,
+  FixAttempt,
   GitHubConnection,
   Project,
+  ProjectPrReadiness,
+  PullRequestRecord,
+  ScenarioPack,
+  ScenarioRun,
+  SourceManifest,
+  SourceRecord,
 } from "@/domain/models";
 import { hydrateCoreState } from "@/services/store";
 
@@ -143,6 +151,208 @@ const ensureTables = async (db: D1Database): Promise<void> => {
     )
     .run();
 
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_sources (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        repository_full_name TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        head_commit_sha TEXT NOT NULL,
+        last_commit_sha TEXT,
+        path TEXT NOT NULL,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        last_modified_at TEXT NOT NULL,
+        alignment_score REAL NOT NULL,
+        is_conflicting INTEGER NOT NULL,
+        relevance_score REAL NOT NULL,
+        status TEXT NOT NULL,
+        selected INTEGER NOT NULL,
+        warnings_json TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_source_manifests (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        repository_full_name TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        head_commit_sha TEXT NOT NULL,
+        source_ids_json TEXT NOT NULL,
+        source_paths_json TEXT NOT NULL,
+        source_hashes_json TEXT NOT NULL,
+        status_counts_json TEXT NOT NULL,
+        includes_stale INTEGER NOT NULL,
+        includes_conflicts INTEGER NOT NULL,
+        user_confirmed INTEGER NOT NULL,
+        confirmation_note TEXT NOT NULL,
+        confirmed_at TEXT,
+        code_baseline_id TEXT NOT NULL,
+        code_baseline_hash TEXT NOT NULL,
+        code_baseline_generated_at TEXT NOT NULL,
+        manifest_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_code_baselines (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        repository_full_name TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        head_commit_sha TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        baseline_hash TEXT NOT NULL,
+        route_map_json TEXT NOT NULL,
+        api_surface_json TEXT NOT NULL,
+        state_transitions_json TEXT NOT NULL,
+        async_boundaries_json TEXT NOT NULL,
+        domain_entities_json TEXT NOT NULL,
+        integrations_json TEXT NOT NULL,
+        error_paths_json TEXT NOT NULL,
+        likely_failure_points_json TEXT NOT NULL,
+        evidence_anchors_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_scenario_packs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        manifest_id TEXT NOT NULL,
+        manifest_hash TEXT NOT NULL,
+        repository_full_name TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        head_commit_sha TEXT NOT NULL,
+        source_ids_json TEXT NOT NULL,
+        model TEXT NOT NULL,
+        generation_audit_json TEXT NOT NULL,
+        coverage_json TEXT NOT NULL,
+        grouped_by_feature_json TEXT NOT NULL,
+        grouped_by_outcome_json TEXT NOT NULL,
+        scenarios_json TEXT NOT NULL,
+        scenarios_markdown TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_scenario_runs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        scenario_pack_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        items_json TEXT NOT NULL,
+        summary_json TEXT NOT NULL,
+        events_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_fix_attempts (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        scenario_run_id TEXT NOT NULL,
+        failed_scenario_ids_json TEXT NOT NULL,
+        probable_root_cause TEXT NOT NULL,
+        patch_summary TEXT NOT NULL,
+        impacted_files_json TEXT NOT NULL,
+        model TEXT NOT NULL,
+        status TEXT NOT NULL,
+        rerun_summary_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_pull_requests (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        fix_attempt_id TEXT NOT NULL,
+        scenario_ids_json TEXT NOT NULL,
+        title TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        status TEXT NOT NULL,
+        root_cause_summary TEXT NOT NULL,
+        rerun_evidence_run_id TEXT,
+        rerun_evidence_summary_json TEXT,
+        risk_notes_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_project_pr_readiness (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        repository_full_name TEXT,
+        branch TEXT NOT NULL,
+        status TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        reasons_json TEXT NOT NULL,
+        recommended_actions_json TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+
   state.tablesReady = true;
 };
 
@@ -212,6 +422,200 @@ export const hydrateCoreStateFromD1 = async (
         created_at,
         updated_at
       FROM sf_github_connections
+    `,
+    )
+    .all();
+  const sourceRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        last_commit_sha,
+        path,
+        title,
+        type,
+        last_modified_at,
+        alignment_score,
+        is_conflicting,
+        relevance_score,
+        status,
+        selected,
+        warnings_json,
+        hash,
+        created_at,
+        updated_at
+      FROM sf_sources
+    `,
+    )
+    .all();
+  const sourceManifestRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        source_ids_json,
+        source_paths_json,
+        source_hashes_json,
+        status_counts_json,
+        includes_stale,
+        includes_conflicts,
+        user_confirmed,
+        confirmation_note,
+        confirmed_at,
+        code_baseline_id,
+        code_baseline_hash,
+        code_baseline_generated_at,
+        manifest_hash,
+        created_at,
+        updated_at
+      FROM sf_source_manifests
+    `,
+    )
+    .all();
+  const codeBaselineRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        generated_at,
+        baseline_hash,
+        route_map_json,
+        api_surface_json,
+        state_transitions_json,
+        async_boundaries_json,
+        domain_entities_json,
+        integrations_json,
+        error_paths_json,
+        likely_failure_points_json,
+        evidence_anchors_json,
+        created_at,
+        updated_at
+      FROM sf_code_baselines
+    `,
+    )
+    .all();
+  const scenarioPackRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        manifest_id,
+        manifest_hash,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        source_ids_json,
+        model,
+        generation_audit_json,
+        coverage_json,
+        grouped_by_feature_json,
+        grouped_by_outcome_json,
+        scenarios_json,
+        scenarios_markdown,
+        created_at,
+        updated_at
+      FROM sf_scenario_packs
+    `,
+    )
+    .all();
+  const scenarioRunRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        scenario_pack_id,
+        status,
+        started_at,
+        completed_at,
+        items_json,
+        summary_json,
+        events_json,
+        created_at,
+        updated_at
+      FROM sf_scenario_runs
+    `,
+    )
+    .all();
+  const fixAttemptRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        scenario_run_id,
+        failed_scenario_ids_json,
+        probable_root_cause,
+        patch_summary,
+        impacted_files_json,
+        model,
+        status,
+        rerun_summary_json,
+        created_at,
+        updated_at
+      FROM sf_fix_attempts
+    `,
+    )
+    .all();
+  const pullRequestRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        project_id,
+        owner_id,
+        fix_attempt_id,
+        scenario_ids_json,
+        title,
+        branch_name,
+        url,
+        status,
+        root_cause_summary,
+        rerun_evidence_run_id,
+        rerun_evidence_summary_json,
+        risk_notes_json,
+        created_at,
+        updated_at
+      FROM sf_pull_requests
+    `,
+    )
+    .all();
+  const prReadinessRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        owner_id,
+        project_id,
+        repository_full_name,
+        branch,
+        status,
+        capabilities_json,
+        reasons_json,
+        recommended_actions_json,
+        checked_at,
+        created_at,
+        updated_at
+      FROM sf_project_pr_readiness
     `,
     )
     .all();
@@ -287,12 +691,229 @@ export const hydrateCoreStateFromD1 = async (
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }));
+  const sources: SourceRecord[] = (sourceRows.results as Array<Record<string, unknown>>).map(
+    (row) => ({
+      id: String(row.id),
+      projectId: String(row.project_id),
+      ownerId: String(row.owner_id),
+      repositoryFullName: String(row.repository_full_name),
+      branch: String(row.branch),
+      headCommitSha: String(row.head_commit_sha),
+      lastCommitSha: row.last_commit_sha ? String(row.last_commit_sha) : null,
+      path: String(row.path),
+      title: String(row.title),
+      type: String(row.type) as SourceRecord["type"],
+      lastModifiedAt: String(row.last_modified_at),
+      alignmentScore: Number(row.alignment_score),
+      isConflicting: Boolean(row.is_conflicting),
+      relevanceScore: Number(row.relevance_score),
+      status: String(row.status) as SourceRecord["status"],
+      selected: Boolean(row.selected),
+      warnings: safeParseJson(String(row.warnings_json), []),
+      hash: String(row.hash),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    }),
+  );
+  const sourceManifests: SourceManifest[] = (
+    sourceManifestRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    repositoryFullName: String(row.repository_full_name),
+    branch: String(row.branch),
+    headCommitSha: String(row.head_commit_sha),
+    sourceIds: safeParseJson(String(row.source_ids_json), []),
+    sourcePaths: safeParseJson(String(row.source_paths_json), []),
+    sourceHashes: safeParseJson(String(row.source_hashes_json), []),
+    statusCounts: safeParseJson(String(row.status_counts_json), {
+      trusted: 0,
+      suspect: 0,
+      stale: 0,
+      excluded: 0,
+    }),
+    includesStale: Boolean(row.includes_stale),
+    includesConflicts: Boolean(row.includes_conflicts),
+    userConfirmed: Boolean(row.user_confirmed),
+    confirmationNote: String(row.confirmation_note ?? ""),
+    confirmedAt: row.confirmed_at ? String(row.confirmed_at) : null,
+    codeBaselineId: String(row.code_baseline_id),
+    codeBaselineHash: String(row.code_baseline_hash),
+    codeBaselineGeneratedAt: String(row.code_baseline_generated_at),
+    manifestHash: String(row.manifest_hash),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const codeBaselines: CodeBaseline[] = (
+    codeBaselineRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    repositoryFullName: String(row.repository_full_name),
+    branch: String(row.branch),
+    headCommitSha: String(row.head_commit_sha),
+    generatedAt: String(row.generated_at),
+    baselineHash: String(row.baseline_hash),
+    routeMap: safeParseJson(String(row.route_map_json), []),
+    apiSurface: safeParseJson(String(row.api_surface_json), []),
+    stateTransitions: safeParseJson(String(row.state_transitions_json), []),
+    asyncBoundaries: safeParseJson(String(row.async_boundaries_json), []),
+    domainEntities: safeParseJson(String(row.domain_entities_json), []),
+    integrations: safeParseJson(String(row.integrations_json), []),
+    errorPaths: safeParseJson(String(row.error_paths_json), []),
+    likelyFailurePoints: safeParseJson(String(row.likely_failure_points_json), []),
+    evidenceAnchors: safeParseJson(String(row.evidence_anchors_json), []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const scenarioPacks: ScenarioPack[] = (
+    scenarioPackRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    manifestId: String(row.manifest_id),
+    manifestHash: String(row.manifest_hash),
+    repositoryFullName: String(row.repository_full_name),
+    branch: String(row.branch),
+    headCommitSha: String(row.head_commit_sha),
+    sourceIds: safeParseJson(String(row.source_ids_json), []),
+    model: String(row.model),
+    generationAudit: safeParseJson(String(row.generation_audit_json), {
+      transport: "codex-app-server",
+      requestedSkill: "",
+      usedSkill: null,
+      skillAvailable: false,
+      skillPath: null,
+      threadId: "",
+      turnId: "",
+      turnStatus: "",
+      cwd: "",
+      generatedAt: String(row.created_at),
+    }),
+    coverage: safeParseJson(String(row.coverage_json), {
+      personas: [],
+      journeys: [],
+      edgeBuckets: [],
+      features: [],
+      outcomes: [],
+      assumptions: [],
+      knownUnknowns: [],
+      uncoveredGaps: [],
+    }),
+    groupedByFeature: safeParseJson(String(row.grouped_by_feature_json), {}),
+    groupedByOutcome: safeParseJson(String(row.grouped_by_outcome_json), {}),
+    scenarios: safeParseJson(String(row.scenarios_json), []),
+    scenariosMarkdown: String(row.scenarios_markdown ?? ""),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const scenarioRuns: ScenarioRun[] = (
+    scenarioRunRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    scenarioPackId: String(row.scenario_pack_id),
+    status: String(row.status) as ScenarioRun["status"],
+    startedAt: row.started_at ? String(row.started_at) : null,
+    completedAt: row.completed_at ? String(row.completed_at) : null,
+    items: safeParseJson(String(row.items_json), []),
+    summary: safeParseJson(String(row.summary_json), {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      blocked: 0,
+    }),
+    events: safeParseJson(String(row.events_json), []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const fixAttempts: FixAttempt[] = (
+    fixAttemptRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    scenarioRunId: String(row.scenario_run_id),
+    failedScenarioIds: safeParseJson(String(row.failed_scenario_ids_json), []),
+    probableRootCause: String(row.probable_root_cause ?? ""),
+    patchSummary: String(row.patch_summary ?? ""),
+    impactedFiles: safeParseJson(String(row.impacted_files_json), []),
+    model: String(row.model ?? ""),
+    status: String(row.status) as FixAttempt["status"],
+    rerunSummary: row.rerun_summary_json
+      ? safeParseJson(String(row.rerun_summary_json), null)
+      : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const pullRequests: PullRequestRecord[] = (
+    pullRequestRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    projectId: String(row.project_id),
+    ownerId: String(row.owner_id),
+    fixAttemptId: String(row.fix_attempt_id),
+    scenarioIds: safeParseJson(String(row.scenario_ids_json), []),
+    title: String(row.title ?? ""),
+    branchName: String(row.branch_name ?? ""),
+    url: String(row.url ?? ""),
+    status: String(row.status) as PullRequestRecord["status"],
+    rootCauseSummary: String(row.root_cause_summary ?? ""),
+    rerunEvidenceRunId: row.rerun_evidence_run_id
+      ? String(row.rerun_evidence_run_id)
+      : null,
+    rerunEvidenceSummary: row.rerun_evidence_summary_json
+      ? safeParseJson(String(row.rerun_evidence_summary_json), null)
+      : null,
+    riskNotes: safeParseJson(String(row.risk_notes_json), []),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
+  const projectPrReadinessChecks: ProjectPrReadiness[] = (
+    prReadinessRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    projectId: String(row.project_id),
+    repositoryFullName: row.repository_full_name
+      ? String(row.repository_full_name)
+      : null,
+    branch: String(row.branch ?? "main"),
+    status: String(row.status) as ProjectPrReadiness["status"],
+    capabilities: safeParseJson(String(row.capabilities_json), {
+      hasGitHubConnection: false,
+      repositoryConfigured: false,
+      repositoryAccessible: false,
+      branchExists: false,
+      canPush: false,
+      canCreateBranch: false,
+      canOpenPr: false,
+      codexBridgeConfigured: false,
+    }),
+    reasons: safeParseJson(String(row.reasons_json), []),
+    recommendedActions: safeParseJson(String(row.recommended_actions_json), []),
+    checkedAt: String(row.checked_at ?? row.updated_at ?? nowIso()),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
 
   hydrateCoreState({
     principals,
     projects,
     sessions,
     githubConnections,
+    sources,
+    sourceManifests,
+    codeBaselines,
+    scenarioPacks,
+    scenarioRuns,
+    fixAttempts,
+    pullRequests,
+    projectPrReadinessChecks,
     mode: "replacePersisted",
   });
 
@@ -512,6 +1133,94 @@ export const reconcilePrincipalIdentityInD1 = async (
         UPDATE sf_github_connections
         SET principal_id = ?
         WHERE principal_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_sources
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_source_manifests
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_code_baselines
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_scenario_packs
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_scenario_runs
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_fix_attempts
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_pull_requests
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_project_pr_readiness
+        SET owner_id = ?
+        WHERE owner_id = ?
       `,
       )
       .bind(canonicalId, aliasId)
@@ -740,6 +1449,566 @@ export const persistGitHubConnectionToD1 = async (
       JSON.stringify(connection.repositories),
       connection.createdAt,
       connection.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistSourceRecordToD1 = async (
+  source: SourceRecord,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_sources (
+        id,
+        project_id,
+        owner_id,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        last_commit_sha,
+        path,
+        title,
+        type,
+        last_modified_at,
+        alignment_score,
+        is_conflicting,
+        relevance_score,
+        status,
+        selected,
+        warnings_json,
+        hash,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        repository_full_name = excluded.repository_full_name,
+        branch = excluded.branch,
+        head_commit_sha = excluded.head_commit_sha,
+        last_commit_sha = excluded.last_commit_sha,
+        path = excluded.path,
+        title = excluded.title,
+        type = excluded.type,
+        last_modified_at = excluded.last_modified_at,
+        alignment_score = excluded.alignment_score,
+        is_conflicting = excluded.is_conflicting,
+        relevance_score = excluded.relevance_score,
+        status = excluded.status,
+        selected = excluded.selected,
+        warnings_json = excluded.warnings_json,
+        hash = excluded.hash,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      source.id,
+      source.projectId,
+      source.ownerId,
+      source.repositoryFullName,
+      source.branch,
+      source.headCommitSha,
+      source.lastCommitSha,
+      source.path,
+      source.title,
+      source.type,
+      source.lastModifiedAt,
+      source.alignmentScore,
+      source.isConflicting ? 1 : 0,
+      source.relevanceScore,
+      source.status,
+      source.selected ? 1 : 0,
+      JSON.stringify(source.warnings),
+      source.hash,
+      source.createdAt,
+      source.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistSourceManifestToD1 = async (
+  manifest: SourceManifest,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_source_manifests (
+        id,
+        project_id,
+        owner_id,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        source_ids_json,
+        source_paths_json,
+        source_hashes_json,
+        status_counts_json,
+        includes_stale,
+        includes_conflicts,
+        user_confirmed,
+        confirmation_note,
+        confirmed_at,
+        code_baseline_id,
+        code_baseline_hash,
+        code_baseline_generated_at,
+        manifest_hash,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        repository_full_name = excluded.repository_full_name,
+        branch = excluded.branch,
+        head_commit_sha = excluded.head_commit_sha,
+        source_ids_json = excluded.source_ids_json,
+        source_paths_json = excluded.source_paths_json,
+        source_hashes_json = excluded.source_hashes_json,
+        status_counts_json = excluded.status_counts_json,
+        includes_stale = excluded.includes_stale,
+        includes_conflicts = excluded.includes_conflicts,
+        user_confirmed = excluded.user_confirmed,
+        confirmation_note = excluded.confirmation_note,
+        confirmed_at = excluded.confirmed_at,
+        code_baseline_id = excluded.code_baseline_id,
+        code_baseline_hash = excluded.code_baseline_hash,
+        code_baseline_generated_at = excluded.code_baseline_generated_at,
+        manifest_hash = excluded.manifest_hash,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      manifest.id,
+      manifest.projectId,
+      manifest.ownerId,
+      manifest.repositoryFullName,
+      manifest.branch,
+      manifest.headCommitSha,
+      JSON.stringify(manifest.sourceIds),
+      JSON.stringify(manifest.sourcePaths),
+      JSON.stringify(manifest.sourceHashes),
+      JSON.stringify(manifest.statusCounts),
+      manifest.includesStale ? 1 : 0,
+      manifest.includesConflicts ? 1 : 0,
+      manifest.userConfirmed ? 1 : 0,
+      manifest.confirmationNote,
+      manifest.confirmedAt,
+      manifest.codeBaselineId,
+      manifest.codeBaselineHash,
+      manifest.codeBaselineGeneratedAt,
+      manifest.manifestHash,
+      manifest.createdAt,
+      manifest.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistCodeBaselineToD1 = async (
+  baseline: CodeBaseline,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_code_baselines (
+        id,
+        project_id,
+        owner_id,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        generated_at,
+        baseline_hash,
+        route_map_json,
+        api_surface_json,
+        state_transitions_json,
+        async_boundaries_json,
+        domain_entities_json,
+        integrations_json,
+        error_paths_json,
+        likely_failure_points_json,
+        evidence_anchors_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        repository_full_name = excluded.repository_full_name,
+        branch = excluded.branch,
+        head_commit_sha = excluded.head_commit_sha,
+        generated_at = excluded.generated_at,
+        baseline_hash = excluded.baseline_hash,
+        route_map_json = excluded.route_map_json,
+        api_surface_json = excluded.api_surface_json,
+        state_transitions_json = excluded.state_transitions_json,
+        async_boundaries_json = excluded.async_boundaries_json,
+        domain_entities_json = excluded.domain_entities_json,
+        integrations_json = excluded.integrations_json,
+        error_paths_json = excluded.error_paths_json,
+        likely_failure_points_json = excluded.likely_failure_points_json,
+        evidence_anchors_json = excluded.evidence_anchors_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      baseline.id,
+      baseline.projectId,
+      baseline.ownerId,
+      baseline.repositoryFullName,
+      baseline.branch,
+      baseline.headCommitSha,
+      baseline.generatedAt,
+      baseline.baselineHash,
+      JSON.stringify(baseline.routeMap),
+      JSON.stringify(baseline.apiSurface),
+      JSON.stringify(baseline.stateTransitions),
+      JSON.stringify(baseline.asyncBoundaries),
+      JSON.stringify(baseline.domainEntities),
+      JSON.stringify(baseline.integrations),
+      JSON.stringify(baseline.errorPaths),
+      JSON.stringify(baseline.likelyFailurePoints),
+      JSON.stringify(baseline.evidenceAnchors),
+      baseline.createdAt,
+      baseline.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistScenarioPackToD1 = async (
+  pack: ScenarioPack,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_scenario_packs (
+        id,
+        project_id,
+        owner_id,
+        manifest_id,
+        manifest_hash,
+        repository_full_name,
+        branch,
+        head_commit_sha,
+        source_ids_json,
+        model,
+        generation_audit_json,
+        coverage_json,
+        grouped_by_feature_json,
+        grouped_by_outcome_json,
+        scenarios_json,
+        scenarios_markdown,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        manifest_id = excluded.manifest_id,
+        manifest_hash = excluded.manifest_hash,
+        repository_full_name = excluded.repository_full_name,
+        branch = excluded.branch,
+        head_commit_sha = excluded.head_commit_sha,
+        source_ids_json = excluded.source_ids_json,
+        model = excluded.model,
+        generation_audit_json = excluded.generation_audit_json,
+        coverage_json = excluded.coverage_json,
+        grouped_by_feature_json = excluded.grouped_by_feature_json,
+        grouped_by_outcome_json = excluded.grouped_by_outcome_json,
+        scenarios_json = excluded.scenarios_json,
+        scenarios_markdown = excluded.scenarios_markdown,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      pack.id,
+      pack.projectId,
+      pack.ownerId,
+      pack.manifestId,
+      pack.manifestHash,
+      pack.repositoryFullName,
+      pack.branch,
+      pack.headCommitSha,
+      JSON.stringify(pack.sourceIds),
+      pack.model,
+      JSON.stringify(pack.generationAudit),
+      JSON.stringify(pack.coverage),
+      JSON.stringify(pack.groupedByFeature),
+      JSON.stringify(pack.groupedByOutcome),
+      JSON.stringify(pack.scenarios),
+      pack.scenariosMarkdown,
+      pack.createdAt,
+      pack.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistScenarioRunToD1 = async (
+  run: ScenarioRun,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_scenario_runs (
+        id,
+        project_id,
+        owner_id,
+        scenario_pack_id,
+        status,
+        started_at,
+        completed_at,
+        items_json,
+        summary_json,
+        events_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        scenario_pack_id = excluded.scenario_pack_id,
+        status = excluded.status,
+        started_at = excluded.started_at,
+        completed_at = excluded.completed_at,
+        items_json = excluded.items_json,
+        summary_json = excluded.summary_json,
+        events_json = excluded.events_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      run.id,
+      run.projectId,
+      run.ownerId,
+      run.scenarioPackId,
+      run.status,
+      run.startedAt,
+      run.completedAt,
+      JSON.stringify(run.items),
+      JSON.stringify(run.summary),
+      JSON.stringify(run.events),
+      run.createdAt,
+      run.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistFixAttemptToD1 = async (
+  attempt: FixAttempt,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_fix_attempts (
+        id,
+        project_id,
+        owner_id,
+        scenario_run_id,
+        failed_scenario_ids_json,
+        probable_root_cause,
+        patch_summary,
+        impacted_files_json,
+        model,
+        status,
+        rerun_summary_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        scenario_run_id = excluded.scenario_run_id,
+        failed_scenario_ids_json = excluded.failed_scenario_ids_json,
+        probable_root_cause = excluded.probable_root_cause,
+        patch_summary = excluded.patch_summary,
+        impacted_files_json = excluded.impacted_files_json,
+        model = excluded.model,
+        status = excluded.status,
+        rerun_summary_json = excluded.rerun_summary_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      attempt.id,
+      attempt.projectId,
+      attempt.ownerId,
+      attempt.scenarioRunId,
+      JSON.stringify(attempt.failedScenarioIds),
+      attempt.probableRootCause,
+      attempt.patchSummary,
+      JSON.stringify(attempt.impactedFiles),
+      attempt.model,
+      attempt.status,
+      attempt.rerunSummary ? JSON.stringify(attempt.rerunSummary) : null,
+      attempt.createdAt,
+      attempt.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistPullRequestToD1 = async (
+  record: PullRequestRecord,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_pull_requests (
+        id,
+        project_id,
+        owner_id,
+        fix_attempt_id,
+        scenario_ids_json,
+        title,
+        branch_name,
+        url,
+        status,
+        root_cause_summary,
+        rerun_evidence_run_id,
+        rerun_evidence_summary_json,
+        risk_notes_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        owner_id = excluded.owner_id,
+        fix_attempt_id = excluded.fix_attempt_id,
+        scenario_ids_json = excluded.scenario_ids_json,
+        title = excluded.title,
+        branch_name = excluded.branch_name,
+        url = excluded.url,
+        status = excluded.status,
+        root_cause_summary = excluded.root_cause_summary,
+        rerun_evidence_run_id = excluded.rerun_evidence_run_id,
+        rerun_evidence_summary_json = excluded.rerun_evidence_summary_json,
+        risk_notes_json = excluded.risk_notes_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      record.id,
+      record.projectId,
+      record.ownerId,
+      record.fixAttemptId,
+      JSON.stringify(record.scenarioIds),
+      record.title,
+      record.branchName,
+      record.url,
+      record.status,
+      record.rootCauseSummary,
+      record.rerunEvidenceRunId,
+      record.rerunEvidenceSummary
+        ? JSON.stringify(record.rerunEvidenceSummary)
+        : null,
+      JSON.stringify(record.riskNotes),
+      record.createdAt,
+      record.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistProjectPrReadinessToD1 = async (
+  readiness: ProjectPrReadiness,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_project_pr_readiness (
+        id,
+        owner_id,
+        project_id,
+        repository_full_name,
+        branch,
+        status,
+        capabilities_json,
+        reasons_json,
+        recommended_actions_json,
+        checked_at,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        owner_id = excluded.owner_id,
+        project_id = excluded.project_id,
+        repository_full_name = excluded.repository_full_name,
+        branch = excluded.branch,
+        status = excluded.status,
+        capabilities_json = excluded.capabilities_json,
+        reasons_json = excluded.reasons_json,
+        recommended_actions_json = excluded.recommended_actions_json,
+        checked_at = excluded.checked_at,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      readiness.id,
+      readiness.ownerId,
+      readiness.projectId,
+      readiness.repositoryFullName,
+      readiness.branch,
+      readiness.status,
+      JSON.stringify(readiness.capabilities),
+      JSON.stringify(readiness.reasons),
+      JSON.stringify(readiness.recommendedActions),
+      readiness.checkedAt,
+      readiness.createdAt,
+      readiness.updatedAt || nowIso(),
     )
     .run();
 };
