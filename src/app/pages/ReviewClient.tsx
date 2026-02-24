@@ -92,53 +92,21 @@ export const ReviewClient = ({
         </p>
       ) : null}
 
-      {/* Scenario list */}
-      {selectedPack ? (
-        <div style={{ display: "grid", gap: "0.6rem" }}>
-          {selectedPack.scenarios.map((scenario) => (
-            <div
-              key={scenario.id}
-              style={{
-                border: "1px solid var(--forge-line)",
-                borderRadius: "8px",
-                padding: "0.65rem 0.75rem",
-                textAlign: "left",
-              }}
-            >
-              <p style={{ margin: 0, fontSize: "0.92rem", fontWeight: 600, color: "var(--forge-ink)" }}>
-                {scenario.title}
-              </p>
-              <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: "var(--forge-muted)", lineHeight: 1.45 }}>
-                {scenario.passCriteria}
-              </p>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p style={{ textAlign: "center", color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
-          No scenario pack selected.
-        </p>
-      )}
-
-      {/* Download + Run buttons */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+      {/* Buttons — at top */}
+      <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center", flexWrap: "wrap" }}>
         <button
           type="button"
           onClick={() => handleDownloadArtifact("markdown")}
           disabled={!selectedPack}
-          style={{
-            borderColor: "var(--forge-line)",
-            background: "transparent",
-          }}
+          style={{ borderColor: "var(--forge-line)", background: "transparent" }}
         >
           download
         </button>
         <a
           href={`/projects/${projectId}/execute`}
           style={{
-            display: "flex",
+            display: "inline-flex",
             alignItems: "center",
-            justifyContent: "center",
             padding: "0.52rem 0.75rem",
             borderRadius: "7px",
             border: "1px solid #7f482b",
@@ -155,16 +123,13 @@ export const ReviewClient = ({
         </a>
       </div>
 
-      {/* Update instruction */}
-      <div style={{ borderTop: "1px solid var(--forge-line)", paddingTop: "0.75rem", display: "grid", gap: "0.4rem" }}>
-        <label style={{ fontSize: "0.84rem", color: "var(--forge-muted)" }}>
-          Update instruction
-        </label>
+      {/* Update instruction — at top, below buttons */}
+      <div style={{ display: "flex", gap: "0.4rem", alignItems: "end" }}>
         <input
           value={updateInstruction}
           onChange={(e) => setUpdateInstruction(e.target.value)}
           placeholder="e.g. add checkout edge cases"
-          style={{ width: "100%", boxSizing: "border-box" }}
+          style={{ flex: 1, boxSizing: "border-box" }}
         />
         <button
           type="button"
@@ -173,11 +138,85 @@ export const ReviewClient = ({
           style={{
             borderColor: "#3f557f",
             background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+            whiteSpace: "nowrap",
           }}
         >
-          {isUpdating ? "Updating..." : "Update Scenarios"}
+          {isUpdating ? "Updating..." : "Update"}
         </button>
       </div>
+
+      {/* Scenario accordions — scrollable */}
+      {selectedPack ? (
+        <div style={{
+          maxHeight: "calc(100vh - 340px)",
+          minHeight: "120px",
+          overflowY: "auto",
+          display: "grid",
+          gap: "0.35rem",
+        }}>
+          {selectedPack.scenarios.map((scenario) => (
+            <details
+              key={scenario.id}
+              style={{
+                border: "1px solid var(--forge-line)",
+                borderRadius: "7px",
+                textAlign: "left",
+              }}
+            >
+              <summary style={{
+                padding: "0.5rem 0.65rem",
+                fontSize: "0.84rem",
+                fontWeight: 600,
+                color: "var(--forge-ink)",
+                cursor: "pointer",
+                listStyle: "none",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.4rem",
+              }}>
+                <span style={{ color: "var(--forge-muted)", fontSize: "0.7rem", flexShrink: 0 }}>&#9654;</span>
+                {scenario.title}
+              </summary>
+              <div style={{
+                padding: "0 0.65rem 0.55rem",
+                fontSize: "0.78rem",
+                color: "var(--forge-muted)",
+                lineHeight: 1.5,
+                display: "grid",
+                gap: "0.3rem",
+              }}>
+                <p style={{ margin: 0 }}>
+                  <strong style={{ color: "var(--forge-ink)" }}>Pass criteria:</strong> {scenario.passCriteria}
+                </p>
+                {scenario.persona && (
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Persona:</strong> {scenario.persona}
+                  </p>
+                )}
+                {scenario.steps.length > 0 && (
+                  <div>
+                    <strong style={{ color: "var(--forge-ink)" }}>Steps:</strong>
+                    <ol style={{ margin: "0.15rem 0 0", paddingLeft: "1.2rem" }}>
+                      {scenario.steps.map((step, i) => (
+                        <li key={i}>{step}</li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+                {scenario.edgeVariants.length > 0 && (
+                  <p style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--forge-ink)" }}>Edge variants:</strong> {scenario.edgeVariants.join("; ")}
+                  </p>
+                )}
+              </div>
+            </details>
+          ))}
+        </div>
+      ) : (
+        <p style={{ textAlign: "center", color: "var(--forge-muted)", fontSize: "0.84rem", margin: 0 }}>
+          No scenario pack selected.
+        </p>
+      )}
     </section>
   );
 };
