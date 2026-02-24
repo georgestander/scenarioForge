@@ -31,6 +31,10 @@ export const GenerateClient = ({
     () => codexStreamEvents.filter((e) => e.action === "generate"),
     [codexStreamEvents],
   );
+  const generateEventsNewestFirst = useMemo(
+    () => [...generateEvents].reverse(),
+    [generateEvents],
+  );
   const scenarioStatuses = useMemo(() => {
     const byScenarioId = new Map<string, { status: string; message: string }>();
     for (const event of generateEvents) {
@@ -152,7 +156,7 @@ export const GenerateClient = ({
       )}
 
       {/* Streaming events — scrollable container */}
-      {generateEvents.length > 0 && (
+      {generateEventsNewestFirst.length > 0 && (
         <ul style={{
           margin: 0,
           padding: 0,
@@ -162,11 +166,10 @@ export const GenerateClient = ({
           textAlign: "left",
           fontSize: "0.82rem",
           color: "var(--forge-muted)",
-          maxHeight: "calc(100vh - 320px)",
-          minHeight: "80px",
+          height: "180px",
           overflowY: "auto",
         }}>
-          {generateEvents.map((event) => (
+          {generateEventsNewestFirst.map((event) => (
             <li key={event.id} style={{ lineHeight: 1.4 }}>
               <span style={{ color: "var(--forge-fire)", marginRight: "0.4rem" }}>*</span>
               {event.message}
