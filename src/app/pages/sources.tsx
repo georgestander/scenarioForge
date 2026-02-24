@@ -2,6 +2,7 @@ import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
 import { redirect } from "@/app/shared/api";
 import {
+  getLatestCodeBaselineForProject,
   getProjectByIdForOwner,
   getGitHubConnectionForPrincipal,
   listSourcesForProject,
@@ -32,6 +33,7 @@ export const SourcesPage = ({ ctx, params }: AppRequestInfo) => {
 
   const sources = listSourcesForProject(principal.id, projectId);
   const manifests = listSourceManifestsForProject(principal.id, projectId);
+  const codeBaseline = getLatestCodeBaselineForProject(principal.id, projectId);
 
   return (
     <SourcesClient
@@ -39,6 +41,7 @@ export const SourcesPage = ({ ctx, params }: AppRequestInfo) => {
       project={project}
       initialSources={sources}
       initialManifests={manifests}
+      initialCodeBaseline={codeBaseline}
     />
   );
 };

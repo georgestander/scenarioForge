@@ -52,13 +52,14 @@ import {
   getGitHubInstallUrl,
   issueGitHubConnectState,
 } from "@/services/githubApp";
+import { isCodeFirstGenerationEnabled } from "@/services/featureFlags";
 import { evaluateProjectPrReadiness } from "@/services/prReadiness";
 import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
 import { createScenarioRunRecord } from "@/services/runEngine";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
 import {
   buildSourceManifest,
-  scanSourcesForProject,
+  scanSourcesAndCodeBaselineForProject,
   validateGenerationSelection,
 } from "@/services/sourceGate";
 import {
@@ -72,6 +73,7 @@ import {
   disconnectGitHubConnectionForPrincipal,
   getFixAttemptById,
   getGitHubConnectionForPrincipal,
+  getLatestCodeBaselineForProject,
   getLatestGitHubConnectionForPrincipal,
   getLatestProjectPrReadinessForProject,
   getLatestSourceManifestForProject,
@@ -89,6 +91,7 @@ import {
   listSourcesForProject,
   updateSourceSelections,
   upsertGitHubConnection,
+  upsertProjectCodeBaseline,
   upsertProjectPrReadinessCheck,
   upsertProjectRecord,
   upsertProjectSources,
@@ -1450,7 +1453,7 @@ export default defineApp([
 
       let scanned;
       try {
-        scanned = await scanSourcesForProject(
+        scanned = await scanSourcesAndCodeBaselineForProject(
           project,
           principal.id,
           githubConnection.repositories,
@@ -1474,10 +1477,11 @@ export default defineApp([
       const data = upsertProjectSources({
         ownerId: principal.id,
         projectId: project.id,
-        sources: scanned,
+        sources: scanned.sources,
       });
+      const codeBaseline = upsertProjectCodeBaseline(scanned.codeBaseline);
 
-      return json({ data });
+      return json({ data, codeBaseline });
     },
   ]),
   route("/api/projects/:projectId/sources", [
@@ -1537,9 +1541,10 @@ export default defineApp([
         const confirmationNote = String(payload?.confirmationNote ?? "");
 
         const allSources = listSourcesForProject(principal.id, project.id);
-        if (allSources.length === 0) {
+        const codeBaseline = getLatestCodeBaselineForProject(principal.id, project.id);
+        if (isCodeFirstGenerationEnabled() && !codeBaseline) {
           return json(
-            { error: "Scan repository sources before creating a manifest." },
+            { error: "Code baseline is required. Scan sources to build the baseline first." },
             400,
           );
         }
@@ -1563,11 +1568,14 @@ export default defineApp([
         );
         const fallbackSource = finalSelectedSources[0] ?? updatedSources[0] ?? null;
         const repositoryFullName =
+          codeBaseline?.repositoryFullName ??
           fallbackSource?.repositoryFullName ??
           parseGitHubRepoFullNameFromUrl(project.repoUrl) ??
           "unknown";
-        const branch = fallbackSource?.branch ?? project.defaultBranch ?? "main";
-        const headCommitSha = fallbackSource?.headCommitSha ?? "unknown";
+        const branch =
+          codeBaseline?.branch ?? fallbackSource?.branch ?? project.defaultBranch ?? "main";
+        const headCommitSha =
+          codeBaseline?.headCommitSha ?? fallbackSource?.headCommitSha ?? "unknown";
         const manifestInput = buildSourceManifest({
           ownerId: principal.id,
           projectId: project.id,
@@ -1577,6 +1585,9 @@ export default defineApp([
           headCommitSha,
           userConfirmed,
           confirmationNote,
+          codeBaselineId: codeBaseline?.id,
+          codeBaselineHash: codeBaseline?.baselineHash,
+          codeBaselineGeneratedAt: codeBaseline?.generatedAt,
         });
 
         const manifest = createSourceManifest(manifestInput);
@@ -1586,6 +1597,7 @@ export default defineApp([
           selectedSources: finalSelectedSources,
           includesStale: validation.includesStale,
           includesConflicts: validation.includesConflicts,
+          codeBaseline,
         });
       }
 
@@ -1625,8 +1637,8 @@ export default defineApp([
       const selectedSources = listSourcesForProject(principal.id, project.id).filter(
         (source) => manifest.sourceIds.includes(source.id),
       );
-      if (selectedSources.length === 0) {
-        return json({ error: "Manifest contains no selected sources." }, 400);
+      if (manifest.sourceIds.length > 0 && selectedSources.length === 0) {
+        return json({ error: "Manifest selected sources could not be resolved." }, 400);
       }
 
       const modeValue = String(payload?.mode ?? "initial")
@@ -1989,8 +2001,8 @@ export default defineApp([
       const selectedSources = listSourcesForProject(principal.id, project.id).filter(
         (source) => manifest.sourceIds.includes(source.id),
       );
-      if (selectedSources.length === 0) {
-        return json({ error: "Manifest contains no selected sources." }, 400);
+      if (manifest.sourceIds.length > 0 && selectedSources.length === 0) {
+        return json({ error: "Manifest selected sources could not be resolved." }, 400);
       }
 
       const modeValue = String(payload?.mode ?? "initial")
@@ -2233,8 +2245,8 @@ export default defineApp([
           manifest.sourceIds.includes(source.id),
         );
 
-        if (sources.length === 0) {
-          return json({ error: "Manifest contains no selected sources." }, 400);
+        if (manifest.sourceIds.length > 0 && sources.length === 0) {
+          return json({ error: "Manifest selected sources could not be resolved." }, 400);
         }
 
         const githubConnection = await ensureGitHubConnectionForPrincipal(

@@ -1,13 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { Project, ProjectPrReadiness, SourceManifest, SourceRecord } from "@/domain/models";
+import type {
+  CodeBaseline,
+  Project,
+  ProjectPrReadiness,
+  SourceManifest,
+  SourceRecord,
+} from "@/domain/models";
 import { readError } from "@/app/shared/api";
 import { useSession } from "@/app/shared/SessionContext";
 import type {
-  CollectionPayload,
   ManifestCreatePayload,
   ProjectPrReadinessPayload,
+  SourcesScanPayload,
 } from "@/app/shared/types";
 
 export const SourcesClient = ({
@@ -15,11 +21,13 @@ export const SourcesClient = ({
   project,
   initialSources,
   initialManifests,
+  initialCodeBaseline,
 }: {
   projectId: string;
   project: Project;
   initialSources: SourceRecord[];
   initialManifests: SourceManifest[];
+  initialCodeBaseline: CodeBaseline | null;
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [sources, setSources] = useState<SourceRecord[]>(initialSources);
@@ -27,6 +35,7 @@ export const SourcesClient = ({
     initialSources.filter((s) => s.selected).map((s) => s.id),
   );
   const [manifests, setManifests] = useState<SourceManifest[]>(initialManifests);
+  const [codeBaseline, setCodeBaseline] = useState<CodeBaseline | null>(initialCodeBaseline);
   const [confirmationNote, setConfirmationNote] = useState("Confirmed against current product direction.");
   const [includeStaleConfirmed, setIncludeStaleConfirmed] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -49,18 +58,21 @@ export const SourcesClient = ({
   const handleScanSources = async () => {
     if (isScanning) return;
     setIsScanning(true);
-    setStatusMessage("Scanning repository for planning sources...");
+    setStatusMessage("Scanning repository and building code baseline...");
     try {
       const response = await fetch(`/api/projects/${projectId}/sources/scan`, { method: "POST" });
       if (!response.ok) {
         setStatusMessage(await readError(response, "Failed to scan sources."));
         return;
       }
-      const payload = (await response.json()) as CollectionPayload<SourceRecord>;
+      const payload = (await response.json()) as SourcesScanPayload;
       const scanned = payload.data ?? [];
       setSources(scanned);
       setSelectedSourceIds(scanned.filter((s) => s.selected).map((s) => s.id));
-      setStatusMessage(`Scanned ${scanned.length} sources. Review and select below.`);
+      setCodeBaseline(payload.codeBaseline ?? null);
+      setStatusMessage(
+        `Code baseline captured. Scanned ${scanned.length} optional docs. Review and confirm below.`,
+      );
     } finally {
       setIsScanning(false);
     }
@@ -75,6 +87,10 @@ export const SourcesClient = ({
   const handleCreateScenarios = async () => {
     if (riskySelectedCount > 0 && !includeStaleConfirmed) {
       setStatusMessage("Selected sources include stale or conflicting entries. Check the confirmation toggle.");
+      return;
+    }
+    if (!codeBaseline) {
+      setStatusMessage("Code baseline is required. Scan sources before creating a manifest.");
       return;
     }
 
@@ -95,6 +111,7 @@ export const SourcesClient = ({
 
     const payload = (await response.json()) as ManifestCreatePayload;
     setManifests((current) => [payload.manifest, ...current]);
+    setCodeBaseline(payload.codeBaseline ?? codeBaseline);
     setSources((current) =>
       current.map((s) => ({ ...s, selected: selectedSourceIds.includes(s.id) })),
     );
@@ -237,6 +254,43 @@ export const SourcesClient = ({
             {isCheckingPrReadiness ? "Checking..." : "Check PR readiness"}
           </button>
         </div>
+      </div>
+
+      <div
+        style={{
+          border: "1px solid var(--forge-line)",
+          borderRadius: "8px",
+          background: "rgba(18, 24, 43, 0.6)",
+          padding: "0.55rem 0.65rem",
+          display: "grid",
+          gap: "0.35rem",
+          textAlign: "left",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
+          <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
+            Code baseline (required)
+          </strong>
+          <span
+            style={{
+              fontSize: "0.75rem",
+              color: codeBaseline ? "var(--forge-ok)" : "var(--forge-fire)",
+              fontWeight: 600,
+            }}
+          >
+            {codeBaseline ? "captured" : "missing"}
+          </span>
+        </div>
+        {codeBaseline ? (
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+            routes {codeBaseline.routeMap.length} | apis {codeBaseline.apiSurface.length} | entities{" "}
+            {codeBaseline.domainEntities.length} | integrations {codeBaseline.integrations.length}
+          </p>
+        ) : (
+          <p style={{ margin: 0, color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+            Scan sources to compute route/API/entity baseline before generation.
+          </p>
+        )}
       </div>
 
       {/* Buttons — always at top */}

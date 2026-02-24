@@ -1,4 +1,5 @@
 import type {
+  CodeBaseline,
   GitHubRepository,
   Project,
   SourceManifest,
@@ -54,12 +55,18 @@ interface RepositoryDocSnapshot {
   content: string;
 }
 
+interface RepositoryCodeSample {
+  path: string;
+  content: string;
+}
+
 export interface RepositorySnapshot {
   repositoryFullName: string;
   branch: string;
   headCommitSha: string;
   docs: RepositoryDocSnapshot[];
   codePaths: string[];
+  codeSamples?: RepositoryCodeSample[];
 }
 
 interface ScanSourcesOptions {
@@ -83,6 +90,17 @@ const CODE_FILE_EXTENSIONS = [
   ".kt",
   ".swift",
 ];
+
+const CODE_BASELINE_PRIORITY_FILES = [
+  "src/worker.tsx",
+  "src/domain/models.ts",
+  "src/app/pages/sources.tsx",
+  "src/app/pages/generate.tsx",
+  "src/app/pages/review.tsx",
+  "src/app/pages/execute.tsx",
+];
+
+const CODE_BASELINE_SAMPLE_LIMIT = 24;
 
 const TOKEN_STOPWORDS = new Set([
   "the",
@@ -356,7 +374,13 @@ const githubGet = async <T>(
   return (await response.json()) as T;
 };
 
-const decodeContent = (payload: GitHubContentResponse): string => {
+const encodePathForGitHub = (path: string): string =>
+  path
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+const decodeBase64Content = (payload: GitHubContentResponse): string => {
   if (!payload.content || payload.encoding !== "base64") {
     return "";
   }
@@ -368,11 +392,20 @@ const decodeContent = (payload: GitHubContentResponse): string => {
   }
 };
 
-const encodePathForGitHub = (path: string): string =>
-  path
-    .split("/")
-    .map((part) => encodeURIComponent(part))
-    .join("/");
+const fetchFileContent = async (
+  repositoryFullName: string,
+  branch: string,
+  path: string,
+  githubToken: string,
+  fetchImpl: typeof fetch,
+): Promise<string> => {
+  const contentPayload = await githubGet<GitHubContentResponse>(
+    `/repos/${repositoryFullName}/contents/${encodePathForGitHub(path)}?ref=${encodeURIComponent(branch)}`,
+    githubToken,
+    fetchImpl,
+  );
+  return decodeBase64Content(contentPayload);
+};
 
 const mapWithConcurrency = async <T, R>(
   items: T[],
@@ -435,6 +468,24 @@ const buildRepositorySnapshotFromGitHub = async (
   const codePaths = fileEntries
     .map((entry) => entry.path)
     .filter((path) => isCodePath(path));
+  const prioritizedCodePaths = CODE_BASELINE_PRIORITY_FILES.filter((path) =>
+    codePaths.includes(path),
+  );
+  const appPagePaths = codePaths
+    .filter((path) => path.startsWith("src/app/pages/"))
+    .sort();
+  const domainPaths = codePaths.filter((path) => path.startsWith("src/domain/")).sort();
+  const servicePaths = codePaths
+    .filter((path) => path.startsWith("src/services/"))
+    .sort();
+  const codeSamplePaths = [
+    ...new Set([
+      ...prioritizedCodePaths,
+      ...appPagePaths,
+      ...domainPaths,
+      ...servicePaths,
+    ]),
+  ].slice(0, CODE_BASELINE_SAMPLE_LIMIT);
 
   const docs = await mapWithConcurrency(docEntries, 6, async (entry) => {
     const commitItems = await githubGet<GitHubCommitItem[]>(
@@ -463,9 +514,20 @@ const buildRepositorySnapshotFromGitHub = async (
       lastModifiedAt,
       lastCommitSha: latestCommit?.sha ?? null,
       blobSha: contentPayload.sha ?? entry.sha,
-      content: decodeContent(contentPayload),
+      content: decodeBase64Content(contentPayload),
     };
   });
+
+  const codeSamples = await mapWithConcurrency(codeSamplePaths, 6, async (path) => ({
+    path,
+    content: await fetchFileContent(
+      repository.fullName,
+      branch,
+      path,
+      githubToken,
+      fetchImpl,
+    ),
+  }));
 
   return {
     repositoryFullName: repository.fullName,
@@ -473,6 +535,7 @@ const buildRepositorySnapshotFromGitHub = async (
     headCommitSha,
     docs,
     codePaths,
+    codeSamples,
   };
 };
 
@@ -508,6 +571,18 @@ export const scanSourcesForProject = async (
   repositories: GitHubRepository[] = [],
   options: ScanSourcesOptions = {},
 ): Promise<Omit<SourceRecord, "id" | "createdAt" | "updatedAt">[]> => {
+  const snapshot = await resolveSnapshot(project, repositories, options);
+  if (!snapshot) {
+    return [];
+  }
+  return mapSourcesFromSnapshot(project, ownerId, snapshot);
+};
+
+const resolveSnapshot = async (
+  project: Project,
+  repositories: GitHubRepository[],
+  options: ScanSourcesOptions,
+): Promise<RepositorySnapshot | null> => {
   const strict = options.strict ?? false;
   const fetchImpl = options.fetchImpl ?? fetch;
   const githubToken = options.githubToken?.trim() ?? "";
@@ -519,7 +594,7 @@ export const scanSourcesForProject = async (
       if (strict) {
         throw new Error("GitHub installation token is required to scan repository sources.");
       }
-      return [];
+      return null;
     }
 
     snapshot = await buildRepositorySnapshotFromGitHub(
@@ -530,6 +605,14 @@ export const scanSourcesForProject = async (
     );
   }
 
+  return snapshot;
+};
+
+const mapSourcesFromSnapshot = (
+  project: Project,
+  ownerId: string,
+  snapshot: RepositorySnapshot,
+): Omit<SourceRecord, "id" | "createdAt" | "updatedAt">[] => {
   const codeSymbols = buildCodeSymbolSet(snapshot.codePaths);
 
   return snapshot.docs
@@ -594,6 +677,236 @@ export const scanSourcesForProject = async (
         ),
       };
     });
+};
+
+const matchAll = (value: string, expression: RegExp): string[] => {
+  const output: string[] = [];
+  for (const match of value.matchAll(expression)) {
+    const candidate = String(match[1] ?? "").trim();
+    if (candidate) {
+      output.push(candidate);
+    }
+  }
+  return output;
+};
+
+const normalizeUnique = (items: string[]): string[] =>
+  [...new Set(items.map((item) => item.trim()).filter((item) => item.length > 0))];
+
+const inferRoutesFromPagePaths = (paths: string[]): string[] => {
+  const inferred = paths
+    .filter((path) => path.startsWith("src/app/pages/") && path.endsWith(".tsx"))
+    .map((path) => path.replace("src/app/pages/", "").replace(/\.tsx$/, ""))
+    .flatMap((name) => {
+      if (name === "home") return ["/"];
+      if (name === "dashboard") return ["/dashboard"];
+      if (name === "connect") return ["/projects/:projectId/connect"];
+      if (name === "sources") return ["/projects/:projectId/sources"];
+      if (name === "generate") return ["/projects/:projectId/generate"];
+      if (name === "review") return ["/projects/:projectId/review"];
+      if (name === "execute") return ["/projects/:projectId/execute"];
+      if (name === "completed") return ["/projects/:projectId/completed"];
+      return [];
+    });
+  return normalizeUnique(inferred);
+};
+
+const collectIntegrationSignals = (snapshot: RepositorySnapshot): string[] => {
+  const surface = `${snapshot.codePaths.join("\n")}\n${(snapshot.codeSamples ?? [])
+    .map((sample) => `${sample.path}\n${sample.content}`)
+    .join("\n")}`.toLowerCase();
+  const integrations: string[] = [];
+  if (surface.includes("github")) integrations.push("GitHub App installation/token APIs");
+  if (surface.includes("codex")) integrations.push("Codex app-server bridge");
+  if (surface.includes("chatgpt")) integrations.push("ChatGPT auth/session bridge");
+  if (surface.includes("d1database") || surface.includes("scenarioforge_db")) {
+    integrations.push("Cloudflare D1 persistence");
+  }
+  if (surface.includes("cloudflare:workers")) integrations.push("Cloudflare Workers runtime");
+  return normalizeUnique(integrations);
+};
+
+const collectDomainEntities = (snapshot: RepositorySnapshot): string[] => {
+  const modelsSample = (snapshot.codeSamples ?? []).find(
+    (sample) => sample.path === "src/domain/models.ts",
+  );
+  if (!modelsSample || !modelsSample.content.trim()) {
+    return [];
+  }
+  const interfaces = matchAll(modelsSample.content, /export interface (\w+)/g);
+  const typeAliases = matchAll(modelsSample.content, /export type (\w+)/g);
+  return normalizeUnique([...interfaces, ...typeAliases]).slice(0, 30);
+};
+
+const collectApiAndRoutes = (
+  snapshot: RepositorySnapshot,
+): { routeMap: string[]; apiSurface: string[]; errorPaths: string[] } => {
+  const workerSample = (snapshot.codeSamples ?? []).find(
+    (sample) => sample.path === "src/worker.tsx",
+  );
+  const inferredRoutes = inferRoutesFromPagePaths(snapshot.codePaths);
+  if (!workerSample) {
+    return {
+      routeMap: inferredRoutes,
+      apiSurface: [],
+      errorPaths: [],
+    };
+  }
+
+  const routes = normalizeUnique(
+    matchAll(workerSample.content, /route\(\s*["'`]([^"'`]+)["'`]/g),
+  );
+  const apiSurface = routes
+    .filter((route) => route.startsWith("/api/"))
+    .map((route) => `API ${route}`);
+  const routeMap = normalizeUnique([
+    ...routes.filter((route) => !route.startsWith("/api/")),
+    ...inferredRoutes,
+  ]);
+  const errorPaths = normalizeUnique(
+    matchAll(workerSample.content, /return json\(\{\s*error:\s*["'`]([^"'`]+)/g).map(
+      (value) => `worker:${value}`,
+    ),
+  );
+
+  return {
+    routeMap,
+    apiSurface,
+    errorPaths,
+  };
+};
+
+const collectAsyncBoundaries = (snapshot: RepositorySnapshot): string[] => {
+  const boundaries: string[] = [];
+  const workerSample = (snapshot.codeSamples ?? []).find(
+    (sample) => sample.path === "src/worker.tsx",
+  );
+  if (workerSample?.content.includes("createSseResponse")) {
+    boundaries.push("SSE action streaming boundaries (generate/execute)");
+  }
+  if (workerSample?.content.includes("await fetch")) {
+    boundaries.push("External fetch boundaries in worker handlers");
+  }
+  if (snapshot.codePaths.some((path) => path.includes("codexExecute"))) {
+    boundaries.push("Codex execute turn boundary");
+  }
+  if (snapshot.codePaths.some((path) => path.includes("codexScenario"))) {
+    boundaries.push("Codex generate turn boundary");
+  }
+  if (snapshot.codePaths.some((path) => path.includes("prReadiness"))) {
+    boundaries.push("GitHub readiness preflight boundary");
+  }
+  return normalizeUnique(boundaries);
+};
+
+const collectStateTransitions = (routeMap: string[]): string[] => {
+  const transitions: string[] = [];
+  const ordered = [
+    "/projects/:projectId/connect",
+    "/projects/:projectId/sources",
+    "/projects/:projectId/generate",
+    "/projects/:projectId/review",
+    "/projects/:projectId/execute",
+    "/projects/:projectId/completed",
+  ];
+  const presentOrdered = ordered.filter((route) => routeMap.includes(route));
+  if (presentOrdered.length >= 2) {
+    transitions.push(`Primary flow: ${presentOrdered.join(" -> ")}`);
+  }
+  if (routeMap.includes("/") && routeMap.includes("/dashboard")) {
+    transitions.push("Entry flow: / -> /dashboard");
+  }
+  return transitions;
+};
+
+const collectLikelyFailurePoints = (
+  integrations: string[],
+  errorPaths: string[],
+): string[] => {
+  const points: string[] = [];
+  if (integrations.some((integration) => integration.toLowerCase().includes("github"))) {
+    points.push("GitHub installation scope/token mismatch can block PR automation");
+  }
+  if (integrations.some((integration) => integration.toLowerCase().includes("codex"))) {
+    points.push("Codex bridge/network failures can halt generate/execute streams");
+  }
+  if (errorPaths.some((path) => path.toLowerCase().includes("manifest"))) {
+    points.push("Manifest preconditions can block generation when source state is incomplete");
+  }
+  points.push("Route guard prerequisites can redirect when project state is incomplete");
+  return normalizeUnique(points);
+};
+
+const buildCodeBaselineFromSnapshot = (
+  project: Project,
+  ownerId: string,
+  snapshot: RepositorySnapshot,
+): Omit<CodeBaseline, "id" | "createdAt" | "updatedAt"> => {
+  const generatedAt = new Date().toISOString();
+  const { routeMap, apiSurface, errorPaths } = collectApiAndRoutes(snapshot);
+  const stateTransitions = collectStateTransitions(routeMap);
+  const asyncBoundaries = collectAsyncBoundaries(snapshot);
+  const domainEntities = collectDomainEntities(snapshot);
+  const integrations = collectIntegrationSignals(snapshot);
+  const likelyFailurePoints = collectLikelyFailurePoints(integrations, errorPaths);
+  const evidenceAnchors = normalizeUnique([
+    ...(snapshot.codeSamples ?? []).map((sample) => sample.path),
+    ...snapshot.codePaths.slice(0, 16),
+  ]).slice(0, 40);
+  const baselineHash = hashText(
+    [
+      snapshot.repositoryFullName,
+      snapshot.branch,
+      snapshot.headCommitSha,
+      routeMap.join("|"),
+      apiSurface.join("|"),
+      stateTransitions.join("|"),
+      asyncBoundaries.join("|"),
+      domainEntities.join("|"),
+      integrations.join("|"),
+      errorPaths.join("|"),
+      likelyFailurePoints.join("|"),
+      evidenceAnchors.join("|"),
+    ].join("::"),
+  );
+
+  return {
+    ownerId,
+    projectId: project.id,
+    repositoryFullName: snapshot.repositoryFullName,
+    branch: snapshot.branch,
+    headCommitSha: snapshot.headCommitSha,
+    generatedAt,
+    baselineHash,
+    routeMap,
+    apiSurface,
+    stateTransitions,
+    asyncBoundaries,
+    domainEntities,
+    integrations,
+    errorPaths,
+    likelyFailurePoints,
+    evidenceAnchors,
+  };
+};
+
+export const scanSourcesAndCodeBaselineForProject = async (
+  project: Project,
+  ownerId: string,
+  repositories: GitHubRepository[] = [],
+  options: ScanSourcesOptions = {},
+): Promise<{
+  sources: Omit<SourceRecord, "id" | "createdAt" | "updatedAt">[];
+  codeBaseline: Omit<CodeBaseline, "id" | "createdAt" | "updatedAt">;
+}> => {
+  const snapshot = await resolveSnapshot(project, repositories, options);
+  if (!snapshot) {
+    throw new Error("GitHub installation token is required to build code baseline.");
+  }
+  return {
+    sources: mapSourcesFromSnapshot(project, ownerId, snapshot),
+    codeBaseline: buildCodeBaselineFromSnapshot(project, ownerId, snapshot),
+  };
 };
 
 export const validateGenerationSelection = (
