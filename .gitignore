@@ -68,3 +68,6 @@ coverage
 
 # Agent workspace artifacts
 .agents/
+
+# Claude local notes
+CLAUDE.md
