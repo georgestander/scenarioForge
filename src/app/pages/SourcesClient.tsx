@@ -100,7 +100,7 @@ export const SourcesClient = ({
   };
 
   return (
-    <section style={{ display: "grid", gap: "1.5rem", maxWidth: "480px", margin: "0 auto", textAlign: "center" }}>
+    <section style={{ display: "grid", gap: "1rem", maxWidth: "480px", margin: "0 auto", textAlign: "center" }}>
       <h2 style={{
         margin: 0,
         fontFamily: "'VT323', monospace",
@@ -123,71 +123,18 @@ export const SourcesClient = ({
         </p>
       ) : null}
 
-      {sources.length === 0 ? (
-        <>
-          <p style={{ color: "var(--forge-muted)", fontSize: "0.88rem", margin: 0 }}>
-            No sources yet. Scan <strong style={{ color: "var(--forge-ink)" }}>{project.name}</strong> to discover planning docs.
-          </p>
+      {/* Buttons — always at top */}
+      <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
+        {sources.length === 0 ? (
           <button
             type="button"
             onClick={() => void handleScanSources()}
             disabled={isScanning}
-            style={{ justifySelf: "center" }}
           >
             {isScanning ? "Scanning..." : "Scan sources"}
           </button>
-        </>
-      ) : (
-        <>
-          <div style={{ display: "grid", gap: "0.5rem", textAlign: "left" }}>
-            {sources.map((source) => (
-              <label
-                key={source.id}
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: "0.55rem",
-                  padding: "0.5rem 0.6rem",
-                  borderRadius: "7px",
-                  border: "1px solid var(--forge-line)",
-                  background: "rgba(20, 26, 46, 0.6)",
-                  cursor: "pointer",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedSourceIds.includes(source.id)}
-                  onChange={() => handleToggleSource(source.id)}
-                  style={{ width: "auto", marginTop: "0.2rem", flexShrink: 0 }}
-                />
-                <span style={{ display: "grid", gap: "0.1rem", fontSize: "0.85rem" }}>
-                  <strong style={{ color: "var(--forge-ink)" }}>{source.title}</strong>
-                  <span style={{ color: "var(--forge-muted)", fontSize: "0.78rem" }}>{source.path}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-
-          {riskySelectedCount > 0 ? (
-            <label style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "0.45rem",
-              fontSize: "0.82rem",
-              color: "var(--forge-muted)",
-            }}>
-              <input
-                type="checkbox"
-                checked={includeStaleConfirmed}
-                onChange={(e) => setIncludeStaleConfirmed(e.target.checked)}
-                style={{ width: "auto", margin: 0 }}
-              />
-              Include stale/conflicting sources
-            </label>
-          ) : null}
-
-          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center" }}>
+        ) : (
+          <>
             <button
               type="button"
               onClick={() => void handleScanSources()}
@@ -203,28 +150,89 @@ export const SourcesClient = ({
             >
               create scenarios
             </button>
-          </div>
-        </>
-      )}
+            {latestManifest ? (
+              <a
+                href={`/projects/${projectId}/generate`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "0.52rem 1.2rem",
+                  borderRadius: "7px",
+                  border: "1px solid var(--forge-line)",
+                  color: "var(--forge-ink)",
+                  textDecoration: "none",
+                  fontWeight: 600,
+                  fontSize: "0.89rem",
+                }}
+              >
+                Continue to generation
+              </a>
+            ) : null}
+          </>
+        )}
+      </div>
 
-      {latestManifest ? (
-        <a
-          href={`/projects/${projectId}/generate`}
-          style={{
-            display: "inline-block",
-            justifySelf: "center",
-            padding: "0.52rem 1.2rem",
-            borderRadius: "7px",
-            border: "1px solid var(--forge-line)",
-            color: "var(--forge-ink)",
-            textDecoration: "none",
-            fontWeight: 600,
-            fontSize: "0.89rem",
-          }}
-        >
-          Continue to generation
-        </a>
+      {riskySelectedCount > 0 ? (
+        <label style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "0.45rem",
+          fontSize: "0.82rem",
+          color: "var(--forge-muted)",
+        }}>
+          <input
+            type="checkbox"
+            checked={includeStaleConfirmed}
+            onChange={(e) => setIncludeStaleConfirmed(e.target.checked)}
+            style={{ width: "auto", margin: 0 }}
+          />
+          Include stale/conflicting sources
+        </label>
       ) : null}
+
+      {/* Source list — scrollable */}
+      {sources.length === 0 ? (
+        <p style={{ color: "var(--forge-muted)", fontSize: "0.88rem", margin: 0 }}>
+          No sources yet. Scan <strong style={{ color: "var(--forge-ink)" }}>{project.name}</strong> to discover planning docs.
+        </p>
+      ) : (
+        <div style={{
+          maxHeight: "calc(100vh - 320px)",
+          minHeight: "120px",
+          overflowY: "auto",
+          display: "grid",
+          gap: "0.5rem",
+          textAlign: "left",
+        }}>
+          {sources.map((source) => (
+            <label
+              key={source.id}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "0.55rem",
+                padding: "0.5rem 0.6rem",
+                borderRadius: "7px",
+                border: "1px solid var(--forge-line)",
+                background: "rgba(20, 26, 46, 0.6)",
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selectedSourceIds.includes(source.id)}
+                onChange={() => handleToggleSource(source.id)}
+                style={{ width: "auto", marginTop: "0.2rem", flexShrink: 0 }}
+              />
+              <span style={{ display: "grid", gap: "0.1rem", fontSize: "0.85rem" }}>
+                <strong style={{ color: "var(--forge-ink)" }}>{source.title}</strong>
+                <span style={{ color: "var(--forge-muted)", fontSize: "0.78rem" }}>{source.path}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
     </section>
   );
 };
