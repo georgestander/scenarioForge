@@ -104,11 +104,11 @@ Behavior:
 1. Start Codex turn with repo-capable tools.
 2. Run PR automation readiness preflight (repo/branch access, push/branch/PR capability, bridge config).
 3. Block `executionMode=full` when readiness is not green and return explicit remediation.
-4. Execute selected scenarios with per-scenario streaming updates until each scenario reaches a terminal state (`passed` | `failed` | `blocked`).
+4. Execute selected scenarios with per-scenario streaming updates until each scenario reaches a terminal state (`passed` | `failed`).
 5. For failures, implement targeted fixes.
 6. Rerun impacted scenarios.
 7. Prepare PR artifacts and evidence payloads.
-8. For full mode failures, return either a real PR URL or blocked manual handoff details (branch + actionable steps).
+8. For full mode failures, return either a real PR URL or explicit manual handoff details (branch + actionable steps).
 
 Output:
 - `runId`
@@ -445,3 +445,21 @@ Next actions:
 1. Implement repository/worktree isolation layer from `docs/APP_SERVER_CONTROLLER_WORKTREE_PLAN.md` Milestone 2.
 2. Add deterministic controller-owned commit/push/PR operations (Milestone 4), then tighten PR-readiness messaging around actionable remediation.
 3. Expand regression coverage for per-scenario controller retries and rerun-failed subset determinism.
+
+## 15. Session Update (2026-02-27)
+
+Decisions made:
+1. Sandbox mode naming is canonicalized to camelCase (`readOnly`, `workspaceWrite`) for action requests.
+2. Bridge sandbox parsing remains backward-compatible with kebab-case aliases (`read-only`, `workspace-write`) to avoid client breakage.
+3. Execute output schema no longer forces exact `run.items` cardinality and no longer hard-codes `summary.blocked = 0`.
+4. Execute output schema now accepts `run.items[].status = blocked`; server normalization maps `blocked` to explicit `failed` limitation outcomes for user-facing consistency.
+5. Execute controller retries for the same scenario now reuse a single Codex thread via `threadId`, while keeping each attempt as a bounded turn.
+
+Current implementation status:
+1. Generate/execute action requests now send canonical sandbox names.
+2. Bridge supports optional `threadId` reuse and continues emitting thread/turn audit metadata.
+3. Per-scenario execution loop reuses the same thread across retry attempts for that scenario.
+
+Next actions:
+1. Add targeted unit/regression coverage for thread reuse behavior and schema acceptance of `blocked`.
+2. Continue Milestone 2 worktree isolation to complete per-scenario workspace determinism.

@@ -360,6 +360,9 @@ const normalizeRunItemStatus = (value: unknown): "passed" | "failed" => {
   const status = String(value ?? "")
     .trim()
     .toLowerCase();
+  if (status === "blocked") {
+    return "failed";
+  }
   if (status === "passed" || status === "failed") {
     return status;
   }
@@ -1233,6 +1236,7 @@ const runExecuteJobInBackground = async (
           completedAt: string;
         };
       } | null = null;
+      let scenarioThreadId: string | null = null;
 
       for (let attempt = 1; attempt <= maxScenarioAttempts; attempt += 1) {
         await persistExecutionJobEvent({
@@ -1286,11 +1290,13 @@ const runExecuteJobInBackground = async (
               executionMode: runningJob.executionMode,
               userInstruction: attemptInstruction,
               constraints: attemptConstraints,
+              threadId: scenarioThreadId ?? undefined,
             },
             (event) => {
               enqueueCodexEvent(scenario.id, event.event, event.payload);
             },
           );
+          scenarioThreadId = codexExecution.threadId;
 
           await codexEventWrite;
           latestTurnAudit = {

@@ -34,6 +34,7 @@ interface ExecuteScenariosViaCodexInput {
   executionMode: "run" | "fix" | "pr" | "full";
   userInstruction?: string;
   constraints?: Record<string, unknown>;
+  threadId?: string;
 }
 
 export interface CodexExecuteBridgeStreamEvent {
@@ -43,7 +44,7 @@ export interface CodexExecuteBridgeStreamEvent {
 
 interface ExecuteRunItemQuality {
   scenarioId: string;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "blocked";
 }
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/g, "");
@@ -256,8 +257,6 @@ const buildExecuteOutputSchema = (scenarioIds: string[]) => {
           status: { type: "string" },
           items: {
             type: "array",
-            minItems: Math.max(scenarioIds.length, 1),
-            maxItems: Math.max(scenarioIds.length, 1),
             items: {
               type: "object",
               additionalProperties: false,
@@ -273,7 +272,7 @@ const buildExecuteOutputSchema = (scenarioIds: string[]) => {
                 scenarioId: scenarioIdSchema,
                 status: {
                   type: "string",
-                  enum: ["passed", "failed"],
+                  enum: ["passed", "failed", "blocked"],
                 },
                 observed: { type: "string" },
                 expected: { type: "string" },
@@ -301,7 +300,7 @@ const buildExecuteOutputSchema = (scenarioIds: string[]) => {
             properties: {
               passed: { type: "number" },
               failed: { type: "number" },
-              blocked: { type: "number", enum: [0] },
+              blocked: { type: "number" },
             },
           },
         },
@@ -394,15 +393,15 @@ const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
     "- Process scenarios sequentially in listed order and continue until every scenario reaches a terminal outcome.",
     "- Continue after failures: one failed scenario must not stop later scenarios from running.",
     "- Never leave long-running/watch commands in the foreground; use bounded checks and stop background processes before continuing.",
-    "- Execute every scenario ID listed under Scenario subset and return one terminal run.items entry per scenario (`passed` or `failed`).",
-    "- Do not stop early; if a scenario cannot be completed in this environment, mark it failed with explicit observed limitation and continue.",
+    "- Return terminal run.items outcomes for each scenario you were able to execute in this turn.",
+    "- If a scenario cannot be completed due to environment/tool/auth constraints, set status=`blocked` with explicit observed limitation and continue.",
     "- If a step cannot be executed in this environment, return that limitation in observed output and keep statuses accurate.",
     "- For executionMode=full, include fixAttempt details for failures and open real pull request URLs for failed scenarios when tools/auth permit.",
     "- If PR creation is impossible in this environment, keep affected scenarios failed and explain the PR limitation in observed/failureHypothesis/riskNotes. Do not fabricate placeholder URLs.",
     "",
     "Output contract:",
     "- Return strict JSON object with keys: run, fixAttempt, pullRequests.",
-    "- run.items must include scenarioId, status, observed, expected, optional failureHypothesis and artifacts.",
+    "- run.items must include scenarioId, status (`passed` | `failed` | `blocked`), observed, expected, optional failureHypothesis and artifacts.",
     "- pullRequests entries should include title, url/status if available, scenarioIds, and riskNotes.",
     "",
     "Constraints:",
@@ -470,23 +469,23 @@ const readRunItemsForQuality = (parsedOutput: unknown): ExecuteRunItemQuality[] 
 
   return rawItems
     .map((item) => {
-    if (!isRecord(item)) {
-      return null;
-    }
+      if (!isRecord(item)) {
+        return null;
+      }
 
-    const scenarioId = String(item.scenarioId ?? "").trim();
-    const statusRaw = String(item.status ?? "").trim().toLowerCase();
-    if (!scenarioId) {
-      return null;
-    }
-    if (statusRaw !== "passed" && statusRaw !== "failed") {
-      return null;
-    }
+      const scenarioId = String(item.scenarioId ?? "").trim();
+      const statusRaw = String(item.status ?? "").trim().toLowerCase();
+      if (!scenarioId) {
+        return null;
+      }
+      if (statusRaw !== "passed" && statusRaw !== "failed" && statusRaw !== "blocked") {
+        return null;
+      }
 
-    return {
-      scenarioId,
-      status: statusRaw as "passed" | "failed",
-    };
+      return {
+        scenarioId,
+        status: statusRaw as "passed" | "failed" | "blocked",
+      };
     })
     .filter((item): item is ExecuteRunItemQuality => Boolean(item));
 };
@@ -537,12 +536,13 @@ const executeScenariosViaCodexInternal = async (
     model: "gpt-5.3-xhigh",
     skillName: "scenario",
     cwd: configuredWorkspaceCwd || undefined,
-    sandbox: "workspace-write",
+    sandbox: "workspaceWrite",
     approvalPolicy: "never",
     sandboxPolicy: {
       type: "workspaceWrite",
       networkAccess: true,
     },
+    ...(input.threadId ? { threadId: input.threadId } : {}),
     outputSchema: buildExecuteOutputSchema(scenarioIds),
     prompt: buildExecutePrompt(input),
   };

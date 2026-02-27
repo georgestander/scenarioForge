@@ -83,6 +83,25 @@ const sendNotification = (method, params = {}) => {
 
 const readString = (value) => (typeof value === "string" ? value.trim() : "");
 
+const normalizeSandboxMode = (value, fallback) => {
+  const normalized = readString(value);
+  if (!normalized) {
+    return fallback;
+  }
+
+  if (normalized === "readOnly" || normalized === "workspaceWrite") {
+    return normalized;
+  }
+  if (normalized === "read-only") {
+    return "readOnly";
+  }
+  if (normalized === "workspace-write") {
+    return "workspaceWrite";
+  }
+
+  return fallback;
+};
+
 const sleep = (ms) =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -817,8 +836,9 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
       ? body.outputSchema
       : null;
   const approvalPolicy = readString(body?.approvalPolicy) || "never";
-  const threadSandbox =
-    readString(body?.sandbox) || (action === "generate" ? "read-only" : "workspace-write");
+  const defaultSandbox = action === "generate" ? "readOnly" : "workspaceWrite";
+  const threadSandbox = normalizeSandboxMode(body?.sandbox, defaultSandbox);
+  const existingThreadId = readString(body?.threadId);
   const sandboxPolicy =
     body?.sandboxPolicy && typeof body.sandboxPolicy === "object"
       ? body.sandboxPolicy
@@ -869,25 +889,36 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
     timestamp: nowIso(),
   });
 
-  const threadResult = await sendRpc("thread/start", {
-    model,
-    cwd,
-    approvalPolicy,
-    sandbox: threadSandbox,
-  });
-  const threadId = extractThreadId(threadResult);
-
+  let threadId = existingThreadId;
   if (!threadId) {
-    throw new Error(`Failed to create a Codex thread for action '${action}'.`);
-  }
+    const threadResult = await sendRpc("thread/start", {
+      model,
+      cwd,
+      approvalPolicy,
+      sandbox: threadSandbox,
+    });
+    threadId = extractThreadId(threadResult);
 
-  onEvent({
-    phase: "thread.started",
-    status: "running",
-    message: `Thread ${threadId} started.`,
-    timestamp: nowIso(),
-    threadId,
-  });
+    if (!threadId) {
+      throw new Error(`Failed to create a Codex thread for action '${action}'.`);
+    }
+
+    onEvent({
+      phase: "thread.started",
+      status: "running",
+      message: `Thread ${threadId} started.`,
+      timestamp: nowIso(),
+      threadId,
+    });
+  } else {
+    onEvent({
+      phase: "thread.reused",
+      status: "running",
+      message: `Reusing thread ${threadId}.`,
+      timestamp: nowIso(),
+      threadId,
+    });
+  }
 
   const turnStartParams = {
     threadId,
