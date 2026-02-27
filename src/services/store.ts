@@ -12,6 +12,7 @@ import type {
   PullRequestRecord,
   ScenarioPack,
   ScenarioRun,
+  TelemetryEvent,
   SourceManifest,
   SourceRecord,
 } from "@/domain/models";
@@ -35,6 +36,7 @@ interface AppState {
   fixAttempts: FixAttempt[];
   pullRequests: PullRequestRecord[];
   projectPrReadinessChecks: ProjectPrReadiness[];
+  telemetryEvents: TelemetryEvent[];
 }
 
 const nowIso = () => new Date().toISOString();
@@ -61,6 +63,7 @@ const getState = (): AppState => {
       fixAttempts: [],
       pullRequests: [],
       projectPrReadinessChecks: [],
+      telemetryEvents: [],
     };
   }
 
@@ -948,6 +951,7 @@ export interface ProjectExecutionHistoryDeleteResult {
   executionJobEvents: number;
   fixAttempts: number;
   pullRequests: number;
+  telemetryEvents: number;
 }
 
 export const deleteProjectExecutionHistory = (
@@ -971,6 +975,9 @@ export const deleteProjectExecutionHistory = (
   const pullRequests = state.pullRequests.filter(
     (record) => record.ownerId === ownerId && record.projectId === projectId,
   ).length;
+  const telemetryEvents = state.telemetryEvents.filter(
+    (record) => record.ownerId === ownerId && record.projectId === projectId,
+  ).length;
 
   state.scenarioRuns = state.scenarioRuns.filter(
     (record) => !(record.ownerId === ownerId && record.projectId === projectId),
@@ -987,6 +994,9 @@ export const deleteProjectExecutionHistory = (
   state.pullRequests = state.pullRequests.filter(
     (record) => !(record.ownerId === ownerId && record.projectId === projectId),
   );
+  state.telemetryEvents = state.telemetryEvents.filter(
+    (record) => !(record.ownerId === ownerId && record.projectId === projectId),
+  );
 
   return {
     scenarioRuns,
@@ -994,6 +1004,7 @@ export const deleteProjectExecutionHistory = (
     executionJobEvents,
     fixAttempts,
     pullRequests,
+    telemetryEvents,
   };
 };
 
@@ -1056,6 +1067,45 @@ export const getLatestProjectPrReadinessForProject = (
   return records[0] ?? null;
 };
 
+export const createTelemetryEvent = (
+  input: Omit<TelemetryEvent, "id" | "createdAt" | "updatedAt">,
+): TelemetryEvent => {
+  const state = getState();
+  const timestamp = nowIso();
+  const event: TelemetryEvent = {
+    ...input,
+    payload: { ...input.payload },
+    reasonCodes: [...input.reasonCodes],
+    id: newId("tel"),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  state.telemetryEvents.push(event);
+  return event;
+};
+
+export const listTelemetryEventsForOwner = (
+  ownerId: string,
+  limit = 500,
+): TelemetryEvent[] => {
+  const state = getState();
+  return sortByUpdatedDesc(
+    state.telemetryEvents.filter((event) => event.ownerId === ownerId),
+  ).slice(0, Math.max(0, limit));
+};
+
+export const listTelemetryEventsForProject = (
+  ownerId: string,
+  projectId: string,
+): TelemetryEvent[] => {
+  const state = getState();
+  return sortByUpdatedDesc(
+    state.telemetryEvents.filter(
+      (event) => event.ownerId === ownerId && event.projectId === projectId,
+    ),
+  );
+};
+
 const replaceById = <T extends { id: string }>(
   items: T[],
   nextItem: T,
@@ -1101,6 +1151,7 @@ interface HydrateCoreStateInput {
   fixAttempts?: FixAttempt[];
   pullRequests?: PullRequestRecord[];
   projectPrReadinessChecks?: ProjectPrReadiness[];
+  telemetryEvents?: TelemetryEvent[];
   mode?: "merge" | "replacePersisted";
 }
 
@@ -1124,6 +1175,7 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
     state.fixAttempts = [...(input.fixAttempts ?? [])];
     state.pullRequests = [...(input.pullRequests ?? [])];
     state.projectPrReadinessChecks = [...(input.projectPrReadinessChecks ?? [])];
+    state.telemetryEvents = [...(input.telemetryEvents ?? [])];
     return;
   }
 
@@ -1192,5 +1244,9 @@ export const hydrateCoreState = (input: HydrateCoreStateInput): void => {
 
   (input.projectPrReadinessChecks ?? []).forEach((readiness) => {
     replaceById(state.projectPrReadinessChecks, readiness);
+  });
+
+  (input.telemetryEvents ?? []).forEach((event) => {
+    replaceById(state.telemetryEvents, event);
   });
 };

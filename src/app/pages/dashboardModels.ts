@@ -38,3 +38,23 @@ export interface DashboardActiveRunSummary {
   startedAt: string | null;
   updatedAt: string;
 }
+
+export interface DashboardTelemetrySummary {
+  totalEvents: number;
+  eventCounts: {
+    readiness_checked: number;
+    full_mode_blocked: number;
+    execute_mode_selected: number;
+    full_mode_started: number;
+    full_mode_completed: number;
+    manual_handoff_emitted: number;
+  };
+  topBlockerCodes: Array<{
+    reasonCode: string;
+    count: number;
+  }>;
+  actuatorCounts: Array<{
+    actuatorPath: string;
+    count: number;
+  }>;
+}

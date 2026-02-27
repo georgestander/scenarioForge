@@ -67,6 +67,7 @@ import {
 import { evaluateProjectPrReadiness } from "@/services/prReadiness";
 import { buildChallengeReport, buildReviewBoard } from "@/services/reviewBoard";
 import { generateScenarioPack } from "@/services/scenarioGeneration";
+import { recordTelemetryEvent } from "@/services/telemetry";
 import {
   buildSourceManifest,
   scanSourcesAndCodeBaselineForProject,
@@ -1811,6 +1812,45 @@ const runExecuteJobInBackground = async (
         executionAudit: latestTurnAudit,
       },
     });
+    if (runningJob.executionMode === "full") {
+      const readiness =
+        getLatestProjectPrReadinessForProject(input.ownerId, project.id);
+      await recordTelemetryEvent({
+        ownerId: input.ownerId,
+        projectId: project.id,
+        jobId: jobForCompletion.id,
+        eventName: "full_mode_completed",
+        executionMode: "full",
+        actuatorPath: readiness?.fullPrActuator ?? null,
+        reasonCodes: readiness?.reasonCodes ?? [],
+        payload: {
+          jobStatus: completionStatus,
+          passed: run.summary.passed,
+          failed: run.summary.failed,
+          pullRequestCount: pullRequests.length,
+        },
+      }).catch(() => undefined);
+
+      const manualHandoffCount = pullRequests.filter(
+        (record) => record.url.trim().length === 0,
+      ).length;
+      if (manualHandoffCount > 0) {
+        await recordTelemetryEvent({
+          ownerId: input.ownerId,
+          projectId: project.id,
+          jobId: jobForCompletion.id,
+          eventName: "manual_handoff_emitted",
+          executionMode: "full",
+          actuatorPath: readiness?.fullPrActuator ?? null,
+          reasonCodes: ["PR_ACTUATOR_UNAVAILABLE"],
+          payload: {
+            jobStatus: completionStatus,
+            manualHandoffCount,
+            pullRequestCount: pullRequests.length,
+          },
+        }).catch(() => undefined);
+      }
+    }
   } catch (error) {
     await codexEventWrite.catch(() => undefined);
 
@@ -1834,6 +1874,23 @@ const runExecuteJobInBackground = async (
       next.summary = persistedRun?.summary ?? null;
       next.error = message;
     });
+    if (runningJob.executionMode === "full") {
+      const readiness =
+        getLatestProjectPrReadinessForProject(input.ownerId, project.id);
+      await recordTelemetryEvent({
+        ownerId: input.ownerId,
+        projectId: project.id,
+        jobId: runningJob.id,
+        eventName: "full_mode_completed",
+        executionMode: "full",
+        actuatorPath: readiness?.fullPrActuator ?? null,
+        reasonCodes: readiness?.reasonCodes ?? [],
+        payload: {
+          jobStatus: "failed",
+          error: message,
+        },
+      }).catch(() => undefined);
+    }
   }
 };
 
@@ -2105,6 +2162,18 @@ const refreshProjectPrReadiness = async (
 
   const readiness = upsertProjectPrReadinessCheck(readinessInput);
   await persistProjectPrReadinessToD1(readiness);
+  await recordTelemetryEvent({
+    ownerId: principalId,
+    projectId: project.id,
+    eventName: "readiness_checked",
+    actuatorPath: readiness.fullPrActuator,
+    reasonCodes: readiness.reasonCodes,
+    payload: {
+      status: readiness.status,
+      checkedAt: readiness.checkedAt,
+      probeDurationMs: readiness.probeDurationMs,
+    },
+  }).catch(() => undefined);
   return readiness;
 };
 
@@ -3192,10 +3261,33 @@ export default defineApp([
       const retryFromRunId = String(payload?.retryFromRunId ?? "").trim();
       const explicitScenarioIds = readStringArray(payload?.scenarioIds);
       let scenarioIds = explicitScenarioIds;
+      await recordTelemetryEvent({
+        ownerId: principal.id,
+        projectId: project.id,
+        eventName: "execute_mode_selected",
+        executionMode,
+        payload: {
+          endpoint: "execute/start",
+          retryStrategy,
+          requestedScenarioCount: explicitScenarioIds.length,
+        },
+      }).catch(() => undefined);
 
       if (executionMode === "full") {
         const readiness = await refreshProjectPrReadiness(principal.id, project);
         if (readiness.status !== "ready") {
+          await recordTelemetryEvent({
+            ownerId: principal.id,
+            projectId: project.id,
+            eventName: "full_mode_blocked",
+            executionMode: "full",
+            actuatorPath: readiness.fullPrActuator,
+            reasonCodes: readiness.reasonCodes,
+            payload: {
+              endpoint: "execute/start",
+              status: readiness.status,
+            },
+          }).catch(() => undefined);
           return json(
             {
               error: buildFullModeReadinessError(readiness),
@@ -3304,6 +3396,24 @@ export default defineApp([
           timestamp: new Date().toISOString(),
         },
       });
+      if (executionMode === "full") {
+        const readiness =
+          getLatestProjectPrReadinessForProject(principal.id, project.id);
+        await recordTelemetryEvent({
+          ownerId: principal.id,
+          projectId: project.id,
+          jobId: job.id,
+          eventName: "full_mode_started",
+          executionMode: "full",
+          actuatorPath: readiness?.fullPrActuator ?? null,
+          reasonCodes: readiness?.reasonCodes ?? [],
+          payload: {
+            endpoint: "execute/start",
+            scenarioCount:
+              scenarioIds.length > 0 ? scenarioIds.length : pack.scenarios.length,
+          },
+        }).catch(() => undefined);
+      }
 
       const runPromise = runExecuteJobInBackground({
         ownerId: principal.id,
@@ -3515,9 +3625,30 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      await recordTelemetryEvent({
+        ownerId: principal.id,
+        projectId: project.id,
+        eventName: "execute_mode_selected",
+        executionMode,
+        payload: {
+          endpoint: "execute",
+        },
+      }).catch(() => undefined);
       if (executionMode === "full") {
         const readiness = await refreshProjectPrReadiness(principal.id, project);
         if (readiness.status !== "ready") {
+          await recordTelemetryEvent({
+            ownerId: principal.id,
+            projectId: project.id,
+            eventName: "full_mode_blocked",
+            executionMode: "full",
+            actuatorPath: readiness.fullPrActuator,
+            reasonCodes: readiness.reasonCodes,
+            payload: {
+              endpoint: "execute",
+              status: readiness.status,
+            },
+          }).catch(() => undefined);
           return json(
             {
               error: buildFullModeReadinessError(readiness),
@@ -3530,6 +3661,22 @@ export default defineApp([
       const bridgeAuthError = await ensureCodexBridgeAccount();
       if (bridgeAuthError) {
         return json({ error: bridgeAuthError }, 401);
+      }
+      if (executionMode === "full") {
+        const readiness =
+          getLatestProjectPrReadinessForProject(principal.id, project.id);
+        await recordTelemetryEvent({
+          ownerId: principal.id,
+          projectId: project.id,
+          eventName: "full_mode_started",
+          executionMode: "full",
+          actuatorPath: readiness?.fullPrActuator ?? null,
+          reasonCodes: readiness?.reasonCodes ?? [],
+          payload: {
+            endpoint: "execute",
+            scenarioCount: pack.scenarios.length,
+          },
+        }).catch(() => undefined);
       }
 
       let codexExecution;
@@ -3546,6 +3693,23 @@ export default defineApp([
           error instanceof Error
             ? error.message
             : "Failed to execute scenarios through Codex app-server.";
+        if (executionMode === "full") {
+          const readiness =
+            getLatestProjectPrReadinessForProject(principal.id, project.id);
+          await recordTelemetryEvent({
+            ownerId: principal.id,
+            projectId: project.id,
+            eventName: "full_mode_completed",
+            executionMode: "full",
+            actuatorPath: readiness?.fullPrActuator ?? null,
+            reasonCodes: readiness?.reasonCodes ?? [],
+            payload: {
+              endpoint: "execute",
+              jobStatus: "failed",
+              error: message,
+            },
+          }).catch(() => undefined);
+        }
         return json({ error: message }, 502);
       }
 
@@ -3607,6 +3771,44 @@ export default defineApp([
         );
         pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
         await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
+      }
+      if (executionMode === "full") {
+        const readiness =
+          getLatestProjectPrReadinessForProject(principal.id, project.id);
+        await recordTelemetryEvent({
+          ownerId: principal.id,
+          projectId: project.id,
+          eventName: "full_mode_completed",
+          executionMode: "full",
+          actuatorPath: readiness?.fullPrActuator ?? null,
+          reasonCodes: readiness?.reasonCodes ?? [],
+          payload: {
+            endpoint: "execute",
+            jobStatus: "completed",
+            passed: run.summary.passed,
+            failed: run.summary.failed,
+            pullRequestCount: pullRequests.length,
+          },
+        }).catch(() => undefined);
+
+        const manualHandoffCount = pullRequests.filter(
+          (record) => record.url.trim().length === 0,
+        ).length;
+        if (manualHandoffCount > 0) {
+          await recordTelemetryEvent({
+            ownerId: principal.id,
+            projectId: project.id,
+            eventName: "manual_handoff_emitted",
+            executionMode: "full",
+            actuatorPath: readiness?.fullPrActuator ?? null,
+            reasonCodes: ["PR_ACTUATOR_UNAVAILABLE"],
+            payload: {
+              endpoint: "execute",
+              manualHandoffCount,
+              pullRequestCount: pullRequests.length,
+            },
+          }).catch(() => undefined);
+        }
       }
 
       return json(
@@ -4044,6 +4246,10 @@ export default defineApp([
         ),
         fixAttempts: Math.max(deletedInMemory.fixAttempts, deletedInD1.fixAttempts),
         pullRequests: Math.max(deletedInMemory.pullRequests, deletedInD1.pullRequests),
+        telemetryEvents: Math.max(
+          deletedInMemory.telemetryEvents,
+          deletedInD1.telemetryEvents,
+        ),
       };
 
       project.activeScenarioRunId = null;

@@ -441,6 +441,28 @@ export interface ProjectPrReadiness {
   updatedAt: string;
 }
 
+export type TelemetryEventName =
+  | "readiness_checked"
+  | "full_mode_blocked"
+  | "execute_mode_selected"
+  | "full_mode_started"
+  | "full_mode_completed"
+  | "manual_handoff_emitted";
+
+export interface TelemetryEvent {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  jobId: string | null;
+  eventName: TelemetryEventName;
+  executionMode: "run" | "fix" | "pr" | "full" | null;
+  actuatorPath: ProjectPrReadinessActuator | null;
+  reasonCodes: ProjectPrReadinessReasonCode[];
+  payload: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ReviewRiskItem {
   scenarioId: string;
   severity: "high" | "medium" | "low";

@@ -7,12 +7,14 @@ import {
   listProjectsForOwner,
   listScenarioRunsForProject,
 } from "@/services/store";
+import { summarizeTelemetryForOwner } from "@/services/telemetry";
 import { DashboardClient } from "./DashboardClient";
 import type {
   DashboardActiveRunSummary,
   DashboardLatestRunOutcome,
   DashboardProjectSummary,
   DashboardRepoGroup,
+  DashboardTelemetrySummary,
 } from "./dashboardModels";
 
 type AppRequestInfo = RequestInfo<any, AppContext>;
@@ -246,11 +248,14 @@ export const DashboardPage = ({ ctx }: AppRequestInfo) => {
   const activeJobs = listActiveExecutionJobsForOwner(principal.id);
   const repoGroups = buildDashboardGroups(principal.id, activeJobs);
   const activeRuns = buildActiveRunSummaries(principal.id, activeJobs);
+  const telemetrySummary: DashboardTelemetrySummary =
+    summarizeTelemetryForOwner(principal.id);
 
   return (
     <DashboardClient
       initialRepoGroups={repoGroups}
       initialActiveRuns={activeRuns}
+      telemetrySummary={telemetrySummary}
     />
   );
 };

@@ -14,6 +14,7 @@ import type {
   ScenarioRun,
   SourceManifest,
   SourceRecord,
+  TelemetryEvent,
 } from "@/domain/models";
 import { hydrateCoreState } from "@/services/store";
 
@@ -447,6 +448,42 @@ const ensureTables = async (db: D1Database): Promise<void> => {
     "probe_duration_ms INTEGER NOT NULL DEFAULT 0",
   );
 
+  await db
+    .prepare(
+      `
+      CREATE TABLE IF NOT EXISTS sf_telemetry_events (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        job_id TEXT,
+        event_name TEXT NOT NULL,
+        execution_mode TEXT,
+        actuator_path TEXT,
+        reason_codes_json TEXT NOT NULL DEFAULT '[]',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    )
+    .run();
+  await db
+    .prepare(
+      `
+      CREATE INDEX IF NOT EXISTS idx_sf_telemetry_events_owner_created
+      ON sf_telemetry_events (owner_id, created_at DESC)
+    `,
+    )
+    .run();
+  await db
+    .prepare(
+      `
+      CREATE INDEX IF NOT EXISTS idx_sf_telemetry_events_project_created
+      ON sf_telemetry_events (project_id, created_at DESC)
+    `,
+    )
+    .run();
+
   state.tablesReady = true;
 };
 
@@ -773,6 +810,25 @@ export const hydrateCoreStateFromD1 = async (
         created_at,
         updated_at
       FROM sf_project_pr_readiness
+    `,
+    )
+    .all();
+  const telemetryRows = await db
+    .prepare(
+      `
+      SELECT
+        id,
+        owner_id,
+        project_id,
+        job_id,
+        event_name,
+        execution_mode,
+        actuator_path,
+        reason_codes_json,
+        payload_json,
+        created_at,
+        updated_at
+      FROM sf_telemetry_events
     `,
     )
     .all();
@@ -1123,6 +1179,25 @@ export const hydrateCoreStateFromD1 = async (
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }));
+  const telemetryEvents: TelemetryEvent[] = (
+    telemetryRows.results as Array<Record<string, unknown>>
+  ).map((row) => ({
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    projectId: String(row.project_id),
+    jobId: row.job_id ? String(row.job_id) : null,
+    eventName: String(row.event_name) as TelemetryEvent["eventName"],
+    executionMode: row.execution_mode
+      ? (String(row.execution_mode) as NonNullable<TelemetryEvent["executionMode"]>)
+      : null,
+    actuatorPath: row.actuator_path
+      ? (String(row.actuator_path) as NonNullable<TelemetryEvent["actuatorPath"]>)
+      : null,
+    reasonCodes: safeParseJson(String(row.reason_codes_json ?? "[]"), []),
+    payload: safeParseJson(String(row.payload_json ?? "{}"), {}),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  }));
 
   hydrateCoreState({
     principals,
@@ -1139,6 +1214,7 @@ export const hydrateCoreStateFromD1 = async (
     fixAttempts,
     pullRequests,
     projectPrReadinessChecks,
+    telemetryEvents,
     mode: "replacePersisted",
   });
 
@@ -1466,6 +1542,17 @@ export const reconcilePrincipalIdentityInD1 = async (
       .prepare(
         `
         UPDATE sf_project_pr_readiness
+        SET owner_id = ?
+        WHERE owner_id = ?
+      `,
+      )
+      .bind(canonicalId, aliasId)
+      .run();
+
+    await db
+      .prepare(
+        `
+        UPDATE sf_telemetry_events
         SET owner_id = ?
         WHERE owner_id = ?
       `,
@@ -2364,6 +2451,7 @@ export interface DeleteProjectExecutionHistoryD1Result {
   executionJobEvents: number;
   fixAttempts: number;
   pullRequests: number;
+  telemetryEvents: number;
 }
 
 export const deleteProjectExecutionHistoryFromD1 = async (
@@ -2377,6 +2465,7 @@ export const deleteProjectExecutionHistoryFromD1 = async (
     executionJobEvents: 0,
     fixAttempts: 0,
     pullRequests: 0,
+    telemetryEvents: 0,
   };
 
   if (!db) {
@@ -2434,6 +2523,15 @@ export const deleteProjectExecutionHistoryFromD1 = async (
     )
     .bind(ownerId, projectId)
     .run();
+  const telemetryDeleted = await db
+    .prepare(
+      `
+      DELETE FROM sf_telemetry_events
+      WHERE owner_id = ? AND project_id = ?
+    `,
+    )
+    .bind(ownerId, projectId)
+    .run();
 
   return {
     scenarioRuns: Number(runsDeleted.meta?.changes ?? 0),
@@ -2441,6 +2539,7 @@ export const deleteProjectExecutionHistoryFromD1 = async (
     executionJobEvents: Number(eventsDeleted.meta?.changes ?? 0),
     fixAttempts: Number(fixAttemptsDeleted.meta?.changes ?? 0),
     pullRequests: Number(pullRequestsDeleted.meta?.changes ?? 0),
+    telemetryEvents: Number(telemetryDeleted.meta?.changes ?? 0),
   };
 };
 
@@ -2509,6 +2608,60 @@ export const persistProjectPrReadinessToD1 = async (
       readiness.checkedAt,
       readiness.createdAt,
       readiness.updatedAt || nowIso(),
+    )
+    .run();
+};
+
+export const persistTelemetryEventToD1 = async (
+  event: TelemetryEvent,
+): Promise<void> => {
+  const db = getDb();
+
+  if (!db) {
+    return;
+  }
+
+  await ensureTables(db);
+  await db
+    .prepare(
+      `
+      INSERT INTO sf_telemetry_events (
+        id,
+        owner_id,
+        project_id,
+        job_id,
+        event_name,
+        execution_mode,
+        actuator_path,
+        reason_codes_json,
+        payload_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        owner_id = excluded.owner_id,
+        project_id = excluded.project_id,
+        job_id = excluded.job_id,
+        event_name = excluded.event_name,
+        execution_mode = excluded.execution_mode,
+        actuator_path = excluded.actuator_path,
+        reason_codes_json = excluded.reason_codes_json,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .bind(
+      event.id,
+      event.ownerId,
+      event.projectId,
+      event.jobId,
+      event.eventName,
+      event.executionMode,
+      event.actuatorPath,
+      JSON.stringify(event.reasonCodes),
+      JSON.stringify(event.payload),
+      event.createdAt,
+      event.updatedAt || nowIso(),
     )
     .run();
 };

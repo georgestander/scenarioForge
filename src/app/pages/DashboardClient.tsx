@@ -9,6 +9,7 @@ import type {
   DashboardActiveRunSummary,
   DashboardLatestRunOutcome,
   DashboardRepoGroup,
+  DashboardTelemetrySummary,
 } from "./dashboardModels";
 
 const OUTCOME_STYLES: Record<
@@ -102,9 +103,11 @@ const formatUtcTimestamp = (isoTimestamp: string): string => {
 export const DashboardClient = ({
   initialRepoGroups,
   initialActiveRuns,
+  telemetrySummary,
 }: {
   initialRepoGroups: DashboardRepoGroup[];
   initialActiveRuns: DashboardActiveRunSummary[];
+  telemetrySummary: DashboardTelemetrySummary;
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [activeRuns, setActiveRuns] =
@@ -333,6 +336,67 @@ export const DashboardClient = ({
       >
         New Project
       </button>
+
+      <section
+        style={{
+          display: "grid",
+          gap: "0.45rem",
+          border: "1px solid var(--forge-line)",
+          borderRadius: "9px",
+          background: "#0f1628",
+          padding: "0.62rem",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto",
+            gap: "0.5rem",
+            alignItems: "center",
+          }}
+        >
+          <strong style={{ fontSize: "0.9rem", color: "var(--forge-ink)" }}>
+            Automation Telemetry
+          </strong>
+          <span style={{ fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+            {telemetrySummary.totalEvents} events
+          </span>
+        </div>
+        <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+          readiness={telemetrySummary.eventCounts.readiness_checked} · full blocked=
+          {telemetrySummary.eventCounts.full_mode_blocked} · full started=
+          {telemetrySummary.eventCounts.full_mode_started} · full completed=
+          {telemetrySummary.eventCounts.full_mode_completed} · manual handoff=
+          {telemetrySummary.eventCounts.manual_handoff_emitted}
+        </p>
+        {telemetrySummary.topBlockerCodes.length > 0 ? (
+          <div style={{ display: "grid", gap: "0.2rem" }}>
+            <strong style={{ fontSize: "0.78rem", color: "var(--forge-ink)" }}>
+              Top blocker codes
+            </strong>
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: "1rem",
+                display: "grid",
+                gap: "0.15rem",
+                color: "var(--forge-muted)",
+                fontSize: "0.73rem",
+              }}
+            >
+              {telemetrySummary.topBlockerCodes.map((entry) => (
+                <li key={entry.reasonCode}>
+                  <code>{entry.reasonCode}</code> · {entry.count}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--forge-muted)" }}>
+            No blocker telemetry recorded yet.
+          </p>
+        )}
+      </section>
 
       <section
         style={{
