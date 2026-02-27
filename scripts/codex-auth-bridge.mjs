@@ -23,6 +23,11 @@ const AGENT_MESSAGE_GRACE_MS = Number(
 const SSE_KEEPALIVE_MS = Number(
   process.env.CODEX_AUTH_BRIDGE_SSE_KEEPALIVE_MS || "12000",
 );
+const USER_INPUT_POLICY = (
+  process.env.CODEX_AUTH_BRIDGE_USER_INPUT_POLICY || "decline"
+)
+  .trim()
+  .toLowerCase();
 
 let requestId = 1;
 let isInitialized = false;
@@ -82,6 +87,110 @@ const sendNotification = (method, params = {}) => {
 };
 
 const readString = (value) => (typeof value === "string" ? value.trim() : "");
+
+const normalizeUserInputPolicy = (value) => {
+  if (value === "accept") {
+    return "accept";
+  }
+  if (value === "cancel") {
+    return "cancel";
+  }
+  if (value === "first") {
+    return "first";
+  }
+  if (value === "error") {
+    return "error";
+  }
+
+  return "decline";
+};
+
+const findMatchingOptionLabel = (options, candidates) => {
+  if (!Array.isArray(options) || !Array.isArray(candidates)) {
+    return "";
+  }
+
+  const normalizedCandidates = candidates
+    .map((candidate) => readString(candidate).toLowerCase())
+    .filter(Boolean);
+
+  for (const option of options) {
+    const label = readString(option?.label);
+    const normalizedLabel = label.toLowerCase();
+    if (!normalizedLabel) {
+      continue;
+    }
+
+    if (
+      normalizedCandidates.some((candidate) => normalizedLabel.includes(candidate))
+    ) {
+      return label;
+    }
+  }
+
+  return "";
+};
+
+const selectUserInputOption = (options, policy) => {
+  if (!Array.isArray(options) || options.length === 0) {
+    if (policy === "accept") {
+      return "Accept";
+    }
+    if (policy === "cancel") {
+      return "Cancel";
+    }
+    return "Decline";
+  }
+
+  const firstLabel = readString(options[0]?.label);
+
+  if (policy === "first") {
+    return firstLabel || "Decline";
+  }
+
+  if (policy === "accept") {
+    return (
+      findMatchingOptionLabel(options, ["accept", "approve", "allow"]) ||
+      firstLabel ||
+      "Accept"
+    );
+  }
+
+  if (policy === "cancel") {
+    return (
+      findMatchingOptionLabel(options, ["cancel", "decline", "reject"]) ||
+      firstLabel ||
+      "Cancel"
+    );
+  }
+
+  return (
+    findMatchingOptionLabel(options, ["decline", "reject", "deny", "cancel"]) ||
+    firstLabel ||
+    "Decline"
+  );
+};
+
+const buildUserInputResponse = (params) => {
+  const policy = normalizeUserInputPolicy(USER_INPUT_POLICY);
+  const questions = Array.isArray(params?.questions) ? params.questions : [];
+  const answers = {};
+
+  questions.forEach((question) => {
+    const questionId = readString(question?.id);
+    if (!questionId) {
+      return;
+    }
+
+    const options = Array.isArray(question?.options) ? question.options : [];
+    const selected = selectUserInputOption(options, policy);
+    answers[questionId] = {
+      answers: [selected],
+    };
+  });
+
+  return { answers };
+};
 
 const normalizeThreadSandboxMode = (value, fallback) => {
   const normalized = readString(value);
@@ -342,11 +451,17 @@ const consumeRpcRequest = (message) => {
     method === "item/tool/requestUserInput" ||
     method.endsWith("/tool/requestUserInput")
   ) {
-    replyRpcError(
-      id,
-      -32000,
-      "Interactive user input is not supported by codex-auth-bridge. Re-run with a non-interactive flow.",
-    );
+    const userInputPolicy = normalizeUserInputPolicy(USER_INPUT_POLICY);
+    if (userInputPolicy === "error") {
+      replyRpcError(
+        id,
+        -32000,
+        "Interactive user input is not supported by codex-auth-bridge. Re-run with a non-interactive flow.",
+      );
+      return;
+    }
+
+    replyRpcResult(id, buildUserInputResponse(message.params));
     return;
   }
 

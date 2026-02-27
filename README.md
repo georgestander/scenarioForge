@@ -169,6 +169,7 @@ pnpm build
 - Bridge/auth failures
   - Confirm `CODEX_AUTH_BRIDGE_URL` is reachable.
   - Confirm ChatGPT sign-in is active.
+  - For non-interactive runs, the bridge now auto-answers `tool/requestUserInput` prompts with a safe default (`decline`). Override with `CODEX_AUTH_BRIDGE_USER_INPUT_POLICY=accept|cancel|first|error`.
 
 ## Project status and authority
 
