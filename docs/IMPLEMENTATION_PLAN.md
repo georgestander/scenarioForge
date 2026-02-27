@@ -449,14 +449,14 @@ Next actions:
 ## 15. Session Update (2026-02-27)
 
 Decisions made:
-1. Sandbox mode naming is canonicalized to camelCase (`readOnly`, `workspaceWrite`) for action requests.
-2. Bridge sandbox parsing remains backward-compatible with kebab-case aliases (`read-only`, `workspace-write`) to avoid client breakage.
+1. `thread/start.sandbox` uses kebab-case values (`read-only`, `workspace-write`, `danger-full-access`) and bridge normalizes legacy camelCase aliases (`readOnly`, `workspaceWrite`, `dangerFullAccess`) to those RPC-safe values.
+2. `turn/start.sandboxPolicy.type` remains camelCase (`readOnly`, `workspaceWrite`) and is passed through unchanged.
 3. Execute output schema no longer forces exact `run.items` cardinality and no longer hard-codes `summary.blocked = 0`.
 4. Execute output schema now accepts `run.items[].status = blocked`; server normalization maps `blocked` to explicit `failed` limitation outcomes for user-facing consistency.
 5. Execute controller retries for the same scenario now reuse a single Codex thread via `threadId`, while keeping each attempt as a bounded turn.
 
 Current implementation status:
-1. Generate/execute action requests now send canonical sandbox names.
+1. Generate/execute action requests send RPC-safe kebab-case thread sandbox values.
 2. Bridge supports optional `threadId` reuse and continues emitting thread/turn audit metadata.
 3. Per-scenario execution loop reuses the same thread across retry attempts for that scenario.
 

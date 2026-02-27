@@ -297,7 +297,7 @@ Response `201`:
       "params": {
         "model": "gpt-5.3-xhigh",
         "approvalPolicy": "unlessTrusted",
-        "sandbox": "workspaceWrite"
+        "sandbox": "workspace-write"
       }
     },
     "preferredModels": {

@@ -83,20 +83,20 @@ const sendNotification = (method, params = {}) => {
 
 const readString = (value) => (typeof value === "string" ? value.trim() : "");
 
-const normalizeSandboxMode = (value, fallback) => {
+const normalizeThreadSandboxMode = (value, fallback) => {
   const normalized = readString(value);
   if (!normalized) {
     return fallback;
   }
 
-  if (normalized === "readOnly" || normalized === "workspaceWrite") {
-    return normalized;
+  if (normalized === "readOnly" || normalized === "read-only") {
+    return "read-only";
   }
-  if (normalized === "read-only") {
-    return "readOnly";
+  if (normalized === "workspaceWrite" || normalized === "workspace-write") {
+    return "workspace-write";
   }
-  if (normalized === "workspace-write") {
-    return "workspaceWrite";
+  if (normalized === "dangerFullAccess" || normalized === "danger-full-access") {
+    return "danger-full-access";
   }
 
   return fallback;
@@ -836,8 +836,8 @@ const runActionTurn = async (actionName, body, onEvent = () => {}) => {
       ? body.outputSchema
       : null;
   const approvalPolicy = readString(body?.approvalPolicy) || "never";
-  const defaultSandbox = action === "generate" ? "readOnly" : "workspaceWrite";
-  const threadSandbox = normalizeSandboxMode(body?.sandbox, defaultSandbox);
+  const defaultSandbox = action === "generate" ? "read-only" : "workspace-write";
+  const threadSandbox = normalizeThreadSandboxMode(body?.sandbox, defaultSandbox);
   const existingThreadId = readString(body?.threadId);
   const sandboxPolicy =
     body?.sandboxPolicy && typeof body.sandboxPolicy === "object"

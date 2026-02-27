@@ -536,7 +536,7 @@ const executeScenariosViaCodexInternal = async (
     model: "gpt-5.3-xhigh",
     skillName: "scenario",
     cwd: configuredWorkspaceCwd || undefined,
-    sandbox: "workspaceWrite",
+    sandbox: "workspace-write",
     approvalPolicy: "never",
     sandboxPolicy: {
       type: "workspaceWrite",

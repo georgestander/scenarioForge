@@ -597,7 +597,7 @@ const generateScenariosViaCodexInternal = async (
     model: "codex spark",
     skillName: useSkill ? "scenario" : "",
     cwd: configuredWorkspaceCwd || undefined,
-    sandbox: "readOnly",
+    sandbox: "read-only",
     approvalPolicy: "never",
     sandboxPolicy: {
       type: "readOnly",
