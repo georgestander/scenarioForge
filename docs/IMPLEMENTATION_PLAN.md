@@ -459,6 +459,7 @@ Decisions made:
 8. Execute PR outputs are now treated as proposal metadata: URL is optional, manual-handoff entries are accepted, and missing real PR URLs no longer fail runs/jobs by default.
 9. PR readiness contract now includes first-class actuator and diagnostics fields: `fullPrActuator`, `reasonCodes[]`, `probeResults[]`, and `probeDurationMs`.
 10. PR readiness probes now record step-level pass/fail details for deterministic UI gating and blocker telemetry.
+11. Execute UI now enforces readiness-aware mode selection: default mode is `full` only when readiness is green, `full` is disabled when blocked, and users get actuator/reason-code remediation plus probe-details diagnostics before launch.
 
 Current implementation status:
 1. Generate/execute action requests send RPC-safe kebab-case thread sandbox values.
@@ -469,8 +470,10 @@ Current implementation status:
 6. Execute persistence accepts PR/manual-handoff metadata without requiring Codex to return a real PR URL.
 7. PR readiness persistence and hydration now store actuator path, machine-readable reason codes, probe results, and probe duration.
 8. Readiness refresh now includes explicit `codex_account` probe status (`CODEX_ACCOUNT_NOT_AUTHENTICATED` when signed out).
+9. Execute page now hydrates latest PR readiness, exposes a `run|fix|pr|full` selector, gates `full` by `fullPrActuator + reasonCodes`, and blocks launch client-side before server 409 fallback.
+10. Execute page now includes a readiness diagnostics drawer with `checkedAt`, `probeDurationMs`, and per-step probe outcomes for fast blocker triage.
 
 Next actions:
 1. Add targeted unit/regression coverage for thread reuse behavior and schema acceptance of `blocked`.
 2. Continue Milestone 2 worktree isolation to complete per-scenario workspace determinism.
-3. Ship PR B UI updates to gate `full` mode by `fullPrActuator` + `reasonCodes` with a probe-details drawer.
+3. Add execute-page UI regression coverage for readiness-driven mode defaults, full-mode disablement, and probe-details rendering.

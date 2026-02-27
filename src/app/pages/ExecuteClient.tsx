@@ -6,6 +6,8 @@ import type {
   ExecutionJobEvent,
   FixAttempt,
   Project,
+  ProjectPrReadiness,
+  ProjectPrReadinessReasonCode,
   PullRequestRecord,
   ScenarioPack,
   ScenarioRun,
@@ -16,6 +18,7 @@ import type {
   ExecutionJobDetailPayload,
   ExecutionJobEventsPayload,
   ExecutionJobStartPayload,
+  ProjectPrReadinessPayload,
 } from "@/app/shared/types";
 
 interface ScenarioStatus {
@@ -31,6 +34,8 @@ interface ScenarioRow {
   stage: string;
   message: string;
 }
+
+type ExecutionMode = "run" | "fix" | "pr" | "full";
 
 const STATUS_ICON: Record<string, { char: string; color: string }> = {
   queued: { char: "\u2022", color: "var(--forge-muted)" },
@@ -61,10 +66,76 @@ const JOB_STATUS_LABEL: Record<ExecutionJob["status"], string> = {
   blocked: "Failed",
 };
 
+const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
+  run: "Run checks only",
+  fix: "Run + fix loop",
+  pr: "PR prep only",
+  full: "Full loop (run/fix/rerun/PR)",
+};
+
+const EXECUTION_MODE_CTA: Record<ExecutionMode, string> = {
+  run: "Run Checks",
+  fix: "Run Fix Loop",
+  pr: "Prepare PR Artifacts",
+  full: "Run Full Loop",
+};
+
+const EXECUTION_MODE_RETRY_CTA: Record<ExecutionMode, string> = {
+  run: "Retry Failed (Run)",
+  fix: "Retry Failed (Fix)",
+  pr: "Retry Failed (PR)",
+  full: "Retry Failed (Full)",
+};
+
+const ACTUATOR_LABEL: Record<NonNullable<ProjectPrReadiness["fullPrActuator"]>, string> =
+  {
+    controller: "Controller-owned branch/push/PR",
+    codex_git_workspace: "Codex git in workspace",
+    codex_connector: "Codex GitHub connector",
+    none: "No full PR actuator available",
+  };
+
+const REASON_CODE_LABEL: Record<ProjectPrReadinessReasonCode, string> = {
+  CODEX_BRIDGE_UNREACHABLE: "Codex bridge is unavailable.",
+  CODEX_ACCOUNT_NOT_AUTHENTICATED: "Codex account is not authenticated.",
+  GITHUB_CONNECTION_MISSING: "GitHub app is not connected for this account.",
+  GITHUB_REPO_NOT_CONFIGURED: "Project repository is not configured.",
+  GITHUB_REPO_READ_DENIED: "GitHub installation cannot read this repository.",
+  GITHUB_BRANCH_NOT_FOUND: "Configured branch cannot be accessed.",
+  GITHUB_WRITE_PERMISSIONS_MISSING:
+    "GitHub installation is missing write permissions.",
+  SANDBOX_GIT_PROTECTED: "Sandbox policy blocks git write operations.",
+  TOOL_SIDE_EFFECT_APPROVALS_UNSUPPORTED:
+    "Tool side-effect approvals are not supported in this bridge mode.",
+  PR_ACTUATOR_UNAVAILABLE: "No full PR actuator path is available.",
+};
+
+const PROBE_STEP_LABEL: Record<
+  ProjectPrReadiness["probeResults"][number]["step"],
+  string
+> = {
+  codex_bridge: "Codex bridge",
+  codex_account: "Codex account",
+  github_connection: "GitHub connection",
+  repository_config: "Repository config",
+  repository_access: "Repository access",
+  branch_access: "Branch access",
+  github_permissions: "GitHub permissions",
+  actuator_path: "Actuator path",
+};
+
 const JOB_TERMINAL: ExecutionJob["status"][] = ["completed", "failed", "blocked"];
 
 const isJobActive = (job: ExecutionJob | null): boolean =>
   Boolean(job && (job.status === "queued" || job.status === "running"));
+
+const isFullModeReady = (readiness: ProjectPrReadiness | null): boolean =>
+  Boolean(
+    readiness &&
+      readiness.status === "ready" &&
+      readiness.fullPrActuator !== "none" &&
+      readiness.reasonCodes.length === 0,
+  );
 
 const mergeEvents = (
   current: ExecutionJobEvent[],
@@ -99,21 +170,28 @@ export const ExecuteClient = ({
   project: _project,
   initialPack,
   initialJob,
+  initialReadiness,
 }: {
   projectId: string;
   project: Project;
   initialPack: ScenarioPack;
   initialJob: ExecutionJob | null;
+  initialReadiness: ProjectPrReadiness | null;
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [isLaunching, setIsLaunching] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isCheckingPrReadiness, setIsCheckingPrReadiness] = useState(false);
   const [executeInstruction, setExecuteInstruction] = useState(
     initialJob?.userInstruction ?? "",
   );
-  const [executionMode, setExecutionMode] = useState<
-    "run" | "fix" | "pr" | "full"
-  >(initialJob?.executionMode ?? "full");
+  const [prReadiness, setPrReadiness] = useState<ProjectPrReadiness | null>(
+    initialReadiness ?? null,
+  );
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(
+    initialJob?.executionMode ??
+      (isFullModeReady(initialReadiness ?? null) ? "full" : "fix"),
+  );
   const [currentJob, setCurrentJob] = useState<ExecutionJob | null>(initialJob);
   const [jobEvents, setJobEvents] = useState<ExecutionJobEvent[]>([]);
   const [eventsCursor, setEventsCursor] = useState(0);
@@ -169,6 +247,70 @@ export const ExecuteClient = ({
     }
     setTraceMode(new URLSearchParams(window.location.search).get("trace") === "1");
   }, []);
+
+  const fullModeReady = useMemo(() => isFullModeReady(prReadiness), [prReadiness]);
+  const fullModeBlocked = executionMode === "full" && !fullModeReady;
+
+  const refreshPrReadiness = useCallback(
+    async (method: "GET" | "POST"): Promise<ProjectPrReadiness | null> => {
+      const response = await fetch(`/api/projects/${projectId}/pr-readiness`, {
+        method,
+      });
+      if (!response.ok) {
+        throw new Error(
+          await readError(response, "Failed to load PR readiness details."),
+        );
+      }
+      const payload = (await response.json()) as ProjectPrReadinessPayload;
+      const readiness = payload.readiness ?? null;
+      setPrReadiness(readiness);
+      return readiness;
+    },
+    [projectId],
+  );
+
+  const handleCheckPrReadiness = useCallback(async () => {
+    if (isCheckingPrReadiness) {
+      return;
+    }
+    setIsCheckingPrReadiness(true);
+    setStatusMessage("Checking PR automation readiness...");
+    try {
+      const readiness = await refreshPrReadiness("POST");
+      if (isFullModeReady(readiness)) {
+        setStatusMessage("PR automation is ready for full mode.");
+      } else {
+        setStatusMessage(
+          "Full mode is blocked until readiness checks pass. Use fix mode while blockers are being resolved.",
+        );
+      }
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : "Failed to check PR readiness.",
+      );
+    } finally {
+      setIsCheckingPrReadiness(false);
+    }
+  }, [isCheckingPrReadiness, refreshPrReadiness, setStatusMessage]);
+
+  useEffect(() => {
+    if (initialReadiness) {
+      return;
+    }
+    void refreshPrReadiness("GET").catch(() => {
+      // Existing status text and server-side gating handle stale readiness state.
+    });
+  }, [initialReadiness, refreshPrReadiness]);
+
+  useEffect(() => {
+    if (executionMode !== "full" || fullModeReady) {
+      return;
+    }
+    if (isJobActive(currentJob)) {
+      return;
+    }
+    setExecutionMode("fix");
+  }, [currentJob, executionMode, fullModeReady]);
 
   const syncJobState = useCallback(
     async (jobId: string, resetCursor = false): Promise<ExecutionJob | null> => {
@@ -311,7 +453,7 @@ export const ExecuteClient = ({
   }, [currentJob?.id, syncJobState]);
 
   const handleExecute = async (options?: {
-    mode?: "run" | "fix" | "pr" | "full";
+    mode?: ExecutionMode;
     retryStrategy?: "failed_only" | "full";
     retryFromRunId?: string;
   }) => {
@@ -331,11 +473,19 @@ export const ExecuteClient = ({
     const mode = options?.mode ?? executionMode;
     const retryStrategy = options?.retryStrategy ?? "full";
     const retryFromRunId = options?.retryFromRunId ?? "";
+    if (mode === "full" && !fullModeReady) {
+      setExecutionMode("fix");
+      setStatusMessage(
+        "Full mode is blocked by PR readiness. Resolve blockers or run fix mode.",
+      );
+      return;
+    }
+
     setIsLaunching(true);
     setStatusMessage(
       retryStrategy === "failed_only"
-        ? "Queueing retry for failed scenarios..."
-        : "Queueing full background execution job...",
+        ? `Queueing retry for failed scenarios (${EXECUTION_MODE_LABEL[mode].toLowerCase()})...`
+        : `Queueing ${EXECUTION_MODE_LABEL[mode].toLowerCase()} background execution job...`,
     );
 
     try {
@@ -344,14 +494,14 @@ export const ExecuteClient = ({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                scenarioPackId: initialPack.id,
-                executionMode: mode,
-                userInstruction: executeInstruction.trim(),
-                scenarioIds: scenarioIdsToRun,
-                retryStrategy,
-                retryFromRunId: retryFromRunId || undefined,
-              }),
+          body: JSON.stringify({
+            scenarioPackId: initialPack.id,
+            executionMode: mode,
+            userInstruction: executeInstruction.trim(),
+            scenarioIds: scenarioIdsToRun,
+            retryStrategy,
+            retryFromRunId: retryFromRunId || undefined,
+          }),
         },
       );
 
@@ -594,6 +744,49 @@ export const ExecuteClient = ({
     const selected = new Set(selectedScenarioIds);
     return allScenarioIds.filter((scenarioId) => selected.has(scenarioId)).length;
   }, [allScenarioIds, selectedScenarioIds]);
+  const readinessCheckedAtLabel = useMemo(() => {
+    if (!prReadiness?.checkedAt) {
+      return "";
+    }
+    const parsed = Date.parse(prReadiness.checkedAt);
+    if (Number.isNaN(parsed)) {
+      return prReadiness.checkedAt;
+    }
+    return new Date(parsed).toLocaleString();
+  }, [prReadiness?.checkedAt]);
+  const readinessDurationLabel = useMemo(() => {
+    if (!prReadiness) {
+      return "";
+    }
+    if (prReadiness.probeDurationMs < 1000) {
+      return `${prReadiness.probeDurationMs}ms`;
+    }
+    return `${(prReadiness.probeDurationMs / 1000).toFixed(2)}s`;
+  }, [prReadiness]);
+  const readinessActuatorLabel =
+    prReadiness?.fullPrActuator != null
+      ? ACTUATOR_LABEL[prReadiness.fullPrActuator]
+      : "Not checked";
+  const readinessReasonCodeLabels = useMemo(
+    () =>
+      (prReadiness?.reasonCodes ?? []).map((reasonCode) => ({
+        reasonCode,
+        label: REASON_CODE_LABEL[reasonCode] ?? "Readiness check failed.",
+      })),
+    [prReadiness?.reasonCodes],
+  );
+  const executionModeDescription = useMemo(
+    () => EXECUTION_MODE_LABEL[executionMode],
+    [executionMode],
+  );
+  const executeCtaLabel = useMemo(
+    () => EXECUTION_MODE_CTA[executionMode],
+    [executionMode],
+  );
+  const retryCtaLabel = useMemo(
+    () => EXECUTION_MODE_RETRY_CTA[executionMode],
+    [executionMode],
+  );
   const allSelected =
     allScenarioIds.length > 0 && selectedScenarioCount === allScenarioIds.length;
   const hasPartialSelection =
@@ -778,6 +971,188 @@ export const ExecuteClient = ({
       >
         <div
           style={{
+            border: "1px solid var(--forge-line)",
+            borderRadius: "7px",
+            padding: "0.5rem 0.6rem",
+            display: "grid",
+            gap: "0.35rem",
+            background: "rgba(22, 30, 53, 0.48)",
+            textAlign: "left",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "0.5rem",
+              flexWrap: "wrap",
+            }}
+          >
+            <strong style={{ fontSize: "0.82rem", color: "var(--forge-ink)" }}>
+              PR automation readiness
+            </strong>
+            <span
+              style={{
+                fontSize: "0.74rem",
+                fontWeight: 600,
+                color: fullModeReady ? "var(--forge-ok)" : "var(--forge-fire)",
+              }}
+            >
+              {prReadiness
+                ? fullModeReady
+                  ? "ready"
+                  : "blocked"
+                : "not checked"}
+            </span>
+          </div>
+          <p style={{ margin: 0, fontSize: "0.74rem", color: "var(--forge-muted)" }}>
+            Actuator path: {readinessActuatorLabel}
+            {prReadiness?.checkedAt
+              ? ` · checked ${readinessCheckedAtLabel} (${readinessDurationLabel})`
+              : ""}
+          </p>
+          <p style={{ margin: 0, fontSize: "0.74rem", color: "var(--forge-muted)" }}>
+            {fullModeReady
+              ? "Full mode is available."
+              : "Full mode is disabled until readiness blockers are resolved."}
+          </p>
+          {readinessReasonCodeLabels.length > 0 ? (
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: "1rem",
+                display: "grid",
+                gap: "0.15rem",
+                fontSize: "0.72rem",
+                color: "var(--forge-muted)",
+              }}
+            >
+              {readinessReasonCodeLabels.map((entry) => (
+                <li key={entry.reasonCode}>
+                  <code>{entry.reasonCode}</code>: {entry.label}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {prReadiness?.reasons.length ? (
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: "1rem",
+                display: "grid",
+                gap: "0.15rem",
+                fontSize: "0.72rem",
+                color: "var(--forge-muted)",
+              }}
+            >
+              {prReadiness.reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          ) : null}
+          {prReadiness?.recommendedActions.length ? (
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: "1rem",
+                display: "grid",
+                gap: "0.15rem",
+                fontSize: "0.72rem",
+                color: "var(--forge-muted)",
+              }}
+            >
+              {prReadiness.recommendedActions.map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => void handleCheckPrReadiness()}
+              disabled={isCheckingPrReadiness || isLaunching || isExecuting}
+            >
+              {isCheckingPrReadiness ? "Checking..." : "Check PR readiness"}
+            </button>
+          </div>
+          {prReadiness ? (
+            <details
+              style={{
+                border: "1px solid var(--forge-line)",
+                borderRadius: "6px",
+                padding: "0.35rem 0.45rem",
+                background: "rgba(13, 20, 38, 0.45)",
+              }}
+            >
+              <summary
+                style={{
+                  cursor: "pointer",
+                  userSelect: "none",
+                  fontSize: "0.72rem",
+                  color: "var(--forge-muted)",
+                }}
+              >
+                Readiness probe details ({prReadiness.probeResults.length} checks)
+              </summary>
+              <ul
+                style={{
+                  margin: "0.35rem 0 0",
+                  paddingLeft: "1rem",
+                  display: "grid",
+                  gap: "0.15rem",
+                  fontSize: "0.7rem",
+                  color: "var(--forge-muted)",
+                }}
+              >
+                {prReadiness.probeResults.map((probe, index) => (
+                  <li
+                    key={`${probe.step}:${index}:${probe.reasonCode ?? "ok"}`}
+                    style={{ lineHeight: 1.3 }}
+                  >
+                    <strong style={{ color: probe.ok ? "var(--forge-ok)" : "#ffb2ad" }}>
+                      {PROBE_STEP_LABEL[probe.step] ?? probe.step}
+                    </strong>{" "}
+                    {probe.ok ? "ok" : "failed"}: {probe.message}
+                    {probe.reasonCode ? ` [${probe.reasonCode}]` : ""}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+
+        <label
+          style={{
+            display: "grid",
+            gap: "0.3rem",
+            fontSize: "0.76rem",
+            color: "var(--forge-muted)",
+            textAlign: "left",
+          }}
+        >
+          <span>Execution mode</span>
+          <select
+            value={executionMode}
+            onChange={(event) => setExecutionMode(event.target.value as ExecutionMode)}
+            disabled={isLaunching || isExecuting}
+            style={{ width: "100%" }}
+          >
+            <option value="run">{EXECUTION_MODE_LABEL.run}</option>
+            <option value="fix">{EXECUTION_MODE_LABEL.fix}</option>
+            <option value="pr">{EXECUTION_MODE_LABEL.pr}</option>
+            <option value="full" disabled={!fullModeReady}>
+              {EXECUTION_MODE_LABEL.full}
+            </option>
+          </select>
+        </label>
+
+        <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+          Selected mode: {executionModeDescription}
+        </p>
+
+        <div
+          style={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
@@ -827,17 +1202,22 @@ export const ExecuteClient = ({
         >
           <button
             type="button"
-            onClick={() => void handleExecute({ mode: "full", retryStrategy: "full" })}
-            disabled={isLaunching || isExecuting || selectedScenarioCount === 0}
+            onClick={() => void handleExecute({ mode: executionMode, retryStrategy: "full" })}
+            disabled={
+              isLaunching ||
+              isExecuting ||
+              selectedScenarioCount === 0 ||
+              fullModeBlocked
+            }
             style={{ whiteSpace: "nowrap" }}
           >
-            {isLaunching ? "Queueing..." : "Run Full Loop"}
+            {isLaunching ? "Queueing..." : executeCtaLabel}
           </button>
           <button
             type="button"
             onClick={() =>
               void handleExecute({
-                mode: "full",
+                mode: executionMode,
                 retryStrategy: "failed_only",
                 retryFromRunId: latestRun?.id ?? "",
               })
@@ -846,7 +1226,8 @@ export const ExecuteClient = ({
               isLaunching ||
               isExecuting ||
               !hasFailedScenarios ||
-              selectedScenarioCount === 0
+              selectedScenarioCount === 0 ||
+              fullModeBlocked
             }
             style={{
               whiteSpace: "nowrap",
@@ -854,7 +1235,7 @@ export const ExecuteClient = ({
               background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
             }}
           >
-            Retry Failed
+            {retryCtaLabel}
           </button>
           {activeJobId ? (
             <a

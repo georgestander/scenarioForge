@@ -2,6 +2,7 @@ import type { RequestInfo } from "rwsdk/worker";
 import type { AppContext } from "@/worker";
 import { redirect } from "@/app/shared/api";
 import {
+  getLatestProjectPrReadinessForProject,
   getProjectByIdForOwner,
   listExecutionJobsForProject,
   listScenarioPacksForProject,
@@ -49,6 +50,7 @@ export const ExecutePage = ({ ctx, params, request }: AppRequestInfo) => {
   const initialJob = requestedJobId
     ? jobs.find((job) => job.id === requestedJobId) ?? null
     : jobs.find((job) => job.status === "queued" || job.status === "running") ?? null;
+  const initialReadiness = getLatestProjectPrReadinessForProject(principal.id, projectId);
 
   return (
     <ExecuteClient
@@ -56,6 +58,7 @@ export const ExecutePage = ({ ctx, params, request }: AppRequestInfo) => {
       project={project}
       initialPack={initialPack}
       initialJob={initialJob}
+      initialReadiness={initialReadiness}
     />
   );
 };
