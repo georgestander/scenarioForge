@@ -151,6 +151,7 @@ pnpm build
 - `POST /api/projects/:projectId/actions/execute/start`
 - `GET /api/jobs/:jobId`
 - `GET /api/jobs/:jobId/events`
+- `POST /api/jobs/:jobId/control` (`pause` | `resume` | `stop`)
 - `GET /api/jobs/active`
 - `GET|POST /api/projects/:projectId/pr-readiness`
 
@@ -170,6 +171,10 @@ pnpm build
   - Confirm `CODEX_AUTH_BRIDGE_URL` is reachable.
   - Confirm ChatGPT sign-in is active.
   - For non-interactive runs, the bridge now auto-answers `tool/requestUserInput` prompts with a safe default (`decline`). Override with `CODEX_AUTH_BRIDGE_USER_INPUT_POLICY=accept|cancel|first|error`.
+
+- Need to pause or stop a long execute loop
+  - Use the Execute page controls (`Pause`, `Resume`, `Stop`) which call `/api/jobs/:jobId/control`.
+  - Stop requests attempt to interrupt the active Codex turn and persist partial audit evidence.
 
 ## Project status and authority
 

@@ -117,6 +117,15 @@ export interface ExecutionJobDetailPayload {
   pullRequests: PullRequestRecord[];
 }
 
+export interface ExecutionJobControlPayload {
+  job: ExecutionJob;
+  control: {
+    action: "pause" | "resume" | "stop";
+    message: string;
+    interrupted: boolean;
+  };
+}
+
 export interface ExecutionJobEventsPayload {
   data: ExecutionJobEvent[];
   cursor: number;

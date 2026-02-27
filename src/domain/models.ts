@@ -269,6 +269,10 @@ export interface ScenarioRun {
 export type ExecutionJobStatus =
   | "queued"
   | "running"
+  | "pausing"
+  | "paused"
+  | "stopping"
+  | "cancelled"
   | "completed"
   | "failed"
   | "blocked";

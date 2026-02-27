@@ -752,7 +752,11 @@ export const listExecutionJobsForProject = (
 };
 
 const isExecutionJobActive = (status: ExecutionJob["status"]): boolean =>
-  status === "queued" || status === "running";
+  status === "queued" ||
+  status === "running" ||
+  status === "pausing" ||
+  status === "paused" ||
+  status === "stopping";
 
 export const listActiveExecutionJobsForOwner = (
   ownerId: string,

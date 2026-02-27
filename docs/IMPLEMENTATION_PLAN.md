@@ -130,6 +130,7 @@ Job launch request:
 Job read surfaces:
 - `GET /api/jobs/:jobId`
 - `GET /api/jobs/:jobId/events?cursor=...&limit=...`
+- `POST /api/jobs/:jobId/control` with `action: pause | resume | stop`
 - `GET /api/jobs/active`
 
 Behavior:
@@ -139,6 +140,7 @@ Behavior:
 4. every status/progress/codex event is persisted to job-event storage.
 5. final run/fix/pr artifacts are linked back to the job record.
 6. job record captures execution audit (`threadId`, `turnId`, model, turn status).
+7. control actions (`pause`, `resume`, `stop`) are persisted as auditable events and `stop` attempts to interrupt in-flight turns.
 
 Output:
 - `start`: queued `job` + active count metadata.

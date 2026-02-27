@@ -15,6 +15,7 @@ import type {
 import { readError } from "@/app/shared/api";
 import { DEFAULT_STATUS_MESSAGE, useSession } from "@/app/shared/SessionContext";
 import type {
+  ExecutionJobControlPayload,
   ExecutionJobDetailPayload,
   ExecutionJobEventsPayload,
   ExecutionJobStartPayload,
@@ -61,6 +62,10 @@ const STAGE_LABEL: Record<string, string> = {
 const JOB_STATUS_LABEL: Record<ExecutionJob["status"], string> = {
   queued: "Queued",
   running: "Running",
+  pausing: "Pausing",
+  paused: "Paused",
+  stopping: "Stopping",
+  cancelled: "Cancelled",
   completed: "Completed",
   failed: "Failed",
   blocked: "Failed",
@@ -131,10 +136,22 @@ const PROBE_STEP_LABEL: Record<
   actuator_path: "Actuator path",
 };
 
-const JOB_TERMINAL: ExecutionJob["status"][] = ["completed", "failed", "blocked"];
+const JOB_TERMINAL: ExecutionJob["status"][] = [
+  "completed",
+  "failed",
+  "blocked",
+  "cancelled",
+];
 
 const isJobActive = (job: ExecutionJob | null): boolean =>
-  Boolean(job && (job.status === "queued" || job.status === "running"));
+  Boolean(
+    job &&
+      (job.status === "queued" ||
+        job.status === "running" ||
+        job.status === "pausing" ||
+        job.status === "paused" ||
+        job.status === "stopping"),
+  );
 
 const isFullModeReady = (readiness: ProjectPrReadiness | null): boolean =>
   Boolean(
@@ -187,6 +204,9 @@ export const ExecuteClient = ({
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [isLaunching, setIsLaunching] = useState(false);
+  const [controlAction, setControlAction] = useState<
+    "pause" | "resume" | "stop" | null
+  >(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCheckingPrReadiness, setIsCheckingPrReadiness] = useState(false);
   const [executeInstruction, setExecuteInstruction] = useState(
@@ -546,8 +566,68 @@ export const ExecuteClient = ({
     }
   };
 
+  const handleControl = async (action: "pause" | "resume" | "stop") => {
+    if (!currentJob || controlAction) {
+      return;
+    }
+
+    if (action === "stop") {
+      const confirmed = window.confirm(
+        "Stop this execution job? Partial progress will remain in audit history.",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setControlAction(action);
+    const progressLabel =
+      action === "pause"
+        ? "Requesting pause..."
+        : action === "resume"
+          ? "Resuming execution..."
+          : "Requesting stop...";
+    setStatusMessage(progressLabel);
+
+    try {
+      const response = await fetch(`/api/jobs/${currentJob.id}/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Failed to control execution job."));
+      }
+
+      const payload = (await response.json()) as ExecutionJobControlPayload;
+      setCurrentJob(payload.job);
+      await syncJobState(payload.job.id, false);
+      setStatusMessage(payload.control.message);
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error
+          ? error.message
+          : "Failed to control execution job.",
+      );
+    } finally {
+      setControlAction(null);
+    }
+  };
+
   const isExecuting = isLaunching || isJobActive(currentJob);
+  const isControlling = controlAction !== null;
   const done = Boolean(currentJob && JOB_TERMINAL.includes(currentJob.status));
+  const canPause = Boolean(
+    currentJob &&
+      (currentJob.status === "queued" ||
+        currentJob.status === "running" ||
+        currentJob.status === "pausing"),
+  );
+  const canResume = Boolean(
+    currentJob &&
+      (currentJob.status === "paused" || currentJob.status === "pausing"),
+  );
+  const canStop = Boolean(currentJob && !JOB_TERMINAL.includes(currentJob.status));
   const hasFailedScenarios = Boolean(latestRun && latestRun.summary.failed > 0);
   const activeJobId = currentJob && isJobActive(currentJob) ? currentJob.id : null;
   const visibleStatusMessage = useMemo(() => {
@@ -725,6 +805,16 @@ export const ExecuteClient = ({
       return null;
     }
 
+    if (currentJob?.status === "pausing") {
+      return "Pause requested. Waiting for current step to stop.";
+    }
+    if (currentJob?.status === "paused") {
+      return "Execution paused by user.";
+    }
+    if (currentJob?.status === "stopping") {
+      return "Stop requested. Waiting for current step to halt.";
+    }
+
     const active =
       scenarioRows.find((row) => row.status === "running") ??
       (activeScenarioId
@@ -744,7 +834,7 @@ export const ExecuteClient = ({
         : STATUS_LABEL[active.status] ?? active.status;
 
     return `${active.scenarioId}: ${stageLabel}. ${eventMessage}`;
-  }, [activeScenarioId, isExecuting, latestScenarioEvent, scenarioRows]);
+  }, [activeScenarioId, currentJob?.status, isExecuting, latestScenarioEvent, scenarioRows]);
 
   const panelHeight = "calc(100vh - 300px)";
   const selectedScenarioCount = useMemo(() => {
@@ -851,11 +941,17 @@ export const ExecuteClient = ({
           color: "var(--forge-ink)",
         }}
       >
-        {isExecuting
-          ? "Running Scenarios"
-          : done
-            ? "Execution Complete"
-            : "Execute Scenarios"}
+        {currentJob?.status === "paused"
+          ? "Execution Paused"
+          : currentJob?.status === "pausing"
+            ? "Pausing Execution"
+            : currentJob?.status === "stopping"
+              ? "Stopping Execution"
+              : isExecuting
+                ? "Running Scenarios"
+                : done
+                  ? "Execution Complete"
+                  : "Execute Scenarios"}
       </h2>
 
       {visibleStatusMessage ? (
@@ -1251,6 +1347,48 @@ export const ExecuteClient = ({
           >
             {retryCtaLabel}
           </button>
+          {canPause ? (
+            <button
+              type="button"
+              onClick={() => void handleControl("pause")}
+              disabled={isControlling}
+              style={{
+                whiteSpace: "nowrap",
+                borderColor: "#6d5a2d",
+                background: "linear-gradient(180deg, #4a3f22 0%, #3b3018 100%)",
+              }}
+            >
+              {controlAction === "pause" ? "Pausing..." : "Pause"}
+            </button>
+          ) : null}
+          {canResume ? (
+            <button
+              type="button"
+              onClick={() => void handleControl("resume")}
+              disabled={isControlling}
+              style={{
+                whiteSpace: "nowrap",
+                borderColor: "#2f6ba5",
+                background: "linear-gradient(180deg, #1f4e7a 0%, #183d60 100%)",
+              }}
+            >
+              {controlAction === "resume" ? "Resuming..." : "Resume"}
+            </button>
+          ) : null}
+          {canStop ? (
+            <button
+              type="button"
+              onClick={() => void handleControl("stop")}
+              disabled={isControlling}
+              style={{
+                whiteSpace: "nowrap",
+                borderColor: "#8a3d3d",
+                background: "linear-gradient(180deg, #6b3030 0%, #512323 100%)",
+              }}
+            >
+              {controlAction === "stop" ? "Stopping..." : "Stop"}
+            </button>
+          ) : null}
           {activeJobId ? (
             <a
               href={`/projects/${projectId}/execute?packId=${encodeURIComponent(initialPack.id)}&jobId=${encodeURIComponent(activeJobId)}`}
@@ -1292,7 +1430,13 @@ export const ExecuteClient = ({
 
         {isExecuting ? (
           <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.75rem" }}>
-            Run continues in the background. You can leave this page and return anytime.
+            {currentJob?.status === "paused"
+              ? "Execution is paused. Resume or stop when you are ready."
+              : currentJob?.status === "pausing"
+                ? "Pausing execution. You can resume or stop after the current step halts."
+                : currentJob?.status === "stopping"
+                  ? "Stopping execution. Partial evidence will remain in job history."
+                  : "Run continues in the background. You can leave this page and return anytime."}
           </p>
         ) : null}
       </div>

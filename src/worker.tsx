@@ -52,6 +52,7 @@ import {
 import {
   executeScenariosViaCodex,
   executeScenariosViaCodexStream,
+  interruptExecuteTurnViaCodex,
 } from "@/services/codexExecute";
 import {
   generateScenariosViaCodex,
@@ -237,6 +238,18 @@ const normalizeExecutionMode = (
     return mode;
   }
   return "full";
+};
+
+const normalizeExecutionControlAction = (
+  value: unknown,
+): ExecutionJobControlAction | null => {
+  const action = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (action === "pause" || action === "resume" || action === "stop") {
+    return action;
+  }
+  return null;
 };
 
 const describeCodexExecuteProgress = (eventName: string): string => {
@@ -436,6 +449,86 @@ const EXECUTION_JOB_MAX_ACTIVE_PER_OWNER = 3;
 const EXECUTION_JOB_EVENT_PAGE_LIMIT = 200;
 const EXECUTION_JOB_STALE_AFTER_MS = 12 * 60 * 1000;
 const EXECUTION_JOB_MAX_CODEX_EVENTS = 300;
+const EXECUTION_JOB_CONTROL_POLL_MS = 350;
+const EXECUTION_CONTROL_CONSTRAINT_KEY = "__control";
+
+type ExecutionJobControlAction = "pause" | "resume" | "stop";
+
+interface ExecutionJobControlState {
+  pauseRequested: boolean;
+  stopRequested: boolean;
+  lastAction: ExecutionJobControlAction | null;
+  updatedAt: string | null;
+}
+
+const getDefaultExecutionJobControlState = (): ExecutionJobControlState => ({
+  pauseRequested: false,
+  stopRequested: false,
+  lastAction: null,
+  updatedAt: null,
+});
+
+const isExecutionJobTerminalStatus = (
+  status: ExecutionJob["status"],
+): boolean =>
+  status === "completed" ||
+  status === "failed" ||
+  status === "blocked" ||
+  status === "cancelled";
+
+const readExecutionJobControlStateFromConstraints = (
+  constraints: unknown,
+): ExecutionJobControlState => {
+  if (!isRecord(constraints)) {
+    return getDefaultExecutionJobControlState();
+  }
+
+  const rawControl = constraints[EXECUTION_CONTROL_CONSTRAINT_KEY];
+  if (!isRecord(rawControl)) {
+    return getDefaultExecutionJobControlState();
+  }
+
+  const pauseRequested = rawControl.pauseRequested === true;
+  const stopRequested = rawControl.stopRequested === true;
+  const lastActionRaw = String(rawControl.lastAction ?? "")
+    .trim()
+    .toLowerCase();
+  const lastAction =
+    lastActionRaw === "pause" || lastActionRaw === "resume" || lastActionRaw === "stop"
+      ? (lastActionRaw as ExecutionJobControlAction)
+      : null;
+  const updatedAtRaw = String(rawControl.updatedAt ?? "").trim();
+  const updatedAt = updatedAtRaw || null;
+
+  return {
+    pauseRequested,
+    stopRequested,
+    lastAction,
+    updatedAt,
+  };
+};
+
+const readExecutionJobControlState = (
+  job: ExecutionJob,
+): ExecutionJobControlState =>
+  readExecutionJobControlStateFromConstraints(job.constraints);
+
+const mutateExecutionJobControlState = (
+  job: ExecutionJob,
+  updater: (control: ExecutionJobControlState) => void,
+): void => {
+  const nextConstraints = isRecord(job.constraints) ? { ...job.constraints } : {};
+  const control = readExecutionJobControlStateFromConstraints(nextConstraints);
+  updater(control);
+  control.updatedAt = new Date().toISOString();
+  nextConstraints[EXECUTION_CONTROL_CONSTRAINT_KEY] = control;
+  job.constraints = nextConstraints;
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 type ExecutionJobEventStatus =
   | "queued"
@@ -966,6 +1059,57 @@ const extractExecutionJobEventStage = (
   );
 };
 
+const extractExecutionJobEventThreadAndTurn = (
+  payload: unknown,
+): { threadId: string; turnId: string } | null => {
+  const record = readNestedRecord(payload);
+  const nested = readNestedRecord(record?.payload);
+  const deep = readNestedRecord(nested?.payload);
+  const eventRecord =
+    readNestedRecord(record?.event) ??
+    readNestedRecord(nested?.event) ??
+    readNestedRecord(deep?.event);
+  const eventParams = readNestedRecord(eventRecord?.params);
+  const nestedEvent = readNestedRecord(eventParams?.event);
+  const nestedEventParams = readNestedRecord(nestedEvent?.params);
+
+  const threadIdCandidates = [
+    record?.threadId,
+    nested?.threadId,
+    deep?.threadId,
+    eventRecord?.threadId,
+    eventParams?.threadId,
+    nestedEvent?.threadId,
+    nestedEventParams?.threadId,
+  ];
+  const turnIdCandidates = [
+    record?.turnId,
+    nested?.turnId,
+    deep?.turnId,
+    eventRecord?.turnId,
+    eventParams?.turnId,
+    nestedEvent?.turnId,
+    nestedEventParams?.turnId,
+  ];
+
+  const threadId =
+    threadIdCandidates.find(
+      (candidate): candidate is string =>
+        typeof candidate === "string" && candidate.trim().length > 0,
+    ) ?? "";
+  const turnId =
+    turnIdCandidates.find(
+      (candidate): candidate is string =>
+        typeof candidate === "string" && candidate.trim().length > 0,
+    ) ?? "";
+
+  if (!threadId || !turnId) {
+    return null;
+  }
+
+  return { threadId, turnId };
+};
+
 const updateExecutionJobAndPersist = async (
   ownerId: string,
   jobId: string,
@@ -980,6 +1124,171 @@ const updateExecutionJobAndPersist = async (
   return next;
 };
 
+const markExecutionJobCancelledByUser = async (
+  ownerId: string,
+  jobId: string,
+  message: string,
+): Promise<ExecutionJob | null> => {
+  const current = getExecutionJobById(ownerId, jobId);
+  if (!current) {
+    return null;
+  }
+
+  if (current.status === "cancelled") {
+    return current;
+  }
+
+  const cancelledAt = new Date().toISOString();
+  const next = await updateExecutionJobAndPersist(ownerId, jobId, (draft) => {
+    mutateExecutionJobControlState(draft, (control) => {
+      control.pauseRequested = false;
+      control.stopRequested = true;
+      control.lastAction = "stop";
+    });
+    draft.status = "cancelled";
+    draft.completedAt = cancelledAt;
+    draft.error = message;
+  });
+
+  if (!next) {
+    return null;
+  }
+
+  await persistExecutionJobEvent({
+    job: next,
+    event: "cancelled",
+    phase: "execute.cancelled",
+    status: "complete",
+    message,
+    payload: {
+      action: "execute",
+      phase: "execute.cancelled",
+      status: "cancelled",
+      message,
+    },
+    timestamp: cancelledAt,
+  });
+
+  if (next.executionMode === "full") {
+    const readiness =
+      getLatestProjectPrReadinessForProject(ownerId, next.projectId);
+    await recordTelemetryEvent({
+      ownerId,
+      projectId: next.projectId,
+      jobId: next.id,
+      eventName: "full_mode_completed",
+      executionMode: "full",
+      actuatorPath: readiness?.fullPrActuator ?? null,
+      reasonCodes: readiness?.reasonCodes ?? [],
+      payload: {
+        jobStatus: "cancelled",
+        cancelledByUser: true,
+      },
+    }).catch(() => undefined);
+  }
+
+  return next;
+};
+
+const interruptActiveExecutionTurn = async (
+  job: ExecutionJob,
+): Promise<{ interrupted: boolean; message: string }> => {
+  const threadId = job.executionAudit.threadId?.trim() ?? "";
+  const turnId = job.executionAudit.turnId?.trim() ?? "";
+  if (!threadId || !turnId) {
+    return {
+      interrupted: false,
+      message: "No in-flight turn is available to interrupt yet.",
+    };
+  }
+
+  try {
+    await interruptExecuteTurnViaCodex({
+      threadId,
+      turnId,
+    });
+    return {
+      interrupted: true,
+      message: `Interrupt requested for turn ${turnId}.`,
+    };
+  } catch (error) {
+    return {
+      interrupted: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Failed to interrupt current execute turn.",
+    };
+  }
+};
+
+const waitForExecutionJobControlResolution = async (
+  ownerId: string,
+  jobId: string,
+): Promise<"continue" | "stop"> => {
+  while (true) {
+    const liveJob = getExecutionJobById(ownerId, jobId);
+    if (!liveJob) {
+      return "stop";
+    }
+
+    if (isExecutionJobTerminalStatus(liveJob.status)) {
+      return "stop";
+    }
+
+    const control = readExecutionJobControlState(liveJob);
+    if (control.stopRequested || liveJob.status === "stopping") {
+      await markExecutionJobCancelledByUser(
+        ownerId,
+        jobId,
+        "Execution stopped by user.",
+      );
+      return "stop";
+    }
+
+    const pauseRequested =
+      control.pauseRequested ||
+      liveJob.status === "pausing" ||
+      liveJob.status === "paused";
+
+    if (!pauseRequested) {
+      if (liveJob.status !== "running" && liveJob.status !== "queued") {
+        await sleep(EXECUTION_JOB_CONTROL_POLL_MS);
+        continue;
+      }
+      return "continue";
+    }
+
+    if (liveJob.status !== "paused") {
+      const pausedJob = await updateExecutionJobAndPersist(ownerId, jobId, (draft) => {
+        if (isExecutionJobTerminalStatus(draft.status)) {
+          return;
+        }
+        draft.status = "paused";
+        draft.error = null;
+      });
+
+      if (pausedJob) {
+        await persistExecutionJobEvent({
+          job: pausedJob,
+          event: "status",
+          phase: "execute.paused",
+          status: "running",
+          message: "Execution paused. Resume or stop when ready.",
+          payload: {
+            action: "execute",
+            phase: "execute.paused",
+            status: "paused",
+            message: "Execution paused. Resume or stop when ready.",
+          },
+        });
+      }
+    }
+
+    await sleep(EXECUTION_JOB_CONTROL_POLL_MS);
+  }
+};
+
 const expireStaleExecutionJobs = async (
   ownerId: string,
   staleAfterMs = EXECUTION_JOB_STALE_AFTER_MS,
@@ -989,9 +1298,18 @@ const expireStaleExecutionJobs = async (
   const expired: ExecutionJob[] = [];
 
   for (const job of activeJobs) {
+    if (job.status === "paused") {
+      continue;
+    }
+
+    const updatedAtMs = Date.parse(job.updatedAt);
     const startedAtMs = job.startedAt ? Date.parse(job.startedAt) : Number.NaN;
     const createdAtMs = Date.parse(job.createdAt);
-    const baselineMs = Number.isFinite(startedAtMs) ? startedAtMs : createdAtMs;
+    const baselineMs = Number.isFinite(updatedAtMs)
+      ? updatedAtMs
+      : Number.isFinite(startedAtMs)
+        ? startedAtMs
+        : createdAtMs;
     if (!Number.isFinite(baselineMs)) {
       continue;
     }
@@ -1112,14 +1430,25 @@ const runExecuteJobInBackground = async (
     input.ownerId,
     input.jobId,
     (next) => {
+      if (next.status !== "queued") {
+        return;
+      }
       next.status = "running";
       next.startedAt = next.startedAt ?? new Date().toISOString();
       next.completedAt = null;
       next.error = null;
+      mutateExecutionJobControlState(next, (control) => {
+        control.pauseRequested = false;
+        control.stopRequested = false;
+        control.lastAction = null;
+      });
     },
   );
 
   if (!runningJob) {
+    return;
+  }
+  if (runningJob.status !== "running") {
     return;
   }
 
@@ -1246,6 +1575,14 @@ const runExecuteJobInBackground = async (
         : 3;
 
     for (const scenario of executionPack.scenarios) {
+      const controlBeforeScenario = await waitForExecutionJobControlResolution(
+        input.ownerId,
+        input.jobId,
+      );
+      if (controlBeforeScenario === "stop") {
+        return;
+      }
+
       const liveJobBeforeScenario = getExecutionJobById(input.ownerId, input.jobId);
       if (!liveJobBeforeScenario || liveJobBeforeScenario.status !== "running") {
         return;
@@ -1279,8 +1616,18 @@ const runExecuteJobInBackground = async (
         };
       } | null = null;
       let scenarioThreadId: string | null = null;
+      let activeThreadId: string | null = null;
+      let activeTurnId: string | null = null;
 
       for (let attempt = 1; attempt <= maxScenarioAttempts; attempt += 1) {
+        const controlBeforeAttempt = await waitForExecutionJobControlResolution(
+          input.ownerId,
+          input.jobId,
+        );
+        if (controlBeforeAttempt === "stop") {
+          return;
+        }
+
         await persistExecutionJobEvent({
           job: runningJob,
           event: "status",
@@ -1336,11 +1683,42 @@ const runExecuteJobInBackground = async (
             },
             (event) => {
               enqueueCodexEvent(scenario.id, event.event, event.payload);
+              const turnContext = extractExecutionJobEventThreadAndTurn(event.payload);
+              if (
+                !turnContext ||
+                (turnContext.threadId === activeThreadId &&
+                  turnContext.turnId === activeTurnId)
+              ) {
+                return;
+              }
+
+              activeThreadId = turnContext.threadId;
+              activeTurnId = turnContext.turnId;
+              void updateExecutionJobAndPersist(
+                input.ownerId,
+                input.jobId,
+                (draft) => {
+                  draft.executionAudit = {
+                    model: draft.executionAudit.model,
+                    threadId: turnContext.threadId,
+                    turnId: turnContext.turnId,
+                    turnStatus: "running",
+                    completedAt: draft.executionAudit.completedAt,
+                  };
+                },
+              );
             },
           );
           scenarioThreadId = codexExecution.threadId;
 
           await codexEventWrite;
+          const controlAfterAttempt = await waitForExecutionJobControlResolution(
+            input.ownerId,
+            input.jobId,
+          );
+          if (controlAfterAttempt === "stop") {
+            return;
+          }
           latestTurnAudit = {
             model: codexExecution.model,
             threadId: codexExecution.threadId,
@@ -1375,6 +1753,14 @@ const runExecuteJobInBackground = async (
             isInterimScenarioObservedText(scenarioItem.observed);
 
           if (shouldRetryInterimFailure) {
+            const controlBeforeRetry = await waitForExecutionJobControlResolution(
+              input.ownerId,
+              input.jobId,
+            );
+            if (controlBeforeRetry === "stop") {
+              return;
+            }
+
             await persistExecutionJobEvent({
               job: runningJob,
               event: "status",
@@ -1409,6 +1795,14 @@ const runExecuteJobInBackground = async (
           break;
         } catch (error) {
           await codexEventWrite.catch(() => undefined);
+          const controlAfterError = await waitForExecutionJobControlResolution(
+            input.ownerId,
+            input.jobId,
+          );
+          if (controlAfterError === "stop") {
+            return;
+          }
+
           const scenarioErrorMessage =
             error instanceof Error
               ? error.message
@@ -1574,6 +1968,14 @@ const runExecuteJobInBackground = async (
         summary: run.summary,
       },
     });
+
+    const controlBeforeFixPhase = await waitForExecutionJobControlResolution(
+      input.ownerId,
+      input.jobId,
+    );
+    if (controlBeforeFixPhase === "stop") {
+      return;
+    }
 
     let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
     if (
@@ -1769,6 +2171,14 @@ const runExecuteJobInBackground = async (
     }
 
     let pullRequests: ReturnType<typeof listPullRequestsForProject> = [];
+    const controlBeforePrPhase = await waitForExecutionJobControlResolution(
+      input.ownerId,
+      input.jobId,
+    );
+    if (controlBeforePrPhase === "stop") {
+      return;
+    }
+
     if (
       (runningJob.executionMode === "pr" || runningJob.executionMode === "full") &&
       fixAttempt
@@ -1830,6 +2240,14 @@ const runExecuteJobInBackground = async (
     }
 
     await codexEventWrite;
+
+    const controlBeforeCompletion = await waitForExecutionJobControlResolution(
+      input.ownerId,
+      input.jobId,
+    );
+    if (controlBeforeCompletion === "stop") {
+      return;
+    }
 
     const completionStatus = inferExecutionJobStatusFromRun(run);
     const completedAt = new Date().toISOString();
@@ -3954,6 +4372,185 @@ export default defineApp([
       });
     },
   ]),
+  route("/api/jobs/:jobId/control", [
+    requireAuth,
+    async ({ request, ctx, params, cf }) => {
+      if (request.method !== "POST") {
+        return json({ error: "Method not allowed." }, 405);
+      }
+
+      const principal = getPrincipalFromContext(ctx);
+      if (!principal) {
+        return json({ error: "Authentication required." }, 401);
+      }
+
+      const jobId = String(params?.jobId ?? "").trim();
+      const existingJob = getExecutionJobById(principal.id, jobId);
+      if (!existingJob) {
+        return json({ error: "Execution job not found." }, 404);
+      }
+
+      if (isExecutionJobTerminalStatus(existingJob.status)) {
+        return json(
+          {
+            error: `Execution job is already ${existingJob.status}.`,
+            job: existingJob,
+          },
+          409,
+        );
+      }
+
+      const payload = await parseJsonBody(request);
+      const action = normalizeExecutionControlAction(payload?.action);
+      if (!action) {
+        return json(
+          { error: "action is required and must be one of: pause, resume, stop." },
+          400,
+        );
+      }
+
+      let nextJob: ExecutionJob | null = null;
+      let message = "";
+      let interruptRequested = false;
+      let interruptResult: { interrupted: boolean; message: string } | null = null;
+      let shouldSpawnRunner = false;
+
+      if (action === "pause") {
+        if (existingJob.status === "paused" || existingJob.status === "pausing") {
+          nextJob = existingJob;
+          message = "Execution is already paused or pausing.";
+        } else if (existingJob.status === "stopping") {
+          return json(
+            { error: "Execution is currently stopping and cannot be paused." },
+            409,
+          );
+        } else {
+          nextJob = await updateExecutionJobAndPersist(principal.id, existingJob.id, (draft) => {
+            mutateExecutionJobControlState(draft, (control) => {
+              control.pauseRequested = true;
+              control.stopRequested = false;
+              control.lastAction = "pause";
+            });
+            draft.error = null;
+            draft.status = draft.status === "queued" ? "paused" : "pausing";
+          });
+          if (!nextJob) {
+            return json({ error: "Execution job not found." }, 404);
+          }
+          message =
+            nextJob.status === "paused"
+              ? "Execution paused."
+              : "Pause requested. Waiting for current step to stop.";
+          interruptRequested = nextJob.status === "pausing";
+        }
+      } else if (action === "resume") {
+        if (existingJob.status !== "paused" && existingJob.status !== "pausing") {
+          return json(
+            { error: "Execution can only be resumed from paused state." },
+            409,
+          );
+        }
+
+        nextJob = await updateExecutionJobAndPersist(principal.id, existingJob.id, (draft) => {
+          mutateExecutionJobControlState(draft, (control) => {
+            control.pauseRequested = false;
+            control.stopRequested = false;
+            control.lastAction = "resume";
+          });
+          draft.error = null;
+          draft.status = draft.startedAt ? "running" : "queued";
+        });
+        if (!nextJob) {
+          return json({ error: "Execution job not found." }, 404);
+        }
+        shouldSpawnRunner = nextJob.status === "queued";
+        message =
+          nextJob.status === "queued"
+            ? "Execution resumed and re-queued."
+            : "Execution resumed.";
+      } else {
+        if (existingJob.status === "queued" || existingJob.status === "paused") {
+          nextJob = await markExecutionJobCancelledByUser(
+            principal.id,
+            existingJob.id,
+            "Execution stopped by user.",
+          );
+          if (!nextJob) {
+            return json({ error: "Execution job not found." }, 404);
+          }
+          message = "Execution stopped.";
+        } else {
+          nextJob = await updateExecutionJobAndPersist(principal.id, existingJob.id, (draft) => {
+            mutateExecutionJobControlState(draft, (control) => {
+              control.pauseRequested = false;
+              control.stopRequested = true;
+              control.lastAction = "stop";
+            });
+            draft.status = "stopping";
+          });
+          if (!nextJob) {
+            return json({ error: "Execution job not found." }, 404);
+          }
+          message = "Stop requested. Waiting for current step to halt.";
+          interruptRequested = true;
+        }
+      }
+
+      if (nextJob) {
+        await persistExecutionJobEvent({
+          job: nextJob,
+          event: "control",
+          phase: "execute.control",
+          status: nextJob.status === "cancelled" ? "complete" : "running",
+          message,
+          payload: {
+            action: "execute",
+            controlAction: action,
+            status: nextJob.status,
+            message,
+          },
+        });
+      }
+
+      if (interruptRequested && nextJob) {
+        interruptResult = await interruptActiveExecutionTurn(nextJob);
+        await persistExecutionJobEvent({
+          job: nextJob,
+          event: "control",
+          phase: "execute.control",
+          status: interruptResult.interrupted ? "running" : "failed",
+          message: interruptResult.message,
+          payload: {
+            action: "execute",
+            controlAction: action,
+            interrupted: interruptResult.interrupted,
+            message: interruptResult.message,
+          },
+        });
+      }
+
+      if (shouldSpawnRunner && nextJob) {
+        const runPromise = runExecuteJobInBackground({
+          ownerId: principal.id,
+          jobId: nextJob.id,
+        });
+        cf.waitUntil(runPromise);
+      }
+
+      const finalJob = nextJob ?? existingJob;
+      const controlMessage = interruptResult
+        ? `${message} ${interruptResult.message}`.trim()
+        : message;
+      return json({
+        job: finalJob,
+        control: {
+          action,
+          message: controlMessage,
+          interrupted: interruptResult?.interrupted ?? false,
+        },
+      });
+    },
+  ]),
   route("/api/jobs/:jobId", [
     requireAuth,
     async ({ request, ctx, params }) => {
@@ -4242,29 +4839,14 @@ export default defineApp([
         );
       }
       if (activeJobs.length > 0 && force) {
-        const canceledAt = new Date().toISOString();
         for (const activeJob of activeJobs) {
-          const next = await updateExecutionJobAndPersist(
+          const next = await markExecutionJobCancelledByUser(
             principal.id,
             activeJob.id,
-            (draft) => {
-              draft.status = "failed";
-              draft.completedAt = canceledAt;
-              draft.error = "Execution canceled by user while clearing project run history.";
-            },
+            "Execution canceled by user while clearing project run history.",
           );
-          if (next) {
-            await persistExecutionJobEvent({
-              job: next,
-              event: "error",
-              phase: "execute.cancelled",
-              status: "failed",
-              message: "Execution canceled by user while clearing project run history.",
-              payload: {
-                error: "Execution canceled by user while clearing project run history.",
-              },
-              timestamp: canceledAt,
-            });
+          if (!next) {
+            continue;
           }
         }
       }

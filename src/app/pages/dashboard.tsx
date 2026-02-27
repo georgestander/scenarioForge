@@ -89,6 +89,29 @@ const deriveLatestRunOutcome = (run: ScenarioRun): DashboardLatestRunOutcome => 
   return "passed";
 };
 
+const mapExecutionJobStatusToOutcome = (
+  status: ExecutionJob["status"],
+): DashboardLatestRunOutcome => {
+  if (status === "queued") {
+    return "queued";
+  }
+
+  if (
+    status === "running" ||
+    status === "pausing" ||
+    status === "paused" ||
+    status === "stopping"
+  ) {
+    return "running";
+  }
+
+  if (status === "completed") {
+    return "passed";
+  }
+
+  return "failed";
+};
+
 const buildProjectOpenHref = (
   project: {
     id: string;
@@ -147,9 +170,7 @@ const buildDashboardGroups = (
       openHref: buildProjectOpenHref(project, activeJob),
       runCount: runs.length,
       latestRunOutcome: activeJob
-        ? activeJob.status === "completed"
-          ? "passed"
-          : activeJob.status
+        ? mapExecutionJobStatusToOutcome(activeJob.status)
         : latestRun
           ? deriveLatestRunOutcome(latestRun)
           : "idle",

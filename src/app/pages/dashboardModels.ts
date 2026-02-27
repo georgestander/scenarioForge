@@ -34,7 +34,16 @@ export interface DashboardActiveRunSummary {
   repoUrl: string | null;
   branch: string;
   executionMode: "run" | "fix" | "pr" | "full";
-  status: "queued" | "running" | "completed" | "failed" | "blocked";
+  status:
+    | "queued"
+    | "running"
+    | "pausing"
+    | "paused"
+    | "stopping"
+    | "cancelled"
+    | "completed"
+    | "failed"
+    | "blocked";
   startedAt: string | null;
   updatedAt: string;
 }

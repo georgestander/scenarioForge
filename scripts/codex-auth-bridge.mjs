@@ -1219,6 +1219,27 @@ const runActionTurnStreaming = async (action, request, response) => {
   }
 };
 
+const interruptActionTurn = async (actionName, body) => {
+  const action = readString(actionName).toLowerCase();
+  if (action !== "generate" && action !== "execute") {
+    throw new Error(`Unsupported action '${actionName}'.`);
+  }
+
+  const threadId = readString(body?.threadId);
+  const turnId = readString(body?.turnId);
+  if (!threadId || !turnId) {
+    throw new Error("threadId and turnId are required.");
+  }
+
+  await sendRpc("turn/interrupt", { threadId, turnId });
+  return {
+    action,
+    threadId,
+    turnId,
+    interruptedAt: nowIso(),
+  };
+};
+
 const ensureInitialized = async () => {
   if (isInitialized) {
     return;
@@ -1266,6 +1287,17 @@ const parseActionPath = (path) => {
   return {
     action: match[1].toLowerCase(),
     stream: Boolean(match[2]),
+  };
+};
+
+const parseActionInterruptPath = (path) => {
+  const match = path.match(/^\/actions\/(generate|execute)\/interrupt$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    action: match[1].toLowerCase(),
   };
 };
 
@@ -1348,6 +1380,14 @@ const handleRequest = async (request, response) => {
 
     const body = await parseBody(request);
     const result = await runActionTurn(actionMatch.action, body);
+    sendJson(response, 200, result);
+    return;
+  }
+
+  const actionInterruptMatch = parseActionInterruptPath(path);
+  if (request.method === "POST" && actionInterruptMatch) {
+    const body = await parseBody(request);
+    const result = await interruptActionTurn(actionInterruptMatch.action, body);
     sendJson(response, 200, result);
     return;
   }

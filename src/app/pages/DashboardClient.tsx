@@ -70,6 +70,30 @@ const ACTIVE_RUN_STYLES: Record<
     borderColor: "#2f6ba5",
     background: "rgba(47, 107, 165, 0.22)",
   },
+  pausing: {
+    label: "Pausing",
+    color: "#f7d286",
+    borderColor: "#8a6a2a",
+    background: "rgba(138, 106, 42, 0.22)",
+  },
+  paused: {
+    label: "Paused",
+    color: "#f7d286",
+    borderColor: "#8a6a2a",
+    background: "rgba(138, 106, 42, 0.22)",
+  },
+  stopping: {
+    label: "Stopping",
+    color: "#ffc9a1",
+    borderColor: "#9a5a2f",
+    background: "rgba(154, 90, 47, 0.22)",
+  },
+  cancelled: {
+    label: "Cancelled",
+    color: "#ffaba7",
+    borderColor: "#a14745",
+    background: "rgba(161, 71, 69, 0.22)",
+  },
   completed: {
     label: "Completed",
     color: "#8fe3a4",

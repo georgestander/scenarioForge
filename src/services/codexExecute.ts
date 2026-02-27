@@ -17,6 +17,13 @@ interface BridgeExecuteResponse {
   completedAt: string;
 }
 
+interface BridgeInterruptResponse {
+  action?: string;
+  threadId: string;
+  turnId: string;
+  interruptedAt: string;
+}
+
 export interface CodexExecutionResult {
   model: string;
   cwd: string;
@@ -35,6 +42,18 @@ interface ExecuteScenariosViaCodexInput {
   userInstruction?: string;
   constraints?: Record<string, unknown>;
   threadId?: string;
+}
+
+interface InterruptExecuteTurnViaCodexInput {
+  threadId: string;
+  turnId: string;
+}
+
+export interface InterruptExecuteTurnViaCodexResult {
+  action: string;
+  threadId: string;
+  turnId: string;
+  interruptedAt: string;
 }
 
 export interface CodexExecuteBridgeStreamEvent {
@@ -523,6 +542,34 @@ export const executeScenariosViaCodexStream = async (
   onEvent?: (event: CodexExecuteBridgeStreamEvent) => void,
 ): Promise<CodexExecutionResult> => {
   return executeScenariosViaCodexInternal(input, onEvent);
+};
+
+export const interruptExecuteTurnViaCodex = async (
+  input: InterruptExecuteTurnViaCodexInput,
+): Promise<InterruptExecuteTurnViaCodexResult> => {
+  const threadId = input.threadId.trim();
+  const turnId = input.turnId.trim();
+  if (!threadId || !turnId) {
+    throw new Error("threadId and turnId are required to interrupt Codex execution.");
+  }
+
+  const payload = await bridgeFetchJson<BridgeInterruptResponse>(
+    "/actions/execute/interrupt",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        threadId,
+        turnId,
+      }),
+    },
+  );
+
+  return {
+    action: payload.action?.trim() || "execute",
+    threadId: payload.threadId,
+    turnId: payload.turnId,
+    interruptedAt: payload.interruptedAt,
+  };
 };
 
 const executeScenariosViaCodexInternal = async (

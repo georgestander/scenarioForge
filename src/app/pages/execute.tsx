@@ -49,7 +49,14 @@ export const ExecutePage = ({ ctx, params, request }: AppRequestInfo) => {
     : activePack ?? packs[0];
   const initialJob = requestedJobId
     ? jobs.find((job) => job.id === requestedJobId) ?? null
-    : jobs.find((job) => job.status === "queued" || job.status === "running") ?? null;
+    : jobs.find(
+        (job) =>
+          job.status === "queued" ||
+          job.status === "running" ||
+          job.status === "pausing" ||
+          job.status === "paused" ||
+          job.status === "stopping",
+      ) ?? null;
   const initialReadiness = getLatestProjectPrReadinessForProject(principal.id, projectId);
 
   return (
