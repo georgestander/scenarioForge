@@ -337,7 +337,11 @@ const consumeRpcRequest = (message) => {
     return;
   }
 
-  if (method === "tool/requestUserInput") {
+  if (
+    method === "tool/requestUserInput" ||
+    method === "item/tool/requestUserInput" ||
+    method.endsWith("/tool/requestUserInput")
+  ) {
     replyRpcError(
       id,
       -32000,
