@@ -416,9 +416,13 @@ const ensureTables = async (db: D1Database): Promise<void> => {
         repository_full_name TEXT,
         branch TEXT NOT NULL,
         status TEXT NOT NULL,
+        full_pr_actuator TEXT NOT NULL DEFAULT 'none',
         capabilities_json TEXT NOT NULL,
+        reason_codes_json TEXT NOT NULL DEFAULT '[]',
         reasons_json TEXT NOT NULL,
         recommended_actions_json TEXT NOT NULL,
+        probe_results_json TEXT NOT NULL DEFAULT '[]',
+        probe_duration_ms INTEGER NOT NULL DEFAULT 0,
         checked_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -426,6 +430,22 @@ const ensureTables = async (db: D1Database): Promise<void> => {
     `,
     )
     .run();
+  await ensureColumn(
+    "sf_project_pr_readiness",
+    "full_pr_actuator TEXT NOT NULL DEFAULT 'none'",
+  );
+  await ensureColumn(
+    "sf_project_pr_readiness",
+    "reason_codes_json TEXT NOT NULL DEFAULT '[]'",
+  );
+  await ensureColumn(
+    "sf_project_pr_readiness",
+    "probe_results_json TEXT NOT NULL DEFAULT '[]'",
+  );
+  await ensureColumn(
+    "sf_project_pr_readiness",
+    "probe_duration_ms INTEGER NOT NULL DEFAULT 0",
+  );
 
   state.tablesReady = true;
 };
@@ -742,9 +762,13 @@ export const hydrateCoreStateFromD1 = async (
         repository_full_name,
         branch,
         status,
+        full_pr_actuator,
         capabilities_json,
+        reason_codes_json,
         reasons_json,
         recommended_actions_json,
+        probe_results_json,
+        probe_duration_ms,
         checked_at,
         created_at,
         updated_at
@@ -1076,6 +1100,7 @@ export const hydrateCoreStateFromD1 = async (
       : null,
     branch: String(row.branch ?? "main"),
     status: String(row.status) as ProjectPrReadiness["status"],
+    fullPrActuator: String(row.full_pr_actuator ?? "none") as ProjectPrReadiness["fullPrActuator"],
     capabilities: safeParseJson(String(row.capabilities_json), {
       hasGitHubConnection: false,
       repositoryConfigured: false,
@@ -1086,8 +1111,14 @@ export const hydrateCoreStateFromD1 = async (
       canOpenPr: false,
       codexBridgeConfigured: false,
     }),
+    reasonCodes: safeParseJson(String(row.reason_codes_json ?? "[]"), []),
     reasons: safeParseJson(String(row.reasons_json), []),
     recommendedActions: safeParseJson(String(row.recommended_actions_json), []),
+    probeResults: safeParseJson(String(row.probe_results_json ?? "[]"), []),
+    probeDurationMs: (() => {
+      const parsed = Number(row.probe_duration_ms ?? 0);
+      return Number.isFinite(parsed) ? parsed : 0;
+    })(),
     checkedAt: String(row.checked_at ?? row.updated_at ?? nowIso()),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -2433,22 +2464,30 @@ export const persistProjectPrReadinessToD1 = async (
         repository_full_name,
         branch,
         status,
+        full_pr_actuator,
         capabilities_json,
+        reason_codes_json,
         reasons_json,
         recommended_actions_json,
+        probe_results_json,
+        probe_duration_ms,
         checked_at,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         owner_id = excluded.owner_id,
         project_id = excluded.project_id,
         repository_full_name = excluded.repository_full_name,
         branch = excluded.branch,
         status = excluded.status,
+        full_pr_actuator = excluded.full_pr_actuator,
         capabilities_json = excluded.capabilities_json,
+        reason_codes_json = excluded.reason_codes_json,
         reasons_json = excluded.reasons_json,
         recommended_actions_json = excluded.recommended_actions_json,
+        probe_results_json = excluded.probe_results_json,
+        probe_duration_ms = excluded.probe_duration_ms,
         checked_at = excluded.checked_at,
         updated_at = excluded.updated_at
     `,
@@ -2460,9 +2499,13 @@ export const persistProjectPrReadinessToD1 = async (
       readiness.repositoryFullName,
       readiness.branch,
       readiness.status,
+      readiness.fullPrActuator,
       JSON.stringify(readiness.capabilities),
+      JSON.stringify(readiness.reasonCodes),
       JSON.stringify(readiness.reasons),
       JSON.stringify(readiness.recommendedActions),
+      JSON.stringify(readiness.probeResults),
+      readiness.probeDurationMs,
       readiness.checkedAt,
       readiness.createdAt,
       readiness.updatedAt || nowIso(),

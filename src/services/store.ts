@@ -1012,9 +1012,13 @@ export const upsertProjectPrReadinessCheck = (
     existing.repositoryFullName = input.repositoryFullName;
     existing.branch = input.branch;
     existing.status = input.status;
+    existing.fullPrActuator = input.fullPrActuator;
     existing.capabilities = input.capabilities;
+    existing.reasonCodes = [...input.reasonCodes];
     existing.reasons = [...input.reasons];
     existing.recommendedActions = [...input.recommendedActions];
+    existing.probeResults = [...input.probeResults];
+    existing.probeDurationMs = input.probeDurationMs;
     existing.checkedAt = input.checkedAt;
     existing.updatedAt = timestamp;
     return existing;

@@ -2061,12 +2061,48 @@ const refreshProjectPrReadiness = async (
   principalId: string,
   project: Project,
 ) => {
+  const bridgeAuthError = await ensureCodexBridgeAccount();
   const connection = await ensureGitHubConnectionForPrincipal(principalId);
-  const readinessInput = await evaluateProjectPrReadiness({
+  const readinessInputBase = await evaluateProjectPrReadiness({
     ownerId: principalId,
     project,
     githubConnection: connection,
   });
+  const readinessInput = {
+    ...readinessInputBase,
+    reasonCodes: [...readinessInputBase.reasonCodes],
+    reasons: [...readinessInputBase.reasons],
+    recommendedActions: [...readinessInputBase.recommendedActions],
+    probeResults: [...readinessInputBase.probeResults],
+  };
+  if (bridgeAuthError) {
+    if (!readinessInput.reasonCodes.includes("CODEX_ACCOUNT_NOT_AUTHENTICATED")) {
+      readinessInput.reasonCodes.push("CODEX_ACCOUNT_NOT_AUTHENTICATED");
+    }
+    readinessInput.reasons.push(
+      `Codex account is not authenticated for app-server execution (${bridgeAuthError}).`,
+    );
+    readinessInput.recommendedActions.push(
+      "Sign in with ChatGPT before running generate/execute.",
+    );
+    readinessInput.probeResults.push({
+      step: "codex_account",
+      ok: false,
+      reasonCode: "CODEX_ACCOUNT_NOT_AUTHENTICATED",
+      message:
+        "Codex account is not authenticated for app-server execution.",
+    });
+  } else {
+    readinessInput.probeResults.push({
+      step: "codex_account",
+      ok: true,
+      reasonCode: null,
+      message: "Codex account is authenticated for app-server execution.",
+    });
+  }
+  readinessInput.status =
+    readinessInput.reasonCodes.length === 0 ? "ready" : "needs_attention";
+
   const readiness = upsertProjectPrReadinessCheck(readinessInput);
   await persistProjectPrReadinessToD1(readiness);
   return readiness;

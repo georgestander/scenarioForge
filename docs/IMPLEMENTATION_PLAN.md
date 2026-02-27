@@ -457,6 +457,8 @@ Decisions made:
 6. Phase 3 generation now auto-starts initial scenario generation when no pack exists, removing the extra click after entering Generate.
 7. Full execute mode is now server-gated by PR readiness (`ready` required) before launch, with explicit remediation details returned on failure.
 8. Execute PR outputs are now treated as proposal metadata: URL is optional, manual-handoff entries are accepted, and missing real PR URLs no longer fail runs/jobs by default.
+9. PR readiness contract now includes first-class actuator and diagnostics fields: `fullPrActuator`, `reasonCodes[]`, `probeResults[]`, and `probeDurationMs`.
+10. PR readiness probes now record step-level pass/fail details for deterministic UI gating and blocker telemetry.
 
 Current implementation status:
 1. Generate/execute action requests send RPC-safe kebab-case thread sandbox values.
@@ -465,7 +467,10 @@ Current implementation status:
 4. Generate page triggers initial generation automatically on first load when a manifest exists but no scenario packs are present.
 5. `/actions/execute/start` and `/actions/execute` block `executionMode=full` when PR readiness is not green.
 6. Execute persistence accepts PR/manual-handoff metadata without requiring Codex to return a real PR URL.
+7. PR readiness persistence and hydration now store actuator path, machine-readable reason codes, probe results, and probe duration.
+8. Readiness refresh now includes explicit `codex_account` probe status (`CODEX_ACCOUNT_NOT_AUTHENTICATED` when signed out).
 
 Next actions:
 1. Add targeted unit/regression coverage for thread reuse behavior and schema acceptance of `blocked`.
 2. Continue Milestone 2 worktree isolation to complete per-scenario workspace determinism.
+3. Ship PR B UI updates to gate `full` mode by `fullPrActuator` + `reasonCodes` with a probe-details drawer.

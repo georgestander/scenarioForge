@@ -378,6 +378,40 @@ export interface PullRequestRecord {
 }
 
 export type ProjectPrReadinessStatus = "ready" | "needs_attention";
+export type ProjectPrReadinessActuator =
+  | "controller"
+  | "codex_git_workspace"
+  | "codex_connector"
+  | "none";
+
+export type ProjectPrReadinessReasonCode =
+  | "CODEX_BRIDGE_UNREACHABLE"
+  | "CODEX_ACCOUNT_NOT_AUTHENTICATED"
+  | "GITHUB_CONNECTION_MISSING"
+  | "GITHUB_REPO_NOT_CONFIGURED"
+  | "GITHUB_REPO_READ_DENIED"
+  | "GITHUB_BRANCH_NOT_FOUND"
+  | "GITHUB_WRITE_PERMISSIONS_MISSING"
+  | "SANDBOX_GIT_PROTECTED"
+  | "TOOL_SIDE_EFFECT_APPROVALS_UNSUPPORTED"
+  | "PR_ACTUATOR_UNAVAILABLE";
+
+export type ProjectPrReadinessProbeStep =
+  | "codex_bridge"
+  | "codex_account"
+  | "github_connection"
+  | "repository_config"
+  | "repository_access"
+  | "branch_access"
+  | "github_permissions"
+  | "actuator_path";
+
+export interface ProjectPrReadinessProbeResult {
+  step: ProjectPrReadinessProbeStep;
+  ok: boolean;
+  reasonCode: ProjectPrReadinessReasonCode | null;
+  message: string;
+}
 
 export interface ProjectPrReadiness {
   id: string;
@@ -386,6 +420,7 @@ export interface ProjectPrReadiness {
   repositoryFullName: string | null;
   branch: string;
   status: ProjectPrReadinessStatus;
+  fullPrActuator: ProjectPrReadinessActuator;
   capabilities: {
     hasGitHubConnection: boolean;
     repositoryConfigured: boolean;
@@ -396,8 +431,11 @@ export interface ProjectPrReadiness {
     canOpenPr: boolean;
     codexBridgeConfigured: boolean;
   };
+  reasonCodes: ProjectPrReadinessReasonCode[];
   reasons: string[];
   recommendedActions: string[];
+  probeResults: ProjectPrReadinessProbeResult[];
+  probeDurationMs: number;
   checkedAt: string;
   createdAt: string;
   updatedAt: string;
