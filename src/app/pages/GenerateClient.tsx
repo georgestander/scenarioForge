@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Project, ScenarioPack, SourceManifest } from "@/domain/models";
 import { useSession } from "@/app/shared/SessionContext";
 import { useStreamAction } from "@/app/shared/useStreamAction";
@@ -29,6 +29,7 @@ export const GenerateClient = ({
   const [generatedCount, setGeneratedCount] = useState(0);
   const [generatedTotal, setGeneratedTotal] = useState(0);
   const [latestGeneratedLabel, setLatestGeneratedLabel] = useState("");
+  const autoStartedInitialGenerationRef = useRef(false);
 
   const selectedPack =
     scenarioPacks.find((pack) => pack.id === selectedPackId) ?? scenarioPacks[0] ?? null;
@@ -110,6 +111,18 @@ export const GenerateClient = ({
   };
 
   const canUpdate = Boolean(selectedPack);
+
+  useEffect(() => {
+    if (autoStartedInitialGenerationRef.current) {
+      return;
+    }
+    if (isGenerating || canUpdate) {
+      return;
+    }
+
+    autoStartedInitialGenerationRef.current = true;
+    void handleGenerate("initial");
+  }, [canUpdate, isGenerating]);
 
   return (
     <section
@@ -234,4 +247,3 @@ export const GenerateClient = ({
     </section>
   );
 };
-
