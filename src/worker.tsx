@@ -710,6 +710,35 @@ const buildFixAttemptInputFromCodexOutput = (
   };
 };
 
+const buildFallbackFixAttemptInput = (
+  ownerId: string,
+  projectId: string,
+  run: ReturnType<typeof createScenarioRun>,
+) => {
+  const failedScenarioIdsFromRun = run.items
+    .filter((item) => item.status === "failed")
+    .map((item) => item.scenarioId);
+
+  if (failedScenarioIdsFromRun.length === 0) {
+    return null;
+  }
+
+  return {
+    ownerId,
+    projectId,
+    scenarioRunId: run.id,
+    failedScenarioIds: failedScenarioIdsFromRun,
+    probableRootCause:
+      "Codex execute output omitted fixAttempt details for failed scenarios.",
+    patchSummary:
+      "No fix patch summary was returned. Review failed scenario evidence and rerun fix mode.",
+    impactedFiles: [],
+    model: "gpt-5.3-xhigh",
+    status: "failed" as const,
+    rerunSummary: null,
+  };
+};
+
 const buildPullRequestInputsFromCodexOutput = (
   ownerId: string,
   projectId: string,
@@ -1557,7 +1586,7 @@ const runExecuteJobInBackground = async (
         .map((item) => item.scenarioId);
 
       if (failedScenarioIdsFromRun.length > 0) {
-        const collectedFixInputs = scenarioOutputs
+        let collectedFixInputs = scenarioOutputs
           .map((output) => {
             const scenarioItem = run.items.find(
               (item) => item.scenarioId === output.scenarioId,
@@ -1596,9 +1625,31 @@ const runExecuteJobInBackground = async (
           .filter((record): record is NonNullable<typeof record> => Boolean(record));
 
         if (collectedFixInputs.length === 0) {
-          throw new Error(
-            "Codex execute output reported failed scenarios but omitted fixAttempt details.",
+          const fallbackFixInput = buildFallbackFixAttemptInput(
+            input.ownerId,
+            project.id,
+            run,
           );
+          if (fallbackFixInput) {
+            collectedFixInputs = [fallbackFixInput];
+            await persistExecutionJobEvent({
+              job: runningJob,
+              event: "status",
+              phase: "fix.progress",
+              status: "failed",
+              stage: "fix",
+              message:
+                "Codex output omitted fixAttempt details; fallback limitation was recorded.",
+              payload: {
+                action: "execute",
+                phase: "fix.progress",
+                stage: "fix",
+                status: "failed",
+                message:
+                  "Codex output omitted fixAttempt details; fallback limitation was recorded.",
+              },
+            });
+          }
         }
 
         const failedScenarioIds = [
@@ -3729,30 +3780,17 @@ export default defineApp([
 
       let fixAttempt: ReturnType<typeof createFixAttempt> | null = null;
       if (executionMode === "fix" || executionMode === "pr" || executionMode === "full") {
-        const fixInput = buildFixAttemptInputFromCodexOutput(
+        let fixInput = buildFixAttemptInputFromCodexOutput(
           principal.id,
           project.id,
           run,
           codexExecution.parsedOutput,
         );
         if (!fixInput && run.summary.failed > 0) {
-          return json(
-            {
-              run,
-              fixAttempt: null,
-              pullRequests: [],
-              executionMode,
-              executionAudit: {
-                model: codexExecution.model,
-                threadId: codexExecution.threadId,
-                turnId: codexExecution.turnId,
-                turnStatus: codexExecution.turnStatus,
-                completedAt: codexExecution.completedAt,
-              },
-              error:
-                "Codex execute output reported failed scenarios but omitted fixAttempt details.",
-            },
-            502,
+          fixInput = buildFallbackFixAttemptInput(
+            principal.id,
+            project.id,
+            run,
           );
         }
         if (fixInput) {

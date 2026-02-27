@@ -347,6 +347,7 @@ const buildExecuteOutputSchema = (scenarioIds: string[]) => {
           additionalProperties: false,
           required: [
             "title",
+            "url",
             "status",
             "scenarioIds",
             "riskNotes",
@@ -401,7 +402,7 @@ const buildExecutePrompt = (input: ExecuteScenariosViaCodexInput): string => {
     "Output contract:",
     "- Return strict JSON object with keys: run, fixAttempt, pullRequests.",
     "- run.items must include scenarioId, status (`passed` | `failed` | `blocked`), observed, expected, optional failureHypothesis and artifacts.",
-    "- pullRequests entries should include title, status, scenarioIds, and riskNotes. url is optional and should be empty when PR creation was not possible.",
+    "- pullRequests entries must include title, url, status, scenarioIds, and riskNotes. Use url=\"\" when PR creation was not possible.",
     "",
     "Constraints:",
     constraints,
