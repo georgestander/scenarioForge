@@ -741,29 +741,41 @@ const buildPullRequestInputsFromCodexOutput = (
       const riskNotes = readStringArray(record.riskNotes);
       const title = String(record.title ?? "").trim();
       const url = String(record.url ?? "").trim();
-
-      if (!title || !url) {
-        return null;
-      }
+      const normalizedScenarioIds =
+        scenarioIds.length > 0 ? scenarioIds : fixAttempt.failedScenarioIds;
+      const normalizedTitle =
+        title || `Manual handoff for ${normalizedScenarioIds.join(", ")}`;
+      const normalizedStatus = url
+        ? normalizePullRequestStatus(record.status)
+        : "blocked";
+      const normalizedRiskNotes = [
+        ...new Set(
+          url
+            ? riskNotes
+            : [
+                ...riskNotes,
+                "No PR URL was produced by Codex. Use controller-owned branch/push/PR automation or manual handoff.",
+              ],
+        ),
+      ];
 
       return {
         ownerId,
         projectId,
         fixAttemptId: fixAttempt.id,
-        scenarioIds:
-          scenarioIds.length > 0 ? scenarioIds : fixAttempt.failedScenarioIds,
-        title,
+        scenarioIds: normalizedScenarioIds,
+        title: normalizedTitle,
         branchName:
           String(record.branchName ?? "").trim() ||
           `scenariofix/${fixAttempt.id}`,
         url,
-        status: normalizePullRequestStatus(record.status),
+        status: normalizedStatus,
         rootCauseSummary:
           String(record.rootCauseSummary ?? "").trim() ||
           fixAttempt.probableRootCause,
         rerunEvidenceRunId: fixAttempt.rerunSummary?.runId ?? null,
         rerunEvidenceSummary,
-        riskNotes,
+        riskNotes: normalizedRiskNotes,
       };
     })
     .filter(
@@ -1727,11 +1739,6 @@ const runExecuteJobInBackground = async (
 
       const pullRequestInputs = [...dedupe.values()];
       pullRequests = pullRequestInputs.map((entry) => createPullRequestRecord(entry));
-      if (run.summary.failed > 0 && pullRequests.length === 0) {
-        throw new Error(
-          "Failed scenarios remain, but no real pull request URLs were produced by Codex execute.",
-        );
-      }
       await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
 
       for (const pr of pullRequests) {
@@ -2063,6 +2070,26 @@ const refreshProjectPrReadiness = async (
   const readiness = upsertProjectPrReadinessCheck(readinessInput);
   await persistProjectPrReadinessToD1(readiness);
   return readiness;
+};
+
+const buildFullModeReadinessError = (
+  readiness: ReturnType<typeof upsertProjectPrReadinessCheck>,
+): string => {
+  const reasons = readiness.reasons.filter((reason) => reason.trim().length > 0);
+  const actions = readiness.recommendedActions.filter(
+    (action) => action.trim().length > 0,
+  );
+
+  const reasonText =
+    reasons.length > 0
+      ? ` Readiness checks failed: ${reasons.join(" | ")}.`
+      : "";
+  const actionText =
+    actions.length > 0
+      ? ` Recommended actions: ${actions.join(" | ")}.`
+      : "";
+
+  return `executionMode=full is blocked until PR automation readiness is green.${reasonText}${actionText}`.trim();
 };
 
 const ensureCodexBridgeAccount = async (): Promise<string | null> => {
@@ -3130,6 +3157,19 @@ export default defineApp([
       const explicitScenarioIds = readStringArray(payload?.scenarioIds);
       let scenarioIds = explicitScenarioIds;
 
+      if (executionMode === "full") {
+        const readiness = await refreshProjectPrReadiness(principal.id, project);
+        if (readiness.status !== "ready") {
+          return json(
+            {
+              error: buildFullModeReadinessError(readiness),
+              readiness,
+            },
+            409,
+          );
+        }
+      }
+
       if (retryStrategy === "failed_only") {
         const baselineRunId = retryFromRunId || project.activeScenarioRunId || "";
         const baselineRun = baselineRunId
@@ -3439,6 +3479,18 @@ export default defineApp([
       const executionMode = normalizeExecutionMode(payload?.executionMode);
       const userInstruction = String(payload?.userInstruction ?? "").trim();
       const constraints = isRecord(payload?.constraints) ? payload.constraints : {};
+      if (executionMode === "full") {
+        const readiness = await refreshProjectPrReadiness(principal.id, project);
+        if (readiness.status !== "ready") {
+          return json(
+            {
+              error: buildFullModeReadinessError(readiness),
+              readiness,
+            },
+            409,
+          );
+        }
+      }
       const bridgeAuthError = await ensureCodexBridgeAccount();
       if (bridgeAuthError) {
         return json({ error: bridgeAuthError }, 401);
@@ -3518,26 +3570,6 @@ export default defineApp([
           codexExecution.parsedOutput,
         );
         pullRequests = pullRequestInputs.map((input) => createPullRequestRecord(input));
-        if (run.summary.failed > 0 && pullRequests.length === 0) {
-          return json(
-            {
-              run,
-              fixAttempt,
-              pullRequests: [],
-              executionMode,
-              executionAudit: {
-                model: codexExecution.model,
-                threadId: codexExecution.threadId,
-                turnId: codexExecution.turnId,
-                turnStatus: codexExecution.turnStatus,
-                completedAt: codexExecution.completedAt,
-              },
-              error:
-                "Failed scenarios remain, but no real pull request URLs were produced by Codex execute.",
-            },
-            502,
-          );
-        }
         await Promise.all(pullRequests.map((record) => persistPullRequestToD1(record)));
       }
 

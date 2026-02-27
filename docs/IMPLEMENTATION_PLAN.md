@@ -455,12 +455,16 @@ Decisions made:
 4. Execute output schema now accepts `run.items[].status = blocked`; server normalization maps `blocked` to explicit `failed` limitation outcomes for user-facing consistency.
 5. Execute controller retries for the same scenario now reuse a single Codex thread via `threadId`, while keeping each attempt as a bounded turn.
 6. Phase 3 generation now auto-starts initial scenario generation when no pack exists, removing the extra click after entering Generate.
+7. Full execute mode is now server-gated by PR readiness (`ready` required) before launch, with explicit remediation details returned on failure.
+8. Execute PR outputs are now treated as proposal metadata: URL is optional, manual-handoff entries are accepted, and missing real PR URLs no longer fail runs/jobs by default.
 
 Current implementation status:
 1. Generate/execute action requests send RPC-safe kebab-case thread sandbox values.
 2. Bridge supports optional `threadId` reuse and continues emitting thread/turn audit metadata.
 3. Per-scenario execution loop reuses the same thread across retry attempts for that scenario.
 4. Generate page triggers initial generation automatically on first load when a manifest exists but no scenario packs are present.
+5. `/actions/execute/start` and `/actions/execute` block `executionMode=full` when PR readiness is not green.
+6. Execute persistence accepts PR/manual-handoff metadata without requiring Codex to return a real PR URL.
 
 Next actions:
 1. Add targeted unit/regression coverage for thread reuse behavior and schema acceptance of `blocked`.
