@@ -5,6 +5,8 @@ import type {
   ExecutionJob,
   FixAttempt,
   Project,
+  ProjectPrReadiness,
+  ProjectPrReadinessReasonCode,
   PullRequestRecord,
   ReviewBoard,
   ScenarioRun,
@@ -36,6 +38,28 @@ const STATUS_SORT_ORDER: Record<string, number> = {
   queued: 3,
   passed: 4,
 };
+
+const REASON_CODE_LABEL: Record<ProjectPrReadinessReasonCode, string> = {
+  CODEX_BRIDGE_UNREACHABLE: "Codex bridge is unavailable.",
+  CODEX_ACCOUNT_NOT_AUTHENTICATED: "Codex account is not authenticated.",
+  GITHUB_CONNECTION_MISSING: "GitHub app is not connected.",
+  GITHUB_REPO_NOT_CONFIGURED: "Repository is not configured.",
+  GITHUB_REPO_READ_DENIED: "GitHub cannot read this repository.",
+  GITHUB_BRANCH_NOT_FOUND: "Configured branch cannot be accessed.",
+  GITHUB_WRITE_PERMISSIONS_MISSING: "GitHub write permissions are missing.",
+  SANDBOX_GIT_PROTECTED: "Sandbox policy blocks git writes.",
+  TOOL_SIDE_EFFECT_APPROVALS_UNSUPPORTED:
+    "Connector side-effect approvals are unavailable.",
+  PR_ACTUATOR_UNAVAILABLE: "No full PR actuator path is available.",
+};
+
+const isFullModeReady = (readiness: ProjectPrReadiness | null): boolean =>
+  Boolean(
+    readiness &&
+      readiness.status === "ready" &&
+      readiness.fullPrActuator !== "none" &&
+      readiness.reasonCodes.length === 0,
+  );
 
 const isLikelyUrl = (value: string): boolean =>
   /^https?:\/\//i.test(value) || value.startsWith("/");
@@ -70,6 +94,7 @@ export const CompletedClient = ({
   initialPullRequests,
   initialExecutionJobs,
   initialReviewBoard,
+  initialReadiness,
 }: {
   projectId: string;
   project: Project;
@@ -79,6 +104,7 @@ export const CompletedClient = ({
   initialPullRequests: PullRequestRecord[];
   initialExecutionJobs: ExecutionJob[];
   initialReviewBoard: ReviewBoard | null;
+  initialReadiness: ProjectPrReadiness | null;
 }) => {
   const { statusMessage, setStatusMessage } = useSession();
   const [reviewBoard, setReviewBoard] = useState<ReviewBoard | null>(initialReviewBoard);
@@ -93,6 +119,22 @@ export const CompletedClient = ({
         (!latestRun || latestExecutionJob.runId !== latestRun.id),
     );
   const latestFixAttempt = initialFixAttempts[0] ?? null;
+  const latestJobForRun = useMemo(() => {
+    if (!latestRun) {
+      return latestExecutionJob;
+    }
+    return (
+      initialExecutionJobs.find((job) => job.runId === latestRun.id) ??
+      latestExecutionJob
+    );
+  }, [initialExecutionJobs, latestExecutionJob, latestRun]);
+  const latestExecutionMode = latestJobForRun?.executionMode ?? "fix";
+  const latestModeWasFull = latestExecutionMode === "full";
+  const fullModeReady = isFullModeReady(initialReadiness);
+  const manualHandoffCount = initialPullRequests.filter(
+    (record) => record.url.trim().length === 0,
+  ).length;
+  const realPrCount = initialPullRequests.length - manualHandoffCount;
   const pullRequestsByScenarioId = useMemo(() => {
     return initialPullRequests.reduce(
       (acc, pullRequest) => {
@@ -144,7 +186,10 @@ export const CompletedClient = ({
     setStatusMessage("Challenge report downloaded.");
   };
 
-  const handleStartExecute = async (retryStrategy: "full" | "failed_only") => {
+  const handleStartExecute = async (
+    mode: "fix" | "full",
+    retryStrategy: "full" | "failed_only",
+  ) => {
     if (!latestPackId) {
       setStatusMessage("No scenario pack found for retry.");
       return;
@@ -154,13 +199,19 @@ export const CompletedClient = ({
       setStatusMessage("No failed scenarios available to retry.");
       return;
     }
+    if (mode === "full" && !fullModeReady) {
+      setStatusMessage(
+        "Full mode is blocked by readiness checks. Use fix-only mode or resolve readiness blockers.",
+      );
+      return;
+    }
 
     const response = await fetch(`/api/projects/${projectId}/actions/execute/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scenarioPackId: latestPackId,
-        executionMode: "full",
+        executionMode: mode,
         retryStrategy,
         retryFromRunId: retryStrategy === "failed_only" ? latestRun?.id : undefined,
       }),
@@ -175,8 +226,12 @@ export const CompletedClient = ({
     };
     setStatusMessage(
       retryStrategy === "failed_only"
-        ? "Retry for failed scenarios queued."
-        : "Full loop queued.",
+        ? mode === "full"
+          ? "Retry for failed scenarios queued in full mode."
+          : "Retry for failed scenarios queued in fix-only mode."
+        : mode === "full"
+          ? "Full loop queued."
+          : "Fix loop queued.",
     );
     window.location.href = `/projects/${projectId}/execute?packId=${encodeURIComponent(latestPackId)}&jobId=${encodeURIComponent(payload.job.id)}`;
   };
@@ -237,10 +292,24 @@ export const CompletedClient = ({
           ? <> finished with {totalScenarios} scenario{totalScenarios !== 1 ? "s" : ""}: {totalPassed} passed, {totalFailed} failed{totalLimited > 0 ? " (including environment limitations)" : ""}.</>
           : <> has no completed runs yet.</>
         }
-        {initialPullRequests.length > 0
-          ? <> {initialPullRequests.length} PR{initialPullRequests.length !== 1 ? "s" : ""} created.</>
-          : null
-        }
+        {latestRun ? (
+          latestModeWasFull ? (
+            <>
+              {" "}
+              Full mode promise: patch + evidence + controller-attempted PR.
+              {realPrCount > 0
+                ? ` ${realPrCount} real PR${realPrCount === 1 ? "" : "s"} created.`
+                : ""}
+              {manualHandoffCount > 0
+                ? ` ${manualHandoffCount} manual handoff bundle${
+                    manualHandoffCount === 1 ? "" : "s"
+                  } emitted.`
+                : ""}
+            </>
+          ) : (
+            <> Fix-only promise: patch + evidence bundle (PR automation not requested).</>
+          )
+        ) : null}
       </p>
 
       {latestRun ? (
@@ -306,6 +375,51 @@ export const CompletedClient = ({
         </p>
       ) : null}
 
+      <div
+        style={{
+          display: "grid",
+          gap: "0.35rem",
+          border: "1px solid var(--forge-line)",
+          borderRadius: "8px",
+          padding: "0.55rem 0.65rem",
+          background: "rgba(18, 24, 43, 0.58)",
+        }}
+      >
+        <strong style={{ color: "var(--forge-ink)", fontSize: "0.84rem" }}>
+          Execution mode expectations
+        </strong>
+        <p style={{ margin: 0, fontSize: "0.77rem", color: "var(--forge-muted)" }}>
+          Fix-only: patch + evidence bundle.
+        </p>
+        <p style={{ margin: 0, fontSize: "0.77rem", color: "var(--forge-muted)" }}>
+          Full mode: patch + evidence + controller-attempted PR.
+        </p>
+        <p style={{ margin: 0, fontSize: "0.77rem", color: "var(--forge-muted)" }}>
+          Full-mode readiness:{" "}
+          <strong style={{ color: fullModeReady ? "var(--forge-ok)" : "var(--forge-fire)" }}>
+            {fullModeReady ? "ready" : "blocked"}
+          </strong>
+        </p>
+        {!fullModeReady && initialReadiness?.reasonCodes.length ? (
+          <ul
+            style={{
+              margin: 0,
+              paddingLeft: "1rem",
+              display: "grid",
+              gap: "0.15rem",
+              color: "var(--forge-muted)",
+              fontSize: "0.75rem",
+            }}
+          >
+            {initialReadiness.reasonCodes.map((reasonCode) => (
+              <li key={reasonCode}>
+                <code>{reasonCode}</code>: {REASON_CODE_LABEL[reasonCode]}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
       {/* Primary actions */}
       <div style={{ display: "flex", gap: "0.45rem", flexWrap: "wrap" }}>
         <button type="button" onClick={() => void handleRefreshReviewBoard()}>
@@ -316,23 +430,39 @@ export const CompletedClient = ({
         </button>
         <button
           type="button"
-          onClick={() => void handleStartExecute("failed_only")}
+          onClick={() => void handleStartExecute("fix", "failed_only")}
           disabled={!latestRun || latestRun.summary.failed === 0 || !latestPackId}
           style={{
             borderColor: "#3f557f",
             background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
           }}
         >
-          Retry Failed
+          Retry Failed (Fix-only)
         </button>
         <button
           type="button"
-          onClick={() => void handleStartExecute("full")}
+          onClick={() => void handleStartExecute("fix", "full")}
           disabled={!latestPackId}
           style={{
             borderColor: "#3f557f",
             background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
           }}
+        >
+          Run Fix Loop Again
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleStartExecute("full", "full")}
+          disabled={!latestPackId || !fullModeReady}
+          style={{
+            borderColor: "#3f557f",
+            background: "linear-gradient(180deg, #20304f 0%, #162542 100%)",
+          }}
+          title={
+            fullModeReady
+              ? undefined
+              : "Full mode is blocked by readiness checks."
+          }
         >
           Run Full Again
         </button>
@@ -348,7 +478,7 @@ export const CompletedClient = ({
             color: "var(--forge-ink)",
             textAlign: "center",
           }}>
-            Pull Requests
+            PR Outcomes
           </h3>
           <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.35rem" }}>
             {initialPullRequests.map((pr) => (
@@ -382,7 +512,7 @@ export const CompletedClient = ({
                     </a>
                   ) : (
                     <span style={{ fontSize: "0.78rem", color: "var(--forge-fire)" }}>
-                      manual handoff
+                      manual handoff bundle
                     </span>
                   )}
                 </div>
@@ -493,7 +623,7 @@ export const CompletedClient = ({
                   {scenarioPullRequests.length > 0 ? (
                     <div style={{ display: "grid", gap: "0.2rem" }}>
                       <p style={{ margin: 0, fontSize: "0.76rem", color: "var(--forge-ink)" }}>
-                        Related PRs
+                        Related PR outcomes
                       </p>
                       <ul style={{ margin: 0, paddingLeft: "1rem", color: "var(--forge-muted)", fontSize: "0.75rem", display: "grid", gap: "0.15rem" }}>
                         {scenarioPullRequests.map((pullRequest) => (

@@ -87,6 +87,13 @@ const EXECUTION_MODE_RETRY_CTA: Record<ExecutionMode, string> = {
   full: "Retry Failed (Full)",
 };
 
+const EXECUTION_MODE_PROMISE: Record<ExecutionMode, string> = {
+  run: "Evidence bundle only (no fix or PR attempt).",
+  fix: "Patch + evidence bundle (no PR attempt).",
+  pr: "PR proposal metadata only.",
+  full: "Patch + evidence + controller-attempted PR.",
+};
+
 const ACTUATOR_LABEL: Record<NonNullable<ProjectPrReadiness["fullPrActuator"]>, string> =
   {
     controller: "Controller-owned branch/push/PR",
@@ -787,6 +794,10 @@ export const ExecuteClient = ({
     () => EXECUTION_MODE_RETRY_CTA[executionMode],
     [executionMode],
   );
+  const executionModePromise = useMemo(
+    () => EXECUTION_MODE_PROMISE[executionMode],
+    [executionMode],
+  );
   const allSelected =
     allScenarioIds.length > 0 && selectedScenarioCount === allScenarioIds.length;
   const hasPartialSelection =
@@ -1015,7 +1026,7 @@ export const ExecuteClient = ({
           <p style={{ margin: 0, fontSize: "0.74rem", color: "var(--forge-muted)" }}>
             {fullModeReady
               ? "Full mode is available."
-              : "Full mode is disabled until readiness blockers are resolved."}
+              : "Full mode is disabled until readiness blockers are resolved. Manual handoff only."}
           </p>
           {readinessReasonCodeLabels.length > 0 ? (
             <ul
@@ -1149,6 +1160,9 @@ export const ExecuteClient = ({
 
         <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.74rem" }}>
           Selected mode: {executionModeDescription}
+        </p>
+        <p style={{ margin: 0, textAlign: "center", color: "var(--forge-muted)", fontSize: "0.74rem" }}>
+          Promise: {executionModePromise}
         </p>
 
         <div

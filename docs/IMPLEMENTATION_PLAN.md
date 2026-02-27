@@ -461,6 +461,7 @@ Decisions made:
 10. PR readiness probes now record step-level pass/fail details for deterministic UI gating and blocker telemetry.
 11. Execute UI now enforces readiness-aware mode selection: default mode is `full` only when readiness is green, `full` is disabled when blocked, and users get actuator/reason-code remediation plus probe-details diagnostics before launch.
 12. Telemetry is now event-driven and reason-code aware: `readiness_checked`, `full_mode_blocked`, `execute_mode_selected`, `full_mode_started`, `full_mode_completed`, and `manual_handoff_emitted` are persisted with `reasonCodes` + `actuatorPath`.
+13. Completed/Execute copy is now mode-contract aligned: fix-only explicitly promises patch+evidence, full mode promises patch+evidence+controller-attempted PR, and full reruns are disabled when readiness is blocked.
 
 Current implementation status:
 1. Generate/execute action requests send RPC-safe kebab-case thread sandbox values.
@@ -476,9 +477,10 @@ Current implementation status:
 11. Execute routes now emit readiness/full-mode telemetry for both job-backed and direct execute paths, including blocker reason codes and actuator attribution.
 12. Dashboard now shows automation telemetry KPIs with top blocker reason codes by frequency.
 13. Telemetry events are persisted in-memory and to D1 (`sf_telemetry_events`) with hydration/reconcile/delete support.
+14. Completed page now differentiates PR outcomes (`real PR` vs `manual handoff bundle`) and exposes fix-only/full rerun actions with readiness-aware full-mode gating.
 
 Next actions:
 1. Add targeted unit/regression coverage for thread reuse behavior and schema acceptance of `blocked`.
 2. Continue Milestone 2 worktree isolation to complete per-scenario workspace determinism.
 3. Add execute-page UI regression coverage for readiness-driven mode defaults, full-mode disablement, and probe-details rendering.
-4. Ship PR D copy polish and Completed-page promise alignment for fix-only vs full-mode outcomes.
+4. Add targeted UI coverage for Completed-page mode-contract messaging and readiness-blocked full-rerun controls.

@@ -3,6 +3,7 @@ import type { AppContext } from "@/worker";
 import type { ExecutionJob } from "@/domain/models";
 import { redirect } from "@/app/shared/api";
 import {
+  getLatestProjectPrReadinessForProject,
   getProjectByIdForOwner,
   listScenarioRunsForProject,
   listFixAttemptsForProject,
@@ -52,6 +53,10 @@ export const CompletedPage = ({ ctx, params }: AppRequestInfo) => {
     packs[0]?.id ??
     null;
   const reviewBoard = buildReviewBoard(project, packs, orderedRuns, pullRequests);
+  const initialReadiness = getLatestProjectPrReadinessForProject(
+    principal.id,
+    projectId,
+  );
 
   return (
     <CompletedClient
@@ -63,6 +68,7 @@ export const CompletedPage = ({ ctx, params }: AppRequestInfo) => {
       initialPullRequests={pullRequests}
       initialExecutionJobs={executionJobs as ExecutionJob[]}
       initialReviewBoard={reviewBoard}
+      initialReadiness={initialReadiness}
     />
   );
 };
